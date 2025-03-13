@@ -178,6 +178,11 @@ public:
 		return &ndvs;
 	}
 
+	//! Get extent ids
+	idx_t_vector *GetExtentIds() {
+		return &extent_ids;
+	}
+
 	vector<LogicalType> GetTypesWithCopy();
 	uint64_t GetTypeSize(idx_t i);
 	vector<idx_t> GetColumnIdxs(vector<string> &property_keys);

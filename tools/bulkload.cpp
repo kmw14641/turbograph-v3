@@ -708,15 +708,14 @@ void ReadVertexJSONFileAndCreateVertexExtents(vector<LabeledFile> &json_vertex_f
 
 		SUBTIMER_START(ReadSingleVertexJSONFile, "GraphSIMDJSONFileParser Init");
 		GraphSIMDJSONFileParser reader(bulkload_ctx.client, &bulkload_ctx.ext_mng, &bulkload_ctx.catalog);
-		if(bulkload_ctx.input_options.load_edge) reader.SetLidToPidMap(&bulkload_ctx.lid_to_pid_map);
+		if (bulkload_ctx.input_options.load_edge) reader.SetLidToPidMap(&bulkload_ctx.lid_to_pid_map);
 		reader.InitJsonFile(vertex_file_path.c_str());
 		SUBTIMER_STOP(ReadSingleVertexJSONFile, "GraphSIMDJSONFileParser Init");
 
 		SUBTIMER_START(ReadSingleVertexJSONFile, "GraphSIMDJSONFileParser LoadJSON");
-		DataChunk data;
 		vector<string> label_set;
 		ParseLabelSet(vertex_labelset, label_set);
-		reader.LoadJson(vertex_labelset, label_set, "", data, bulkload_ctx.graph_cat, nullptr, GraphComponentType::VERTEX);
+		reader.LoadJson(vertex_labelset, label_set, bulkload_ctx.graph_cat, GraphComponentType::VERTEX);
 		SUBTIMER_STOP(ReadSingleVertexJSONFile, "GraphSIMDJSONFileParser LoadJSON");
 
 		spdlog::info("[ReadVertexJSONFileAndCreateVertexExtents] Load {} Done", vertex_file_path);
@@ -726,18 +725,102 @@ void ReadVertexJSONFileAndCreateVertexExtents(vector<LabeledFile> &json_vertex_f
 	spdlog::info("[ReadVertexJSONFileAndCreateVertexExtents] Load JSON Vertex Files Done");
 }
 
+void IngestDeletion(BulkloadContext &bulkload_ctx, string &vertex_labelset, string &vertex_file_path) {
+    // Check for deletion file
+    string deletion_file_path = vertex_file_path + ".delete";
+    
+    if (!fs::exists(deletion_file_path)) {
+        spdlog::debug("[IngestDeletion] No deletion file found at {}", deletion_file_path);
+        return;
+    }
+    
+    throw NotImplementedException("Deletion handling is not yet implemented");
+}
+
+void IngestUpdate(BulkloadContext &bulkload_ctx, string &vertex_labelset, string &vertex_file_path) {
+	// Check for update file
+    string update_file_path = vertex_file_path + ".update";
+    
+    if (!fs::exists(update_file_path)) {
+        spdlog::debug("[IngestUpdate] No update file found at {}", update_file_path);
+        return;
+    }
+
+	throw NotImplementedException("Update handling is not yet implemented");
+}
+
+void IngestInsertion(BulkloadContext &bulkload_ctx, string &vertex_labelset, string &vertex_file_path) {
+	// Check for insertion file
+    string insertion_file_path = vertex_file_path + ".insert";
+    
+    if (!fs::exists(insertion_file_path)) {
+        spdlog::debug("[IngestInsertion] No insertion file found at {}", insertion_file_path);
+        return;
+    }
+	
+	GraphSIMDJSONFileParser reader(bulkload_ctx.client, &bulkload_ctx.ext_mng, &bulkload_ctx.catalog);
+	if (bulkload_ctx.input_options.load_edge) reader.SetLidToPidMap(&bulkload_ctx.lid_to_pid_map);
+	reader.InitJsonFile(insertion_file_path.c_str());
+	
+	vector<string> label_set;
+	ParseLabelSet(vertex_labelset, label_set);
+	reader.LoadJsonIncremental(vertex_labelset, label_set, bulkload_ctx.graph_cat, GraphComponentType::VERTEX);
+}
+
+void ReadVertexJSONFileAndCreateVertexExtentsIncremental(vector<LabeledFile> &json_vertex_files, BulkloadContext &bulkload_ctx) {
+	SCOPED_TIMER_SIMPLE(ReadVertexJSONFilesIncremental, spdlog::level::info, spdlog::level::debug);
+	spdlog::info("[ReadVertexJSONFileAndCreateVertexExtentsIncremental] Start to load {} JSON Vertex Files", json_vertex_files.size());
+	for (auto &vertex_file: json_vertex_files) {
+		SCOPED_TIMER_SIMPLE(ReadSingleVertexJSONFileIncremental, spdlog::level::info, spdlog::level::debug);
+
+		string &vertex_labelset = std::get<0>(vertex_file);
+		string &vertex_file_path = std::get<1>(vertex_file);
+
+		spdlog::info("[ReadVertexJSONFileAndCreateVertexExtentsIncremental] Start to load {} with label set {}", vertex_file_path, vertex_labelset);
+
+		// process delete
+		SUBTIMER_START(ReadSingleVertexJSONFileIncremental, "IngestDeletion");
+		IngestDeletion(bulkload_ctx, vertex_labelset, vertex_file_path);
+		SUBTIMER_STOP(ReadSingleVertexJSONFileIncremental, "IngestDeletion");
+
+		// process update
+		SUBTIMER_START(ReadSingleVertexJSONFileIncremental, "IngestUpdate");
+		IngestUpdate(bulkload_ctx, vertex_labelset, vertex_file_path);
+		SUBTIMER_STOP(ReadSingleVertexJSONFileIncremental, "IngestUpdate");
+
+		// process insertion
+		SUBTIMER_START(ReadSingleVertexJSONFileIncremental, "IngestInsertion");
+		IngestInsertion(bulkload_ctx, vertex_labelset, vertex_file_path);
+		SUBTIMER_STOP(ReadSingleVertexJSONFileIncremental, "IngestInsertion");
+
+		spdlog::info("[ReadVertexJSONFileAndCreateVertexExtentsIncremental] Load {} Done", vertex_file_path);
+	}
+	spdlog::debug("[ReadVertexJSONFileAndCreateVertexExtentsIncremental] Flush Dirty Segments and Delete From Cache");
+	ChunkCacheManager::ccm->FlushDirtySegmentsAndDeleteFromcache(false);
+	spdlog::info("[ReadVertexJSONFileAndCreateVertexExtentsIncremental] Load JSON Vertex Files Done");
+}
+
 void ReadVertexFilesAndCreateVertexExtents(BulkloadContext &bulkload_ctx) {
 	vector<LabeledFile> json_vertex_files;
 	vector<LabeledFile> csv_vertex_files;
 	SeperateFilesByExtension(bulkload_ctx.input_options.vertex_files, json_vertex_files, csv_vertex_files);
 	spdlog::info("[ReadVertexFileAndCreateVertexExtents] {} JSON Vertex Files and {} CSV Vertex Files", json_vertex_files.size(), csv_vertex_files.size());
 
-	if (json_vertex_files.size() > 0) {
-		// Note: we should prevent calling Py_Initialize multple times
-		// Also, note that Py_Initialize can affect disk AIO, leading to unexpected error
-		ReadVertexJSONFileAndCreateVertexExtents(json_vertex_files, bulkload_ctx);
+	if (!bulkload_ctx.input_options.incremental) {
+		if (json_vertex_files.size() > 0) {
+			// Note: we should prevent calling Py_Initialize multple times
+			// Also, note that Py_Initialize can affect disk AIO, leading to unexpected error
+			ReadVertexJSONFileAndCreateVertexExtents(json_vertex_files, bulkload_ctx);
+		}
+		if (csv_vertex_files.size() > 0) ReadVertexCSVFileAndCreateVertexExtents(csv_vertex_files, bulkload_ctx);
+	} else {
+		if (json_vertex_files.size() > 0) {
+			ReadVertexJSONFileAndCreateVertexExtentsIncremental(json_vertex_files, bulkload_ctx);
+		}
+		if (csv_vertex_files.size() > 0) {
+			throw NotImplementedException("CSV Vertex Files are not supported in incremental mode");
+		}
 	}
-	if (csv_vertex_files.size() > 0) ReadVertexCSVFileAndCreateVertexExtents(csv_vertex_files, bulkload_ctx);
 }
 
 void PrepareClient(BulkloadContext &bulkload_ctx) {

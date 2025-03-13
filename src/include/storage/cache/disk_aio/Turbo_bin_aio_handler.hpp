@@ -162,6 +162,12 @@ class Turbo_bin_aio_handler {
   }
 
   ReturnStatus OpenFile(const char* file_name, bool create_if_not_exist = false, bool write_enabled = false, bool delete_if_exist = false, bool o_direct = false) {
+    if (delete_if_exist) {
+      if (check_file_exists(file_name)) {
+        int status = remove(file_name);
+        assert(status == 0);
+      }
+    }
     int flag = O_RDWR | O_CREAT;
     if (o_direct) flag = flag | O_DIRECT;
     file_id = DiskAioFactory::GetPtr()->OpenAioFile(file_name, flag);
