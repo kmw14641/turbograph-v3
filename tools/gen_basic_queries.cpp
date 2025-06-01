@@ -18,10 +18,14 @@ using namespace simdjson;
 // -----------------------------------------------------------------------
 // Hard-coded values controlling query generation
 // -----------------------------------------------------------------------
-static const int NUM_PROJ  = 29;  // Number of projection queries
-static const int NUM_EQUI  = 20;  // Number of equality filter queries
-static const int NUM_RANGE = 20;  // Number of range filter queries
-static const int NUM_AGG   = 30;  // Number of aggregation queries
+static const bool FULL_SCAN = false; // Generate full scan query
+static const int NUM_PROJ  = 0;  // Number of projection queries
+static const int NUM_EQUI  = 0;  // Number of equality filter queries
+static const int NUM_RANGE = 0;  // Number of range filter queries
+static const int NUM_AGG   = 0;  // Number of aggregation queries
+static const int NUM_JOINS = 5;  // Number of join queries
+static const int NUM_COLUMNS_PER_JOIN = 5; // Number of columns to select in a join query
+static const bool AGG_AFTER_JOIN = true;
 
 // -----------------------------------------------------------------------
 // Data structures to collect per-property statistics
@@ -325,8 +329,10 @@ int main(int argc, char** argv) {
 
     // 1) Full scan query
     {
-        std::string q = "MATCH (n) RETURN n";
-        queries.push_back(q);
+        if (FULL_SCAN) {
+            std::string q = "MATCH (n) RETURN n";
+            queries.push_back(q);
+        }
     }
 
     // 2) Projection queries
@@ -372,11 +378,11 @@ int main(int argc, char** argv) {
                         auto val = pickRandom(ns.sample_values);
                         long long valInt = (long long)val;
                         // build query
-                        std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " = " + std::to_string(valInt) + " RETURN n";
+                        std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " = " + std::to_string(valInt) + " RETURN n." + wrapPropertyName(prop);
                         queries.push_back(q);
                     } else {
                         // fallback
-                        std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " = 0 RETURN n";
+                        std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " = 0 RETURN n." + wrapPropertyName(prop);
                         queries.push_back(q);
                     }
                 } else {
@@ -393,10 +399,10 @@ int main(int argc, char** argv) {
                             if(c == '\'') safeVal += "\\'";
                             else safeVal += c;
                         }
-                        std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " = '" + safeVal + "' RETURN n";
+                        std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " = '" + safeVal + "' RETURN n." + wrapPropertyName(prop);
                         queries.push_back(q);
                     } else {
-                        std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " = '' RETURN n";
+                        std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " = '' RETURN n." + wrapPropertyName(prop);
                         queries.push_back(q);
                     }
                 }
@@ -426,12 +432,12 @@ int main(int argc, char** argv) {
                     long long i2 = (long long)v2;
                     std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " > " + std::to_string(i1) +
                                     " AND n." + wrapPropertyName(prop) + " < " + std::to_string(i2) +
-                                    " RETURN n";
+                                    " RETURN n." + wrapPropertyName(prop);
                     queries.push_back(q);
                     numericRangeCount++;
                 } else {
                     // fallback
-                    std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " > 10 AND n." + wrapPropertyName(prop) + " < 100 RETURN n";
+                    std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " > 10 AND n." + wrapPropertyName(prop) + " < 100 RETURN n." + wrapPropertyName(prop);
                     queries.push_back(q);
                     numericRangeCount++;
                 }
@@ -464,11 +470,11 @@ int main(int argc, char** argv) {
                         if(c == '\'') safeVal += "\\'";
                         else safeVal += c;
                     }
-                    std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " CONTAINS '" + safeVal + "' RETURN n";
+                    std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " CONTAINS '" + safeVal + "' RETURN n." + wrapPropertyName(prop);
                     queries.push_back(q);
                 } else {
                     // fallback
-                    std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " CONTAINS '' RETURN n";
+                    std::string q = "MATCH (n) WHERE n." + wrapPropertyName(prop) + " CONTAINS '' RETURN n." + wrapPropertyName(prop);
                     queries.push_back(q);
                 }
             }
@@ -494,6 +500,73 @@ int main(int argc, char** argv) {
                 auto agg = pickRandom(aggregators);
                 std::string q = "MATCH (n) RETURN " + agg + "(n.id)";
                 queries.push_back(q);
+            }
+        }
+    }
+
+    // 6) Join queries
+    //    - Use edge: http://www.w3.org/2002/07/owl#sameAs
+    //    - Generate paths with 1 to NUM_JOINS hops
+    //    - Each node returns NUM_COLUMNS_PER_JOIN properties (if available)
+    {
+        std::string redirectEdge = "TEN_PRCNT";
+
+        // Combine all properties for selection
+        std::vector<std::string> allProps = numericProps;
+        allProps.insert(allProps.end(), stringProps.begin(), stringProps.end());
+
+        if (!allProps.empty()) {
+            for (int hop = 1; hop <= NUM_JOINS; hop++) {
+                std::string match = "MATCH ";
+                std::string returnClause = "RETURN \n";
+                std::vector<std::string> nodeAliases;
+
+                // Build the MATCH chain
+                for (int i = 0; i <= hop; ++i) {
+                    nodeAliases.push_back("n" + std::to_string(i));
+                }
+
+                for (int i = 0; i < hop; ++i) {
+                    match += "(" + nodeAliases[i] + ")";
+                    match += "-[:`" + redirectEdge + "`]->";
+                }
+                match += "(" + nodeAliases[hop] + ")";
+
+                // Build RETURN clause
+                std::vector<std::string> projectedProps;
+
+                for (const auto& alias : nodeAliases) {
+                    std::vector<std::string> selectedProps;
+                    std::sample(
+                        allProps.begin(), allProps.end(),
+                        std::back_inserter(selectedProps),
+                        std::min((int)allProps.size(), NUM_COLUMNS_PER_JOIN),
+                        rng
+                    );
+
+                    for (const auto& prop : selectedProps) {
+                        std::string expr = alias + "." + wrapPropertyName(prop);
+                        projectedProps.push_back(expr);
+                    }
+                }
+
+                if (AGG_AFTER_JOIN) {
+                    int numAgg = projectedProps.size();
+                    for (size_t i = 0; i < projectedProps.size(); ++i) {
+                        if (i > 0) returnClause += ", \n";
+                        if ((int)i < numAgg)
+                            returnClause += "COUNT(" + projectedProps[i] + ")";
+                        else
+                            returnClause += projectedProps[i];
+                    }
+                } else {
+                    for (size_t i = 0; i < projectedProps.size(); ++i) {
+                        if (i > 0) returnClause += ", \n";
+                        returnClause += projectedProps[i];
+                    }
+                }
+
+                queries.push_back(match + "\n" + returnClause);
             }
         }
     }

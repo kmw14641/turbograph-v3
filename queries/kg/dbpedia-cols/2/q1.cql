@@ -1,0 +1,2 @@
+MATCH (v1)-[:`http://dbpedia.org/ontology/wikiPageRedirects`]->(v2)
+RETURN v2.`http://dbpedia.org/property/engine`, v2.`http://dbpedia.org/property/influenced`, v1.`http://dbpedia.org/ontology/orderInOffice`, v1.`http://dbpedia.org/ontology/minimumElevation`

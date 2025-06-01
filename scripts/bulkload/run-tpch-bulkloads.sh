@@ -2,7 +2,7 @@
 
 # Define the possible values for each configuration
 BUILD_DIR="/turbograph-v3/build-release/tools/"
-scale_factors=("1")
+scale_factors=("10")
 source_dir_base="/source-data/tpch/"
 target_dir_base="/data/tpch/"
 
@@ -38,5 +38,4 @@ for scale_factor in "${scale_factors[@]}"; do
         --relationships_backward SUPP_BELONG_TO ${data_dir}/supplier_belongTo_nation.tbl.backward \
         --relationships PARTSUPP ${data_dir}/partsupp.tbl \
         --relationships_backward PARTSUPP ${data_dir}/partsupp.tbl.backward
-
 done

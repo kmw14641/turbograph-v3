@@ -2,6 +2,7 @@
 #include <boost/date_time.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
+#include <malloc.h>
 #include "nlohmann/json.hpp"	// TODO remove json and use that of boost
 #include "common/logger.hpp"
 #include "execution/cypher_pipeline.hpp"
@@ -120,6 +121,7 @@ void ParseConfig(int argc, char** argv, ClientOptions& options) {
             else if (optimizer == "greedy") options.planner_config.JOIN_ORDER_TYPE = s62::PlannerConfig::JoinOrderType::JOIN_ORDER_GREEDY_SEARCH;
             else if (optimizer == "exhaustive") options.planner_config.JOIN_ORDER_TYPE = s62::PlannerConfig::JoinOrderType::JOIN_ORDER_EXHAUSTIVE_SEARCH;
             else if (optimizer == "exhaustive2") options.planner_config.JOIN_ORDER_TYPE = s62::PlannerConfig::JoinOrderType::JOIN_ORDER_EXHAUSTIVE2_SEARCH;
+            else if (optimizer == "gem") options.planner_config.JOIN_ORDER_TYPE = s62::PlannerConfig::JoinOrderType::JOIN_ORDER_GEM;
             else throw std::invalid_argument("Invalid --join-order-optimizer parameter");
 		}},
         {"debug-orca", [&]() { 
@@ -268,7 +270,7 @@ void PrintOutputToFile(PropertyKeys col_names,
 
 void PrintOutputConsole(const PropertyKeys &col_names, 
                  std::vector<std::shared_ptr<duckdb::DataChunk>> *query_results_ptr, 
-                 duckdb::Schema &schema) {
+                 duckdb::Schema &schema, bool top_10_only) {
     if (!query_results_ptr) {
         spdlog::error("[PrintOutputConsole] Query Results Empty");
         return;
@@ -277,7 +279,35 @@ void PrintOutputConsole(const PropertyKeys &col_names,
     auto final_col_names = col_names.empty() ? schema.getStoredColumnNames() : col_names;
     auto &query_results = *query_results_ptr;
     
-    OutputUtil::PrintQueryOutput(final_col_names, query_results);
+    OutputUtil::PrintQueryOutput(final_col_names, query_results, top_10_only);
+}
+
+size_t GetResultSizeInBytes(std::vector<std::shared_ptr<duckdb::DataChunk>> &query_results) {
+    size_t result_size = 0;
+    for (const auto &chunk : query_results) {
+        for (size_t i = 0; i < chunk->ColumnCount(); i++) {
+            auto type_size = GetTypeIdSize(chunk->data[i].GetType().InternalType());
+            result_size += type_size * chunk->size();
+        }
+    }
+    return result_size;
+}
+
+void DeallocateIterationMemory(std::vector<duckdb::CypherPipelineExecutor *> &executors) {
+    auto &exec_context = executors.back()->context;
+    auto &query_results = *exec_context->query_results;
+    auto result_size = GetResultSizeInBytes(query_results);
+
+    for (auto &chunk: query_results) {
+        chunk.reset();
+    }
+    query_results.clear();
+    
+    for (auto &exec : executors) {
+        delete exec;
+    }
+    
+    executors.clear();
 }
 
 void CompileAndExecuteIteration(const std::string &query_str,
@@ -298,13 +328,13 @@ void CompileAndExecuteIteration(const std::string &query_str,
         auto &schema = executors.back()->pipeline->GetSink()->schema;
         auto col_names = planner.getQueryOutputColNames();
 
-        if (!options.slient) {
-            PrintOutputConsole(col_names, query_results, schema);
-        }
+        PrintOutputConsole(col_names, query_results, schema, options.slient);
 
         if (!options.output_file.empty()) {
         	PrintOutputToFile(col_names, query_results, schema, options.output_file);
         }
+
+        DeallocateIterationMemory(executors);
     }
 
     compile_times.push_back(compile_time);

@@ -155,7 +155,7 @@ void DataChunk::InitializeRowColumn(const vector<uint32_t> &columns_to_be_groupe
 	row_vector_caches.push_back(move(cache));
 }
 
-void DataChunk::CreateRowMajorStore(const vector<uint32_t> &columns_to_be_grouped, uint64_t row_store_size) {
+void DataChunk::CreateRowMajorStore(const vector<uint32_t> &columns_to_be_grouped, uint64_t row_store_size, schema_mask_ptr_t schema_mask_ptr) {
 	// TODO optimize this code by avoiding dynamic memory allocation?
 	auto row_store = make_buffer<VectorRowStoreBuffer>();
 	row_store->Reserve(row_store_size);
@@ -163,6 +163,7 @@ void DataChunk::CreateRowMajorStore(const vector<uint32_t> &columns_to_be_groupe
 		D_ASSERT(columns_to_be_grouped[i] < data.size());
 		data[columns_to_be_grouped[i]].AssignRowMajorStore(row_store);
 		data[columns_to_be_grouped[i]].SetRowColIdx(i);
+		data[columns_to_be_grouped[i]].SetSchemaValMaskPtr(schema_mask_ptr);
 	}
 }
 
@@ -465,10 +466,10 @@ void DataChunk::Slice(DataChunk &other, const SelectionVector &sel, idx_t count_
 	}
 }
 
-unique_ptr<VectorData[]> DataChunk::Orrify() {
+unique_ptr<VectorData[]> DataChunk::Orrify(bool normalify_row) {
 	auto orrified_data = unique_ptr<VectorData[]>(new VectorData[ColumnCount()]);
 	for (idx_t col_idx = 0; col_idx < ColumnCount(); col_idx++) {
-		data[col_idx].Orrify(size(), orrified_data[col_idx]);
+		data[col_idx].Orrify(size(), orrified_data[col_idx], normalify_row);
 	}
 	return orrified_data;
 }

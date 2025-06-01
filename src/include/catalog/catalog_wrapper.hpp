@@ -8,13 +8,18 @@
 #include "function/aggregate/distributive_functions.hpp"
 #include "function/function.hpp"
 #include "optimizer/mdprovider/MDProviderTBGPP.h"
-
-#include "icecream.hpp"
-
 #include <tuple>
 #include <unordered_map>
+#include <memory>
 
 namespace duckdb {
+
+struct CachedGroupedSchemaInfo {
+    std::shared_ptr<vector<idx_t>> universal_schema_ids;
+    std::shared_ptr<vector<LogicalTypeId>> universal_types_id;
+    std::shared_ptr<unordered_map<idx_t, unordered_map<uint64_t, uint32_t>>> property_schema_index;
+    std::shared_ptr<unordered_map<uint64_t, uint32_t>> physical_id_property_schema_index;
+};
 
 class CatalogWrapper {
 
@@ -69,6 +74,35 @@ public:
         GraphCatalogEntry *gcat =
             (GraphCatalogEntry *)catalog.GetEntry(context, CatalogType::GRAPH_ENTRY, DEFAULT_SCHEMA, DEFAULT_GRAPH);
         partitionIDs = std::move(gcat->LookupPartition(context, labelset_names, g_type));
+    }
+
+    void GetSubPartitionIDsFromPartitions(ClientContext &context, vector<uint64_t> &partitionIDs, vector<idx_t> &oids, vector<size_t> &numOidsPerPartition,
+                                        GraphComponentType g_type, bool exclude_fakes = true) {
+        auto &catalog = db.GetCatalog();
+
+        for (auto &pid : partitionIDs) {
+            vector<idx_t> sub_partition_oids;
+            PartitionCatalogEntry *p_cat =
+                (PartitionCatalogEntry *)catalog.GetEntry(context, DEFAULT_SCHEMA, pid);
+            p_cat->GetPropertySchemaIDs(sub_partition_oids);
+
+            if (exclude_fakes) {
+                size_t numValidOids = 0;
+                for (auto &oid : sub_partition_oids) {
+                    PropertySchemaCatalogEntry *ps_cat =
+                        (PropertySchemaCatalogEntry *)catalog.GetEntry(context, DEFAULT_SCHEMA, oid);
+                    if (!ps_cat->is_fake) {
+                        oids.push_back(oid);
+                        numValidOids++;
+                    }
+                }
+                numOidsPerPartition.push_back(numValidOids);
+            }
+            else {
+                oids.insert(oids.end(), sub_partition_oids.begin(), sub_partition_oids.end());
+                numOidsPerPartition.push_back(sub_partition_oids.size());
+            }
+        }
     }
 
     void GetSubPartitionIDsFromPartitions(ClientContext &context, vector<uint64_t> &partitionIDs, vector<idx_t> &oids, vector<size_t> &numOidsPerPartition,
@@ -260,65 +294,92 @@ public:
     }
 
     void GetPropertyKeyToPropertySchemaMap(
-        ClientContext &context, unordered_map<idx_t, vector<std::pair<uint64_t, uint64_t>>>
-            &property_schema_index,
-        vector<idx_t> &universal_schema_ids,
-        vector<LogicalTypeId> &universal_types_id, vector<idx_t> &part_oids)
-    {
-        auto &catalog = db.GetCatalog();
-        const void_allocator void_alloc =
-            catalog.catalog_segment->get_segment_manager();
+        ClientContext &context, vector<idx_t> &part_oids, vector<idx_t> &table_oids,
+        std::shared_ptr<unordered_map<idx_t, unordered_map<uint64_t, uint32_t>>> &property_schema_index,
+        std::shared_ptr<unordered_map<uint64_t, uint32_t>> &physical_id_property_schema_index,
+        std::shared_ptr<vector<idx_t>> &universal_schema_ids,
+        std::shared_ptr<vector<LogicalTypeId>> &universal_types_id) {
+        // Check cache
+        auto it = schema_cache.find(part_oids);
+        if (it != schema_cache.end()) {
+            property_schema_index = it->second.property_schema_index;
+            physical_id_property_schema_index = it->second.physical_id_property_schema_index;
+            universal_schema_ids = it->second.universal_schema_ids;
+            universal_types_id = it->second.universal_types_id;
+            return;
+        }
 
-        // Concat all property keys and types
+        // Otherwise, compute and cache
+        auto new_property_schema_index = std::make_shared<unordered_map<idx_t, unordered_map<uint64_t, uint32_t>>>();
+        auto new_physical_id_property_schema_index = std::make_shared<unordered_map<uint64_t, uint32_t>>();
+        auto new_universal_schema_ids = std::make_shared<vector<idx_t>>();
+        auto new_universal_types_id = std::make_shared<vector<LogicalTypeId>>();
+
+        auto &catalog = db.GetCatalog();
+        const void_allocator void_alloc = catalog.catalog_segment->get_segment_manager();
+        constexpr uint32_t COLUMN_IDX_SHIFT = 1;
+
         for (auto &part_oid : part_oids) {
             PartitionCatalogEntry *part_cat =
-                (PartitionCatalogEntry *)catalog.GetEntry(
-                    context, DEFAULT_SCHEMA, part_oid);
+                (PartitionCatalogEntry *)catalog.GetEntry(context, DEFAULT_SCHEMA, part_oid);
 
-            auto part_universal_schema_ids =
-                part_cat->GetUniversalPropertyKeyIds();
-            auto part_universal_types_id =
-                part_cat->GetUniversalPropertyTypeIds();
-            auto part_property_schema_index =
-                part_cat->GetPropertySchemaIndex();
-            auto part_property_names =
-                part_cat->GetUniversalPropertyKeyNames();
-            
-            if (universal_schema_ids.empty()) {
-                universal_schema_ids.reserve(part_universal_schema_ids->size());
-                universal_types_id.reserve(part_universal_types_id->size());
-                property_schema_index.reserve(part_property_schema_index->size());
+            auto part_universal_schema_ids = part_cat->GetUniversalPropertyKeyIds();
+            auto part_universal_types_id = part_cat->GetUniversalPropertyTypeIds();
+            auto part_property_schema_index = part_cat->GetPropertySchemaIndex();
+
+            if (new_universal_schema_ids->empty()) {
+                new_universal_schema_ids->reserve(part_universal_schema_ids->size());
+                new_universal_types_id->reserve(part_universal_types_id->size());
+                new_property_schema_index->reserve(part_property_schema_index->size());
             }
 
-            // Merge
-            for (auto i = 0; i < part_universal_schema_ids->size(); i++) {
-                duckdb::idx_t property_key_id =
-                    part_universal_schema_ids->at(i);
-                auto it = property_schema_index.find(property_key_id);
-                if (it == property_schema_index.end()) {
-                    universal_schema_ids.push_back(
-                        part_universal_schema_ids->at(i));
-                    universal_types_id.push_back(
-                        part_universal_types_id->at(i));
-                    auto it = part_property_schema_index->find(property_key_id);
-                    vector<std::pair<uint64_t, uint64_t>> pairs;
-                    pairs.reserve(it->second.size());
-                    for (const auto& pair : it->second) {
-                        pairs.push_back(pair);
+            for (idx_t i = 0; i < part_universal_schema_ids->size(); i++) {
+                idx_t property_key_id = part_universal_schema_ids->at(i);
+
+                auto it = new_property_schema_index->find(property_key_id);
+                if (it == new_property_schema_index->end()) {
+                    new_universal_schema_ids->push_back(property_key_id);
+                    new_universal_types_id->push_back(part_universal_types_id->at(i));
+
+                    auto part_it = part_property_schema_index->find(property_key_id);
+                    const auto &src_map = part_it->second;
+
+                    unordered_map<uint64_t, uint32_t> new_map;
+                    new_map.reserve(src_map.size());
+                    for (const auto &[table_id, prop_id] : src_map) {
+                        new_map.emplace(table_id, prop_id + COLUMN_IDX_SHIFT);
                     }
-                    property_schema_index.emplace(property_key_id, std::move(pairs));
-                }
-                else {
-                    auto &original_pair_vector = it->second;
-                    auto &new_pair_vector =
-                        part_property_schema_index->find(property_key_id)
-                            ->second;
-                    original_pair_vector.insert(original_pair_vector.end(),
-                                                new_pair_vector.begin(),
-                                                new_pair_vector.end());
+                    new_property_schema_index->emplace(property_key_id, std::move(new_map));
+                } else {
+                    auto &dst_map = it->second;
+                    const auto &src_map = part_property_schema_index->find(property_key_id)->second;
+
+                    for (const auto &[table_id, prop_id] : src_map) {
+                        dst_map.emplace(table_id, prop_id + COLUMN_IDX_SHIFT);
+                    }
                 }
             }
         }
+
+        // Create physical id property schema index
+        new_physical_id_property_schema_index->reserve(table_oids.size());
+        for (auto &table_oid : table_oids) {
+            new_physical_id_property_schema_index->insert({table_oid, 0});
+        }
+
+        // Store in cache
+        schema_cache[part_oids] = CachedGroupedSchemaInfo{
+            new_universal_schema_ids,
+            new_universal_types_id,
+            new_property_schema_index,
+            new_physical_id_property_schema_index
+        };
+
+        // Return results
+        universal_schema_ids = new_universal_schema_ids;
+        universal_types_id = new_universal_types_id;
+        property_schema_index = new_property_schema_index;
+        physical_id_property_schema_index = new_physical_id_property_schema_index;
     }
 
     string GetTypeName(idx_t type_id) {
@@ -776,6 +837,19 @@ private:
 
     //! Reference to the database
 	DatabaseInstance &db;
+
+    //! Cache for group schemas
+    struct VectorHash {
+        size_t operator()(const vector<idx_t> &v) const {
+            size_t seed = v.size();
+            for (auto &i : v) {
+                seed ^= std::hash<idx_t>{}(i) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            }
+            return seed;
+        }
+    };
+
+    std::unordered_map<vector<idx_t>, CachedGroupedSchemaInfo, VectorHash> schema_cache;
 };
 
 } // namespace duckdb

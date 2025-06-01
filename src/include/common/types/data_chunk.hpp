@@ -114,7 +114,7 @@ public:
 	//! Initializes row columns
 	DUCKDB_API void InitializeRowColumn(const vector<uint32_t> &columns_to_be_grouped, idx_t capacity_ = STANDARD_VECTOR_SIZE);
 	//! Initializes row major store
-	DUCKDB_API void CreateRowMajorStore(const vector<uint32_t> &columns_to_be_grouped, uint64_t row_store_size);
+	DUCKDB_API void CreateRowMajorStore(const vector<uint32_t> &columns_to_be_grouped, uint64_t row_store_size, schema_mask_ptr_t schema_mask_ptr);
 	//! Assign row major store
 	DUCKDB_API void AssignRowMajorStore(const vector<uint32_t> &columns_to_be_grouped, buffer_ptr<VectorBuffer> buffer);
 	//! Get row major store
@@ -147,7 +147,7 @@ public:
 	//! Turn all the vectors from the chunk into flat vectors
 	DUCKDB_API void Normalify();
 
-	DUCKDB_API unique_ptr<VectorData[]> Orrify();
+	DUCKDB_API unique_ptr<VectorData[]> Orrify(bool normalify_row = true);
 
 	DUCKDB_API void Slice(const SelectionVector &sel_vector, idx_t count);
 	DUCKDB_API void Slice(DataChunk &other, const SelectionVector &sel, idx_t count, idx_t col_offset = 0);

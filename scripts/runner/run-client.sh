@@ -10,5 +10,5 @@ ${BUILD_DIR}/client \
 	--standalone \
 	--disable-merge-join \
 	--join-order-optimizer exhaustive \
-	--profile \
 	--explain \
+	--profile

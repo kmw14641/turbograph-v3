@@ -59,6 +59,11 @@ void HistogramGenerator::CreateHistogram(std::shared_ptr<ClientContext> client, 
         (PartitionCatalogEntry *)cat_instance.GetEntry(*client.get(), DEFAULT_SCHEMA, partition_oid);
     
     spdlog::debug("[CreateHistogram] Create Histogram for partition {}", partition_cat->GetName());
+
+    if (partition_cat->GetName() == "vpart_NODE") {
+        spdlog::debug("[CreateHistogram] Skip for vpart_NODE");
+        return;
+    }
     
     _create_histogram(client, partition_cat);
 }
@@ -250,16 +255,7 @@ void HistogramGenerator::_create_histogram(std::shared_ptr<ClientContext> client
             }
             // col_idx++;
         }
-        // while (col_idx < universal_schema.size()) {
-        //     for (auto j = 0; j < num_buckets_for_each_column[col_idx]; j++) {
-        //         frequency_values_for_each_column[col_idx].push_back(0);
-        //     }
-        //     col_idx++;
-        // }
     }
-
-    // generate group info
-    // _generate_group_info(partition_cat, ps_oids, num_buckets_for_each_column, frequency_values_for_each_column);
 }
 
 void HistogramGenerator::_init_accumulators(vector<LogicalType> &universal_schema, std::vector<std::vector<double>>& probs_per_column) {

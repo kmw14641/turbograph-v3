@@ -297,7 +297,7 @@ shared_ptr<Expression> ExpressionBinder::bindRelPropertyExpression(
 
 unique_ptr<Expression> ExpressionBinder::createPropertyExpression(
     Expression &nodeOrRel, Property &anchorProperty,
-    unordered_map<table_id_t, property_id_t> &propertyIDPerTable,
+    unordered_map<table_id_t, property_id_t>* propertyIDPerTable,
     uint64_t prop_key_id)
 {
     // assert(!properties.empty());
@@ -310,7 +310,7 @@ unique_ptr<Expression> ExpressionBinder::createPropertyExpression(
     //                                    nodeOrRel.getRawName());
     return make_unique<PropertyExpression>(
         anchorProperty.dataType, anchorProperty.name, prop_key_id, nodeOrRel,
-        std::move(propertyIDPerTable));
+        propertyIDPerTable);
 }
 
 shared_ptr<Expression> ExpressionBinder::bindFunctionExpression(
@@ -430,14 +430,10 @@ shared_ptr<Expression> ExpressionBinder::bindInternalIDExpression(const Expressi
 }
 
 unique_ptr<Expression> ExpressionBinder::createInternalNodeIDExpression(
-    const Expression& expression) {
+    const Expression& expression, unordered_map<table_id_t, property_id_t>* propertyIDPerTable) {
     auto& node = (NodeExpression&)expression;
-    unordered_map<table_id_t, property_id_t> propertyIDPerTable;
-    for (auto tableID : node.getTableIDs()) {
-        propertyIDPerTable.insert({tableID, INVALID_PROPERTY_ID});
-    }
     auto result = make_unique<PropertyExpression>(
-        DataType(DataTypeID::NODE_ID), INTERNAL_ID_SUFFIX, 0, node, std::move(propertyIDPerTable));
+        DataType(DataTypeID::NODE_ID), INTERNAL_ID_SUFFIX, 0, node, propertyIDPerTable);
     return result;
 }
 

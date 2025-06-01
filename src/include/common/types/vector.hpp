@@ -16,15 +16,28 @@
 #include "common/types/value.hpp"
 #include "common/types/vector_buffer.hpp"
 #include "common/vector_size.hpp"
+#include "common/types/rowcol_type.hpp"
 
 namespace duckdb {
 
+struct RowVectorData {
+	rowcol_t *data;
+	idx_t row_col_idx;
+	char *row_store;
+	ValidityMask *schema_val_mask;
+};
+
 struct VectorData {
+	// Common data for all vectors
 	const SelectionVector *sel;
 	data_ptr_t data;
 	ValidityMask validity;
 	SelectionVector owned_sel;
 	bool is_valid;
+
+	// Special data for row vectors
+	bool is_row;
+	RowVectorData row_data;
 };
 
 class VectorCache;
@@ -127,7 +140,7 @@ public:
 	DUCKDB_API void Normalify(idx_t count);
 	DUCKDB_API void Normalify(const SelectionVector &sel, idx_t count);
 	//! Obtains a selection vector and data pointer through which the data of this vector can be accessed
-	DUCKDB_API void Orrify(idx_t count, VectorData &data);
+	DUCKDB_API void Orrify(idx_t count, VectorData &data, bool normalify_row = true);
 
 	//! Turn the vector into a sequence vector
 	DUCKDB_API void Sequence(int64_t start, int64_t increment);
@@ -193,12 +206,20 @@ public:
 		return is_valid;
 	}
 
-	void SetRowColIdx(int rowcol_idx) {
-		this->rowcol_idx = rowcol_idx;
+	void SetSchemaValMaskPtr(schema_mask_ptr_t schema_mask_ptr) {
+		this->schema_mask_ptr = schema_mask_ptr;
+	}
+
+	inline ValidityMask* GetSchemaValMaskPtr(idx_t idx) const {
+		return &(*((vector<ValidityMask>*)schema_mask_ptr))[idx];
+	}
+
+	void SetRowColIdx(idx_t row_col_idx) {
+		this->row_col_idx = row_col_idx;
 	}
 
 	inline int GetRowColIdx() const {
-		return rowcol_idx;
+		return row_col_idx;
 	}
 
 	// Setters
@@ -220,8 +241,12 @@ protected:
 	//! e.g. a string vector uses this to store strings
 	buffer_ptr<VectorBuffer> auxiliary;
 	idx_t capacity;
+	//! High level validity check
 	bool is_valid = true;
-	int rowcol_idx = -1;
+	//! Schema val pointer for row vector
+	schema_mask_ptr_t schema_mask_ptr;
+	//! Corresponding row column index
+	idx_t row_col_idx = -1;
 };
 
 class VectorWithValidBitmap : public Vector {

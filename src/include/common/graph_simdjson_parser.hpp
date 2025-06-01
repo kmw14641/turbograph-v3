@@ -21,13 +21,13 @@ using namespace simdjson;
 #define NEO4J_VERTEX_ID_NAME "id"
 #define COST_MAX 10000000000.00
 #define COST_MIN 0
-#define MAX_THREADS 64
+#define MAX_THREADS 32
 
 // Thresholds
 #define FREQUENCY_THRESHOLD 0.95
 #define SET_SIM_THRESHOLD 0.99
 #define SET_EDIT_THRESHOLD 2
-#define JACCARD_THRESHOLD 1
+#define JACCARD_THRESHOLD 0.70
 #define WEIGHTEDJACCARD_THRESHOLD 0.3
 #define COSINE_THRESHOLD 0.5
 #define DICE_THRESHOLD 0.4
@@ -2833,6 +2833,12 @@ private:
     PyObject* p_sklearn_module = nullptr;
 
     // Tip: for Yago-tiny, set CostNullVal to 0.005 and CostSchemaVal to 300. It creates two clusters
+    /**
+     * In SOSP experiment,
+        const double CostSchemaVal = 100;
+        const double CostNullVal = 0.3;
+        const double CostVectorizationVal = 10000;
+     */
     const double CostSchemaVal = 100;
     const double CostNullVal = 0.3;
     const double CostVectorizationVal = 10000;
