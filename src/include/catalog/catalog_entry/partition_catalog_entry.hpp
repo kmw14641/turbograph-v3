@@ -8,12 +8,11 @@
 
 #pragma once
 
-
+#include "catalog/inverted_index.hpp"
 #include "catalog/standard_entry.hpp"
-#include "common/unordered_map.hpp"
 #include "common/boost_typedefs.hpp"
 #include "common/case_insensitive_map.hpp"
-#include "catalog/inverted_index.hpp"
+#include "common/unordered_map.hpp"
 
 namespace duckdb {
 
@@ -33,226 +32,172 @@ typedef float StdDev;
 
 //! A partition catalog entry
 class PartitionCatalogEntry : public StandardEntry {
-public:
-	//! Create a real PartitionCatalogEntry
-	PartitionCatalogEntry(Catalog *catalog, SchemaCatalogEntry *schema, CreatePartitionInfo *info, const void_allocator &void_alloc);
+   public:
+    //! Create a real PartitionCatalogEntry
+    PartitionCatalogEntry(Catalog *catalog, SchemaCatalogEntry *schema,
+                          CreatePartitionInfo *info,
+                          const void_allocator &void_alloc);
 
-	//! PropertyKeyID -> Property schema catalog entries those contains the property
-	// PropertyToPropertySchemaVecUnorderedMap property_schema_index;
-	PropertyToPropertySchemaPairVecUnorderedMap property_schema_index;
+    //! PropertyKeyID -> Property schema catalog entries those contains the property
+    // PropertyToPropertySchemaVecUnorderedMap property_schema_index;
+    PropertyToPropertySchemaPairVecUnorderedMap property_schema_index;
 
-	//! OIDs of property schema catalog entries
-	PropertySchemaID_vector property_schema_array;
-	
-	//! Logical partition ID
-	PartitionID pid;
+    //! OIDs of property schema catalog entries
+    PropertySchemaID_vector property_schema_array;
 
-	//! OID of the physical ID index (_id)
-	idx_t physical_id_index;
+    //! Logical partition ID
+    PartitionID pid;
 
-	//! OID of the src partition
-	idx_t src_part_oid;
+    //! OID of the physical ID index (_id)
+    idx_t physical_id_index;
 
-	//! OID of the dst partition
-	idx_t dst_part_oid;
+    //! OID of the src partition
+    idx_t src_part_oid;
 
-	//! OID of the universal property schema // TODO useless?
-	idx_t univ_ps_oid;
+    //! OID of the dst partition
+    idx_t dst_part_oid;
 
-	//! OIDs of the adjacency list indexes
-	idx_t_vector adjlist_indexes;
+    //! OID of the universal property schema // TODO useless?
+    idx_t univ_ps_oid;
 
-	//! OIDs of the property indexes
-	idx_t_vector property_indexes;
+    //! OIDs of the adjacency list indexes
+    idx_t_vector adjlist_indexes;
 
-	//! Universal schema property Key IDs -> location map
-	PropertyToIdxUnorderedMap global_property_key_to_location;
+    //! OIDs of the property indexes
+    idx_t_vector property_indexes;
 
-	//! universal schema logical type IDs
-	LogicalTypeId_vector global_property_typesid;
+    //! Universal schema property Key IDs -> location map
+    PropertyToIdxUnorderedMap global_property_key_to_location;
 
-	//! extra info vector of universal schema
-	uint16_t_vector extra_typeinfo_vec;
+    //! universal schema logical type IDs
+    LogicalTypeId_vector global_property_typesid;
 
-	//! universal schema names
-	string_vector global_property_key_names;
+    //! extra info vector of universal schema
+    uint16_t_vector extra_typeinfo_vec;
 
-	//! id key column idxs
-	idx_t_vector id_key_column_idxs;
+    //! universal schema names
+    string_vector global_property_key_names;
 
-	//! universal schema property key ids
-	idx_t_vector global_property_key_ids;
+    //! id key column idxs
+    idx_t_vector id_key_column_idxs;
 
-	//! # of columns in universal schema
-	idx_t num_columns;
+    //! universal schema property key ids
+    idx_t_vector global_property_key_ids;
 
-	//! variable for the local extent ID generator
-	atomic<ExtentID> local_extent_id_version;
+    //! # of columns in universal schema
+    idx_t num_columns;
 
-	//! variable for the local temporal ID generator
-	idx_t local_temporal_id_version; // TODO atomic variable test
+    //! variable for the local extent ID generator
+    atomic<ExtentID> local_extent_id_version;
 
-	//! offset infos
-	idx_t_vector offset_infos;
+    //! variable for the local temporal ID generator
+    idx_t local_temporal_id_version;  // TODO atomic variable test
 
-	//! boundary values of the histogram
-	idx_t_vector boundary_values;
+    //! offset infos
+    idx_t_vector offset_infos;
 
-	//! number of groups for each column
-	idx_t_vector num_groups_for_each_column;
+    //! boundary values of the histogram
+    idx_t_vector boundary_values;
 
-	//! precomputed base values for each column
-	idx_t_vector multipliers_for_each_column;
+   public:
+    void AddPropertySchema(ClientContext &context, idx_t ps_oid,
+                           vector<PropertyKeyID> &property_schemas);
+    void SetUnivPropertySchema(idx_t psid);
+    void SetIdKeyColumnIdxs(vector<idx_t> &key_column_idxs);
+    void AddAdjIndex(idx_t index_oid);
+    void AddPropertyIndex(idx_t index_oid);
+    void SetPhysicalIDIndex(idx_t index_oid);
+    void SetTypes(vector<LogicalType> &types);
 
-	//! which group each table belongs to by column // TODO optimal format? currently do not consider update
-	idx_t_vector group_info_for_each_table;
+    //! Set Universal Schema Info
+    void SetSchema(ClientContext &context, vector<string> &key_names,
+                   vector<LogicalType> &types,
+                   vector<PropertyKeyID> &univ_prop_key_ids);
 
-	//! min max value for each column (assume only numeric)
-	minmax_t_vector min_max_array;
+    //! Update Universal Schema Info
+    void UpdateSchema(ClientContext &context, vector<string> &key_names,
+                      vector<LogicalType> &types,
+                      vector<PropertyKeyID> &univ_prop_key_ids,
+                      vector<idx_t> &new_property_key_ids_indexes);
 
-	//! std dev value for each column (assume only numeric)
-	welford_t_vector welford_array;
+    void SetPartitionID(PartitionID pid);
+    void SetSrcDstPartOid(idx_t src_part_oid, idx_t dst_part_oid);
 
-public:
-	void AddPropertySchema(ClientContext &context, idx_t ps_oid, vector<PropertyKeyID> &property_schemas);
-	void SetUnivPropertySchema(idx_t psid);
-	void SetIdKeyColumnIdxs(vector<idx_t> &key_column_idxs);
-	void AddAdjIndex(idx_t index_oid);
-	void AddPropertyIndex(idx_t index_oid);
-	void SetPhysicalIDIndex(idx_t index_oid);
-	void SetTypes(vector<LogicalType> &types);
+    idx_t GetUnivPSOid() { return univ_ps_oid; }
 
-	//! Set Universal Schema Info
-	void SetSchema(ClientContext &context, vector<string> &key_names, vector<LogicalType> &types, vector<PropertyKeyID> &univ_prop_key_ids);
+    idx_t GetSrcPartOid() { return src_part_oid; }
 
-	void SetPartitionID(PartitionID pid);
-	void SetSrcDstPartOid(idx_t src_part_oid, idx_t dst_part_oid);
+    idx_t GetDstPartOid() { return dst_part_oid; }
 
-	idx_t GetUnivPSOid()
-	{
-		return univ_ps_oid;
-	}
+    PropertyToPropertySchemaPairVecUnorderedMap *GetPropertySchemaIndex()
+    {
+        return &property_schema_index;
+    }
 
-	idx_t GetSrcPartOid()
-	{
-		return src_part_oid;
-	}
+    //! Get Property Schema IDs
+    void GetPropertySchemaIDs(vector<idx_t> &psids);
 
-	idx_t GetDstPartOid()
-	{
-		return dst_part_oid;
-	}
+    //! Get Property Schema IDs w/o copy
+    PropertySchemaID_vector *GetPropertySchemaIDs()
+    {
+        return &property_schema_array;
+    }
 
-	PropertyToPropertySchemaPairVecUnorderedMap *GetPropertySchemaIndex()
-	{
-		return &property_schema_index;
-	}
+    //! Get Catalog OID of Physical ID Index
+    idx_t GetPhysicalIDIndexOid();
 
-	//! Get Property Schema IDs
-	void GetPropertySchemaIDs(vector<idx_t> &psids);
+    //! Get Catalog OIDs of Adjacency Index
+    idx_t_vector *GetAdjIndexOidVec() { return &adjlist_indexes; }
 
-	//! Get Property Schema IDs w/o copy
-	PropertySchemaID_vector *GetPropertySchemaIDs()
-	{
-		return &property_schema_array;
-	}
-	
-	//! Get Catalog OID of Physical ID Index
-	idx_t GetPhysicalIDIndexOid();
+    //! Get Catalog OIDs of Property Index
+    idx_t_vector *GetPropertyIndexOidVec() { return &property_indexes; }
 
-	//! Get Catalog OIDs of Adjacency Index
-	idx_t_vector *GetAdjIndexOidVec()
-	{
-		return &adjlist_indexes;
-	}
+    //! Get Number of columns in the universal schema
+    uint64_t GetNumberOfColumns() const;
 
-	//! Get Catalog OIDs of Property Index
-	idx_t_vector *GetPropertyIndexOidVec()
-	{
-		return &property_indexes;
-	}
+    //! Returns a list of types of the table
+    vector<LogicalType> GetTypes();
 
-	//! Get Number of columns in the universal schema
-	uint64_t GetNumberOfColumns() const;
+    //! Returns a key id -> location map
+    PropertyToIdxUnorderedMap *GetPropertyToIdxMap()
+    {
+        return &global_property_key_to_location;
+    }
 
-	//! Returns a list of types of the table
-	vector<LogicalType> GetTypes();
+    //! Get universal schema names
+    string_vector *GetUniversalPropertyKeyNames()
+    {
+        return &global_property_key_names;
+    }
 
-	//! Returns a key id -> location map
-	PropertyToIdxUnorderedMap *GetPropertyToIdxMap()
-	{
-		return &global_property_key_to_location;
-	}
+    //! Get Id Column Idxs
+    idx_t_vector *GetIdKeyColumnIdxs() { return &id_key_column_idxs; }
 
-	//! Get universal schema names
-	string_vector *GetUniversalPropertyKeyNames()
-	{
-		return &global_property_key_names;
-	}
+    //! Get universal schema key ids
+    idx_t_vector *GetUniversalPropertyKeyIds()
+    {
+        return &global_property_key_ids;
+    }
 
-	//! Get Id Column Idxs
-	idx_t_vector *GetIdKeyColumnIdxs()
-	{
-		return &id_key_column_idxs;
-	}
+    //! Get universal schema key ids
+    LogicalTypeId_vector *GetUniversalPropertyTypeIds()
+    {
+        return &global_property_typesid;
+    }
 
-	//! Get universal schema key ids
-	idx_t_vector *GetUniversalPropertyKeyIds()
-	{
-		return &global_property_key_ids;
-	}
+    //! Get offset infos member variable
+    idx_t_vector *GetOffsetInfos() { return &offset_infos; }
 
-	//! Get universal schema key ids
-	LogicalTypeId_vector *GetUniversalPropertyTypeIds()
-	{
-		return &global_property_typesid;
-	}
+    //! Get boundary values member variable
+    idx_t_vector *GetBoundaryValues() { return &boundary_values; }
 
-	//! Get offset infos member variable
-	idx_t_vector *GetOffsetInfos()
-	{
-		return &offset_infos;
-	}
+    PartitionID GetPartitionID();
+    ExtentID GetNewExtentID();
+    ExtentID GetCurrentExtentID();
+    ExtentID GetLocalExtentID();
 
-	//! Get boundary values member variable
-	idx_t_vector *GetBoundaryValues()
-	{
-		return &boundary_values;
-	}
+    idx_t GetNewTemporalID() { return local_temporal_id_version++; }
 
-	//! get number of groups
-	idx_t_vector *GetNumberOfGroups()
-	{
-		return &num_groups_for_each_column;
-	}
-
-	//! get number of groups
-	idx_t_vector *GetMultipliers()
-	{
-		return &multipliers_for_each_column;
-	}
-
-	//! get group info
-	idx_t_vector *GetGroupInfo()
-	{
-		return &group_info_for_each_table;
-	}
-	
-	PartitionID GetPartitionID();
-	ExtentID GetNewExtentID();
-	ExtentID GetCurrentExtentID();
-	ExtentID GetLocalExtentID();
-
-	idx_t GetNewTemporalID()
-	{
-		return local_temporal_id_version++;
-	}
-
-	// Statistics
-	void UpdateMinMaxArray(PropertyKeyID key_id, int64_t min, int64_t max);
-	void UpdateWelfordStdDevArray(PropertyKeyID key_id, Vector& data, size_t size);
-	StdDev GetStdDev(PropertyKeyID key_id);
-
-	unique_ptr<CatalogEntry> Copy(ClientContext &context) override;
+    unique_ptr<CatalogEntry> Copy(ClientContext &context) override;
 };
-} // namespace duckdb
+}  // namespace duckdb

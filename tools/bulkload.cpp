@@ -1437,9 +1437,9 @@ void ParseConfig(int argc, char** argv, InputOptions& options) {
 
 	if (vm.count("incremental")) {
 		options.incremental = vm["incremental"].as<bool>();
-		if (options.incremental && options.vertex_files.size() > 0) {
-			throw InvalidInputException("Incremental load only supports edge label");
-		}
+		// if (options.incremental && options.vertex_files.size() > 0) {
+		// 	throw InvalidInputException("Incremental load only supports edge label");
+		// }
 	}
 
 	if (vm.count("skip-histogram")) {

@@ -93,12 +93,13 @@ typedef uint32_t ExtentID;
 typedef uint16_t LocalExtentID;
 typedef uint32_t LocalChunkDefinitionID;
 typedef uint64_t ChunkDefinitionID;
+typedef uint64_t ChunkID;
 typedef idx_t PropertyKeyID;
 typedef idx_t PropertySchemaID;
 typedef idx_t VertexLabelID;
 typedef idx_t EdgeTypeID;
 
-typedef uint64_t ChunkID;
+#define INVALID_PROPERTY_KEY_ID ((PropertyKeyID)std::numeric_limits<PropertyKeyID>::max())
 
 #define GET_EXTENT_SEQNO_FROM_EID(eid) (eid & 0xFFFF);
 #define GET_PARTITION_ID_FROM_EID(eid) (eid >> 16);

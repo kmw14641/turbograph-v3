@@ -37,11 +37,17 @@ int DiskAioThread::WaitKernel(struct timespec* to, int num) {
 		ret = io_getevents(ctx_, num, max_num_ongoing_, ep, to);
 	} while (ret == -EINTR);
 	
-	if (((long long)(ep->res2)) < 0) assert(false);
-
-	if (ret < 0) assert(false);
+	if (ret < 0) {
+		// Log error or throw exception with errno
+		assert(false);
+	}
 
 	for (int i = 0; i < ret; ep++, i++) {
+		// Check individual event status
+		if (ep->res2 < 0) {
+			// Log error or throw exception with ep->res2
+			assert(false);
+		}
 		DiskAioRequest* req = (DiskAioRequest*) ep->obj;
 		buf_queue_.push(&req, 1);
 	}

@@ -46,26 +46,10 @@ class Coalescing {
                 prop_to_idxmap->at(property_key_ids[i]));
         }
 
-        // TODO partition catalog should store tables groups for each column.
-        // Tables in the same group have similar cardinality for the column
-        idx_t_vector *num_groups_for_each_column =
-            part_cat->GetNumberOfGroups();
-        idx_t_vector *group_info_for_each_table = part_cat->GetGroupInfo();
-        idx_t_vector *multipliers = part_cat->GetMultipliers();
-        idx_t_vector *ps_oids = part_cat->GetPropertySchemaIDs();
-        uint64_t num_cols = part_cat->GetNumberOfColumns();
-
-        // // grouping similar (which has similar histogram) tables
-        // _group_similar_tables_based_on_histogram(num_cols, property_locations,
-        //                       num_groups_for_each_column,
-        //                       group_info_for_each_table, multipliers, ps_oids,
-        //                       table_oids, table_oids_in_group);
-
         _group_similar_tables_based_on_cardinality(context, db, table_oids,
                                                    table_oids_in_group);
 
         // create temporal catalog table
-        // TODO check if we already built temporal table for the same groups
         _create_temporal_table_catalog(
             context, db, part_cat, provider, table_oids_in_group,
             representative_table_oids, part_id, part_oid, property_key_ids,
@@ -81,58 +65,6 @@ class Coalescing {
     };
 
     static GroupingAlgorithm grouping_algo;
-
-    static void _group_similar_tables_based_on_histogram(
-        uint64_t num_cols, vector<idx_t> &property_locations,
-        idx_t_vector *num_groups_for_each_column,
-        idx_t_vector *group_info_for_each_table, idx_t_vector *multipliers,
-        idx_t_vector *ps_oids, vector<idx_t> &table_oids,
-        std::vector<std::vector<duckdb::idx_t>> &table_oids_in_group)
-    {
-        // TODO we need to develop a better algorithm to group similar tables
-        if (true) {
-            table_oids_in_group.push_back(table_oids);
-        }
-        else {
-            // refer to group_info_for_each_table, group similar tables
-            unordered_map<idx_t, vector<idx_t>> unique_key_to_oids_group;
-
-            D_ASSERT(num_cols == num_groups_for_each_column->size());
-            // D_ASSERT(group_info_for_each_table->size() ==
-            //          table_oids.size() * num_groups_for_each_column->size());
-
-            idx_t idx = 0;
-            for (auto i = 0; i < ps_oids->size(); i++) {
-                if ((*ps_oids)[i] != table_oids[idx]) {
-                    continue;
-                }
-                uint64_t unique_key = 0;
-                idx_t base_offset = i * num_cols;
-                for (auto j = 0; j < property_locations.size(); j++) {
-                    idx_t col_idx = property_locations[j];
-                    unique_key +=
-                        group_info_for_each_table->at(base_offset + col_idx) *
-                        multipliers->at(col_idx);
-                }
-
-                auto it = unique_key_to_oids_group.find(unique_key);
-                if (it == unique_key_to_oids_group.end()) {
-                    vector<idx_t> tmp_vec;
-                    tmp_vec.push_back(table_oids[idx]);
-                    unique_key_to_oids_group.insert(
-                        {unique_key, std::move(tmp_vec)});
-                }
-                else {
-                    it->second.push_back(table_oids[idx]);
-                }
-                idx++;
-            }
-
-            for (auto &it : unique_key_to_oids_group) {
-                table_oids_in_group.push_back(std::move(it.second));
-            }
-        }
-    }
 
     static void _group_similar_tables_based_on_cardinality(
         ClientContext &context, DatabaseInstance &db, vector<idx_t> &table_oids,

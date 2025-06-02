@@ -27,12 +27,7 @@ PartitionCatalogEntry::PartitionCatalogEntry(Catalog *catalog,
       extra_typeinfo_vec(void_alloc),
       offset_infos(void_alloc),
       boundary_values(void_alloc),
-      global_property_key_to_location(void_alloc),
-      num_groups_for_each_column(void_alloc),
-      group_info_for_each_table(void_alloc),
-      multipliers_for_each_column(void_alloc),
-      min_max_array(void_alloc),
-      welford_array(void_alloc)
+      global_property_key_to_location(void_alloc)
 {
     this->temporary = info->temporary;
     this->pid = info->pid;
@@ -185,12 +180,46 @@ void PartitionCatalogEntry::SetSchema(ClientContext &context,
         global_property_key_to_location.insert({univ_prop_key_ids[i], i});
 		global_property_key_ids.push_back(univ_prop_key_ids[i]);
     }
+}
 
-    // Set min_max_array
-    min_max_array.resize(types.size());
+void PartitionCatalogEntry::UpdateSchema(
+    ClientContext &context, vector<string> &key_names,
+    vector<LogicalType> &types, vector<PropertyKeyID> &univ_prop_key_ids,
+    vector<idx_t> &new_property_key_ids_indexes)
+{
+    char_allocator temp_charallocator(
+        context.GetCatalogSHM()->get_segment_manager());
+    D_ASSERT(!global_property_typesid.empty());
+    D_ASSERT(!global_property_key_names.empty());
 
-    // Set welford_array
-    welford_array.resize(types.size());
+    for (auto i = 0; i < new_property_key_ids_indexes.size(); i++) {
+        auto idx = new_property_key_ids_indexes[i];
+
+        // update type info
+        auto & type = types[idx];
+        if (type != LogicalType::FORWARD_ADJLIST &&
+            type != LogicalType::BACKWARD_ADJLIST)
+            num_columns++;
+        global_property_typesid.push_back(type.id());
+        if (type.id() == LogicalTypeId::DECIMAL) {
+            uint16_t width_scale = DecimalType::GetWidth(type);
+            width_scale = width_scale << 8 | DecimalType::GetScale(type);
+            extra_typeinfo_vec.push_back(width_scale);
+        }
+        else {
+            extra_typeinfo_vec.push_back(0);
+        }
+
+        // update key name
+        char_string key_(temp_charallocator);
+        key_ = key_names[idx].c_str();
+        global_property_key_names.push_back(move(key_));
+
+        // update key id -> location info
+        global_property_key_to_location.insert(
+            {univ_prop_key_ids[idx], global_property_key_ids.size()});
+        global_property_key_ids.push_back(univ_prop_key_ids[idx]);
+    }
 }
 
 void PartitionCatalogEntry::SetTypes(vector<LogicalType> &types)
@@ -235,59 +264,6 @@ vector<LogicalType> PartitionCatalogEntry::GetTypes()
 uint64_t PartitionCatalogEntry::GetNumberOfColumns() const
 {
     return num_columns;
-}
-
-/**
- * Note that idx_t is uint64_t, which assumes positive number
- * If we want to support negative number, we need to change this
- */
-
-void PartitionCatalogEntry::UpdateMinMaxArray(PropertyKeyID key_id, int64_t min,
-                                              int64_t max)
-{
-    auto location = global_property_key_to_location.find(key_id);
-    if (location != global_property_key_to_location.end()) {
-        auto idx = location->second;
-        auto minmax = min_max_array[idx];
-        if (minmax.min > min)
-            minmax.min = min;
-        if (minmax.max < max)
-            minmax.max = max;
-        min_max_array[idx] = minmax;
-    }
-}
-
-void PartitionCatalogEntry::UpdateWelfordStdDevArray(PropertyKeyID key_id,
-                                                     Vector &data, size_t size)
-{
-    D_ASSERT(data.GetType().IsNumeric());
-
-    auto location = global_property_key_to_location.find(key_id);
-    if (location != global_property_key_to_location.end()) {
-        for (int i = 0; i < size; i++) {
-            auto original_value = data.GetValue(i);
-            auto value = original_value.GetValue<idx_t>();
-            auto &welford_v = welford_array[location->second];
-            welford_v.n++;
-            auto delta = value - welford_v.mean;
-            welford_v.mean += delta / welford_v.n;
-            auto delta2 = value - welford_v.mean;
-            welford_v.M2 += delta * delta2;
-        }
-    }
-}
-
-StdDev PartitionCatalogEntry::GetStdDev(PropertyKeyID key_id)
-{
-    StdDev std_dev = 0.0;
-    auto location = global_property_key_to_location.find(key_id);
-    if (location != global_property_key_to_location.end()) {
-        auto welford_v = welford_array[location->second];
-        if (welford_v.n > 1) {
-            std_dev = sqrt(welford_v.M2 / (welford_v.n));
-        }
-    }
-    return std_dev;
 }
 
 }  // namespace duckdb

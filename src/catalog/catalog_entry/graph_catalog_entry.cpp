@@ -230,10 +230,44 @@ void GraphCatalogEntry::GetPropertyKeyIDs(ClientContext &context, vector<string>
 			uint8_t type_id = (uint8_t) property_types[i].id();
 			propertykey_map.insert(std::make_pair(property_schema_, new_pkid));
 			propertykey_to_typeid_map.insert(std::make_pair(new_pkid, type_id));
-			property_key_ids.push_back(new_pkid);
 			property_key_id_to_name_vec.push_back(property_schema_);
+
+			property_key_ids.push_back(new_pkid);
 		}
 	}
+}
+
+void GraphCatalogEntry::GetPropertyKeyIDs(
+    ClientContext &context, vector<string> &property_names,
+    vector<LogicalType> &property_types,
+    vector<PropertyKeyID> &property_key_ids,
+    vector<idx_t> &new_property_key_ids_indexes)
+{
+    char_allocator temp_charallocator(
+        context.db->GetCatalog().catalog_segment->get_segment_manager());
+    char_string property_schema_(temp_charallocator);
+
+    D_ASSERT(property_names.size() == property_types.size());
+    D_ASSERT(property_key_id_to_name_vec.size() != 0);
+
+    for (int i = 0; i < property_names.size(); i++) {
+        property_schema_ = property_names[i].c_str();
+        auto property_key_id = propertykey_map.find(property_schema_);
+        if (property_key_id != propertykey_map.end()) {
+            property_key_ids.push_back(property_key_id->second);
+        }
+        else {
+            PropertyKeyID new_pkid =
+                GetPropertyKeyID();  // TODO key name + type ==> prop key id
+            uint8_t type_id = (uint8_t)property_types[i].id();
+            propertykey_map.insert(std::make_pair(property_schema_, new_pkid));
+            propertykey_to_typeid_map.insert(std::make_pair(new_pkid, type_id));
+            property_key_id_to_name_vec.push_back(property_schema_);
+
+            property_key_ids.push_back(new_pkid);
+            new_property_key_ids_indexes.push_back(i);
+        }
+    }
 }
 
 void GraphCatalogEntry::GetPropertyNames(ClientContext &context, vector<PropertyKeyID> &property_key_ids,
@@ -406,6 +440,23 @@ PropertyKeyID GraphCatalogEntry::GetPropertyKeyID(ClientContext &context,
     // find property key id. do not allow to get property key id for a property that does not exist
     auto property_key_id = propertykey_map.find(property_name_);
     D_ASSERT(property_key_id != propertykey_map.end());
+
+    return property_key_id->second;
+}
+
+PropertyKeyID GraphCatalogEntry::GetPropertyKeyIDUnSafe(ClientContext &context,
+                                                  const string &property_name)
+{
+    char_allocator temp_charallocator(
+        context.db->GetCatalog().catalog_segment->get_segment_manager());
+    char_string property_name_(temp_charallocator);
+    property_name_ = property_name.c_str();
+
+    // find property key id
+    auto property_key_id = propertykey_map.find(property_name_);
+    if (property_key_id == propertykey_map.end()) {
+        return INVALID_PROPERTY_KEY_ID;
+    }
 
     return property_key_id->second;
 }

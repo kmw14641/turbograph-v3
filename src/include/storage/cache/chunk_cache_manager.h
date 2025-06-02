@@ -41,6 +41,8 @@ public:
   // ChunkCacheManager Internal Functions
   bool CidValidityCheck(ChunkID cid);
   bool AllocSizeValidityCheck(size_t alloc_size);
+  bool IsMemorySpaceEnough(size_t segment_size);
+  void FindVictimAndDelete(size_t segment_size, size_t &deleted_size);
   size_t GetSegmentSize(ChunkID cid, std::string file_path); // sid가 필요한지?
   size_t GetFileSize(ChunkID cid, std::string file_path); // sid가 필요한지?
   Turbo_bin_aio_handler* GetFileHandler(ChunkID cid);

@@ -58,9 +58,15 @@ public:
                                 DataChunk &input, idx_t input_chunk_idx);
 
     void CalculateBufferSize(LogicalType &l_type, DataChunk &input,
-                               idx_t input_chunk_idx,
-                               CompressionHeader &comp_header,
-                               size_t &alloc_buf_size, size_t &bitmap_size);
+                             idx_t input_chunk_idx,
+                             CompressionHeader &comp_header,
+                             size_t &alloc_buf_size, size_t &bitmap_size);
+
+    void CalculateBufferSizeForAppend(
+        LogicalType &l_type, DataChunk &input, idx_t input_chunk_idx,
+        CompressionHeader &comp_header, idx_t existing_count,
+        uint8_t *existing_buf, size_t existing_buf_size, size_t &alloc_buf_size,
+        size_t &bitmap_size);
 
     void WriteNullMask(CompressionHeader &comp_header,
                        DataChunk &input, idx_t input_chunk_idx,

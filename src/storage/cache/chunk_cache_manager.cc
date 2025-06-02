@@ -190,13 +190,11 @@ ReturnStatus ChunkCacheManager::PinSegment(ChunkID cid, std::string file_path, u
   // Pin Segment using Lightning Get()
   if (client->Get(cid, ptr, size) != 0) {
     // Get() fail: 1) object not found, 2) object is not sealed yet
-    // TODO: Check if there is enough memory space
-
-    //size_t deleted_size = 0;
-    //if (!IsMemorySpaceEnough(segment_size)) {
-    //  FindVictimAndDelete(segment_size, deleted_size);
-    //  // Replacement algorithm은 일단 지원 X
-    //}
+   
+    size_t deleted_size = 0;
+    if (!IsMemorySpaceEnough(segment_size)) {
+      FindVictimAndDelete(segment_size, deleted_size);
+    }
 
     if (client->Create(cid, ptr, required_memory_size) == 0) {
       // Align memory
@@ -289,7 +287,8 @@ ReturnStatus ChunkCacheManager::DestroySegment(ChunkID cid) {
   D_ASSERT(file_handlers.find(cid) != file_handlers.end());
   client->Delete(cid);
   file_handlers[cid]->Close();
-  file_handlers[cid] = nullptr;
+  delete file_handlers[cid];
+  file_handlers.erase(cid);
   //AdjustMemoryUsage(-GetSegmentSize(cid)); // need type casting
   return NOERROR;
 }
@@ -350,6 +349,14 @@ bool ChunkCacheManager::CidValidityCheck(ChunkID cid) {
 bool ChunkCacheManager::AllocSizeValidityCheck(size_t alloc_size) {
   // TODO: 제한된 크기가 있거나, 파일 시스템 상에 남은 공간이 충분하지 않을 경우를 다뤄야 함
   return false;
+}
+
+bool ChunkCacheManager::IsMemorySpaceEnough(size_t segment_size) {
+  return true;
+}
+
+void ChunkCacheManager::FindVictimAndDelete(size_t segment_size, size_t &deleted_size) {
+  return;
 }
 
 // Return the size of segment

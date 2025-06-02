@@ -257,9 +257,6 @@ void HistogramGenerator::_create_histogram(std::shared_ptr<ClientContext> client
         //     col_idx++;
         // }
     }
-
-    // generate group info
-    // _generate_group_info(partition_cat, ps_oids, num_buckets_for_each_column, frequency_values_for_each_column);
 }
 
 void HistogramGenerator::_init_accumulators(vector<LogicalType> &universal_schema, std::vector<std::vector<double>>& probs_per_column) {
@@ -403,47 +400,6 @@ void HistogramGenerator::_create_bucket(DataChunk &chunk, vector<LogicalType> &u
                 break;
             }
         }
-    }
-}
-
-void HistogramGenerator::_generate_group_info(PartitionCatalogEntry *partition_cat, PropertySchemaID_vector *ps_oids,
-        vector<uint64_t> &num_buckets_for_each_column, vector<vector<uint64_t>> &frequency_values_for_each_column)
-{
-    auto *num_groups = partition_cat->GetNumberOfGroups();
-    auto *group_info = partition_cat->GetGroupInfo();
-    auto *multipliers = partition_cat->GetMultipliers();
-
-    num_groups->clear();
-    group_info->clear();
-    multipliers->clear();
-
-    // group by column // group by ps_oid is better?
-    auto num_cols = num_buckets_for_each_column.size();
-    group_info->resize(num_cols * ps_oids->size());
-    for (auto i = 0; i < num_cols; i++) {
-        uint64_t num_groups_for_this_column;
-        vector<uint64_t> group_info_for_this_column;
-        _cluster_column<CliqueClustering>(ps_oids->size(), num_buckets_for_each_column[i], frequency_values_for_each_column[i], num_groups_for_this_column, group_info_for_this_column);
-        
-        // print num_groups_for_this_column and group_info_for_this_column
-        // std::cout << i << "-th column num_groups: " << num_groups_for_this_column << std::endl;
-        // std::cout << i << "-th column group_info: ";
-        // for (auto j = 0; j < group_info_for_this_column.size(); j++) {
-        //     std::cout << group_info_for_this_column[j] << " ";
-        // }
-        // std::cout << std::endl;
-
-        num_groups->push_back(num_groups_for_this_column);
-        for (auto j = 0; j < group_info_for_this_column.size(); j++) {
-            group_info->at(num_cols * j + i) = group_info_for_this_column[j];
-        }
-    }
-
-    uint64_t accmulated_multipliers = 1;
-    multipliers->push_back(1);
-    for (auto i = 0; i < num_groups->size() - 1; i++) {
-        accmulated_multipliers *= num_groups->at(i);
-        multipliers->push_back(accmulated_multipliers);
     }
 }
 

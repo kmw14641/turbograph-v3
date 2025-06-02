@@ -98,6 +98,11 @@ public:
                            vector<string> &property_names,
                            vector<LogicalType> &property_types,
                            vector<PropertyKeyID> &property_key_ids);
+	void GetPropertyKeyIDs(ClientContext &context,
+                           vector<string> &property_names,
+                           vector<LogicalType> &property_types,
+                           vector<PropertyKeyID> &property_key_ids,
+                           vector<idx_t> &new_property_key_ids_indexes);
     void GetPropertyNames(ClientContext &context,
                           vector<PropertyKeyID> &property_key_ids,
                           vector<string> &property_names);
@@ -135,6 +140,9 @@ public:
 
 	//! Get a property key id from a property name
 	PropertyKeyID GetPropertyKeyID(ClientContext &context, const string &property_name);
+
+	//! Get a property key id from a property name
+	PropertyKeyID GetPropertyKeyIDUnSafe(ClientContext &context, const string &property_name);
 
 	//! Serialize the meta information of the TableCatalogEntry a serializer
 	//virtual void Serialize(Serializer &serializer);

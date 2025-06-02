@@ -214,14 +214,15 @@ public:
         }
     }
 
-    void _ExtractSchemaAndAssign(GraphComponentType gctype, idx_t target_partition_oid)
+    void _ExtractSchemaAndAssign(GraphCatalogEntry *graph_cat,
+                                 GraphComponentType gctype,
+                                 idx_t target_partition_oid)
     {
         if (gctype == GraphComponentType::INVALID) {
             throw NotImplementedException("Invalid graph component type");
         }
         else if (gctype == GraphComponentType::VERTEX) {
             int num_tuples = 0;
-            // TODO check; always same order?
             for (auto doc_ : docs) {
                 // properties object has vertex properties; assume Neo4J dump file format
                 std::vector<uint32_t> tmp_vec;
@@ -250,11 +251,19 @@ public:
             }
 
             // extraction done; assign each schema to existing property schema
-            PartitionCatalogEntry *partition_cat = 
-                (PartitionCatalogEntry *)cat_instance->GetEntry(*client, DEFAULT_SCHEMA, target_partition_oid);
-            auto *property_schema_index = partition_cat->GetPropertySchemaIndex();
-            
+            PartitionCatalogEntry *partition_cat =
+                (PartitionCatalogEntry *)cat_instance->GetEntry(
+                    *client, DEFAULT_SCHEMA, target_partition_oid);
+            auto *property_schema_index =
+                partition_cat->GetPropertySchemaIndex();
+
             // For each schema group, find best matching existing property schema
+            std::unordered_map<idx_t, std::vector<idx_t>> best_schema_oids_to_schema_groups;
+            std::unordered_map<idx_t, idx_t> schema_groups_to_remove;
+            // schema_id <-> local_index mapping
+            std::vector<idx_t> local_idx_to_schema_id;
+            std::unordered_map<idx_t, idx_t> schema_id_to_local_idx;
+            idx_t local_idx = 0;
             for (size_t i = 0; i < schema_groups_with_num_tuples.size(); i++) {
                 auto &schema_group = schema_groups_with_num_tuples[i];
                 idx_t best_schema_oid = INVALID_OID;
@@ -264,59 +273,100 @@ public:
                 vector<idx_t> candidate_schemas;
                 if (!schema_group.properties.empty()) {
                     // Get initial candidates from first property
-                    auto first_property_it =
-                        property_schema_index->find(schema_group.properties[0]);
-                    if (first_property_it == property_schema_index->end()) {
-                        spdlog::info(
-                            "New property {} found - creating new property "
-                            "schema",
-                            schema_group.properties[0]);
-                        // No existing schemas contain this property - need to create new schema
+                    auto first_property_system_id =
+                        graph_cat->GetPropertyKeyIDUnSafe(
+                            *client.get(),
+                            id_to_property_map[schema_group.properties[0]]
+                                .substr(0,
+                                        id_to_property_map[schema_group
+                                                               .properties[0]]
+                                            .rfind('_')));
+
+                    if (first_property_system_id == INVALID_PROPERTY_KEY_ID) {
                         candidate_schemas.clear();
                     }
                     else {
-                        auto property_schemas = property_schema_index->at(schema_group.properties[0]);
-                        
-                        // Extract first idx_t from each pair into candidate_schemas
-                        vector<idx_t> candidate_schemas;
-                        candidate_schemas.reserve(property_schemas.size());
-                        for (const auto& schema_pair : property_schemas) {
-                            candidate_schemas.push_back(schema_pair.first);
+                        auto first_property_it = property_schema_index->find(
+                            first_property_system_id);
+                        if (first_property_it == property_schema_index->end()) {
+                            spdlog::info(
+                                "New property {} found - creating new property "
+                                "schema",
+                                id_to_property_map[schema_group.properties[0]]);
+                            // No existing schemas contain this property - need to create new schema
+                            candidate_schemas.clear();
                         }
+                        else {
+                            auto property_schemas = first_property_it->second;
 
-                        // Intersect with candidates from other properties
-                        for (size_t j = 1; j < schema_group.properties.size();
-                             j++) {
-                            auto property_it = property_schema_index->find(
-                                schema_group.properties[j]);
-                            if (property_it == property_schema_index->end()) {
-                                spdlog::info(
-                                    "New property {} found - creating new "
-                                    "property schema",
-                                    schema_group.properties[j]);
-                                candidate_schemas.clear();
-                                break;
+                            // Extract first idx_t from each pair into candidate_schemas
+                            candidate_schemas.reserve(property_schemas.size());
+                            for (const auto &schema_pair : property_schemas) {
+                                candidate_schemas.push_back(schema_pair.first);
                             }
 
-                            auto property_schemas = property_schema_index->at(schema_group.properties[j]);
+                            // spdlog::info("Candidate schemas: {}", candidate_schemas.size());
 
-                            // Convert property_schemas to standard vector
-                            vector<idx_t> std_property_schemas;
-                            for (const auto& schema : property_schemas) {
-                                std_property_schemas.push_back(schema.first);
-                            }
+                            // Intersect with candidates from other properties
+                            for (size_t j = 1;
+                                 j < schema_group.properties.size(); j++) {
+                                // spdlog::info(
+                                //     "property: {}",
+                                //     id_to_property_map[schema_group
+                                //                            .properties[j]]);
+                                auto property_system_id =
+                                    graph_cat->GetPropertyKeyIDUnSafe(
+                                        *client.get(),
+                                        id_to_property_map[schema_group
+                                                               .properties[j]]
+                                            .substr(
+                                                0,
+                                                id_to_property_map
+                                                    [schema_group.properties[j]]
+                                                        .rfind('_')));
+                                if (property_system_id ==
+                                    INVALID_PROPERTY_KEY_ID) {
+                                    spdlog::info(
+                                        "Property {} not found",
+                                        id_to_property_map[schema_group
+                                                               .properties[j]]);
+                                    candidate_schemas.clear();
+                                    break;
+                                }
+                                auto property_it = property_schema_index->find(
+                                    property_system_id);
+                                if (property_it ==
+                                    property_schema_index->end()) {
+                                    spdlog::info(
+                                        "New property {} found - creating new "
+                                        "property schema",
+                                        id_to_property_map[schema_group
+                                                               .properties[j]]);
+                                    candidate_schemas.clear();
+                                    break;
+                                }
 
-                            vector<idx_t> intersection;
-                            std::set_intersection(
-                                candidate_schemas.begin(),
-                                candidate_schemas.end(),
-                                std_property_schemas.begin(),
-                                std_property_schemas.end(),
-                                std::back_inserter(intersection));
-                            candidate_schemas = std::move(intersection);
+                                auto property_schemas = property_it->second;
 
-                            if (candidate_schemas.empty()) {
-                                break;  // No valid candidates found
+                                // Convert property_schemas to standard vector
+                                vector<idx_t> std_property_schemas;
+                                for (const auto &schema : property_schemas) {
+                                    std_property_schemas.push_back(
+                                        schema.first);
+                                }
+
+                                vector<idx_t> intersection;
+                                std::set_intersection(
+                                    candidate_schemas.begin(),
+                                    candidate_schemas.end(),
+                                    std_property_schemas.begin(),
+                                    std_property_schemas.end(),
+                                    std::back_inserter(intersection));
+                                candidate_schemas = std::move(intersection);
+
+                                if (candidate_schemas.empty()) {
+                                    break;  // No valid candidates found
+                                }
                             }
                         }
                     }
@@ -343,14 +393,43 @@ public:
 
                 // Assign schema group to best matching property schema if found
                 if (best_schema_oid != INVALID_OID) {
-                    spdlog::info(
-                        "Schema group {} assigned to property schema {}", i,
-                        best_schema_oid);
-                    _AppendToExistingExtent(gctype, best_schema_oid);
-                } else {
-
+                    // spdlog::info(
+                    //     "Schema group {} assigned to property schema {}", i,
+                    //     best_schema_oid);
+                    schema_groups_to_remove[i] = best_schema_oid;
+                    best_schema_oids_to_schema_groups[best_schema_oid].push_back(i);
+                    local_idx_to_schema_id.push_back(i);
+                    schema_id_to_local_idx[i] = local_idx++;
                 }
+                // else {
+                //     spdlog::info(
+                //         "No matching property schema found for schema group {}",
+                //         i);
+                // }
             }
+
+            // Append to existing extent
+            _AppendToExistingExtent(gctype, partition_cat,
+                                    schema_groups_to_remove,
+                                    // local_idx_to_schema_id,
+                                    // schema_id_to_local_idx,
+                                    best_schema_oids_to_schema_groups);
+
+            // Sort indices in descending order
+            vector<idx_t> sorted_indices;
+            sorted_indices.reserve(schema_groups_to_remove.size());
+            for (const auto& [idx, schema_oid] : schema_groups_to_remove) {
+                sorted_indices.push_back(idx);
+            }
+            std::sort(sorted_indices.begin(), sorted_indices.end(), std::greater<>());
+
+            // Remove from highest index to lowest
+            for (const auto& idx : sorted_indices) {
+                schema_groups_with_num_tuples.erase(
+                    schema_groups_with_num_tuples.begin() + idx);
+            }
+
+            spdlog::info("Schema groups with num tuples size: {}", schema_groups_with_num_tuples.size());
 
             schema_property_freq_vec.resize(property_freq_vec.size(), 0);
             for (size_t i = 0; i < schema_groups_with_num_tuples.size(); i++) {
@@ -843,6 +922,10 @@ public:
     }
 
     void _ClusterSchemaAgglomerative() {
+        if (schema_groups_with_num_tuples.empty()) {
+            return;
+        }
+
         // sort schema
         for (auto i = 0; i < schema_groups_with_num_tuples.size(); i++) {
             std::sort(schema_groups_with_num_tuples[i].properties.begin(),
@@ -1848,17 +1931,35 @@ public:
     void _CreateVertexExtents(GraphCatalogEntry *graph_cat, string &label_name,
                               vector<string> &label_set)
     {
-        // Common operations
+        if (schema_groups_with_num_tuples.empty()) {
+            return;
+        }
+
+        // define variables
+        PartitionID new_pid;
+        PartitionCatalogEntry *partition_cat;
+        bool is_update = false;
+
+        // Try to get existing partition catalog
         string partition_name = DEFAULT_VERTEX_PARTITION_PREFIX + label_name;
-        PartitionID new_pid = graph_cat->GetNewPartitionID();
-        CreatePartitionInfo partition_info(DEFAULT_SCHEMA,
-                                           partition_name.c_str(), new_pid);
-        PartitionCatalogEntry *partition_cat =
-            (PartitionCatalogEntry *)cat_instance->CreatePartition(
-                *client.get(), &partition_info);
-        graph_cat->AddVertexPartition(*client.get(), new_pid,
-                                      partition_cat->GetOid(), label_set);
-        partition_cat->SetPartitionID(new_pid);
+        partition_cat = (PartitionCatalogEntry *)cat_instance->GetEntry(
+            *client.get(), CatalogType::PARTITION_ENTRY, DEFAULT_SCHEMA,
+            partition_name);
+        if (partition_cat != nullptr) {
+            new_pid = partition_cat->GetPartitionID();
+            is_update = true;
+        }
+        else {
+            new_pid = graph_cat->GetNewPartitionID();
+            CreatePartitionInfo partition_info(DEFAULT_SCHEMA,
+                                               partition_name.c_str(), new_pid);
+            partition_cat =
+                (PartitionCatalogEntry *)cat_instance->CreatePartition(
+                    *client.get(), &partition_info);
+            graph_cat->AddVertexPartition(*client.get(), new_pid,
+                                          partition_cat->GetOid(), label_set);
+            partition_cat->SetPartitionID(new_pid);
+        }
 
         vector<string> key_names;
         vector<LogicalType> types;
@@ -1868,10 +1969,22 @@ public:
             get_key_and_type(id_to_property_vec[original_idx], key_names,
                              types);
         }
-        graph_cat->GetPropertyKeyIDs(*client.get(), key_names, types,
+
+        if (!is_update) {
+            graph_cat->GetPropertyKeyIDs(*client.get(), key_names, types,
+                                    universal_property_key_ids);
+            partition_cat->SetSchema(*client.get(), key_names, types,
                                      universal_property_key_ids);
-        partition_cat->SetSchema(*client.get(), key_names, types,
-                                 universal_property_key_ids);
+        }
+        else {
+            vector<idx_t> new_property_key_ids_indexes;
+            graph_cat->GetPropertyKeyIDs(*client.get(), key_names, types,
+                                         universal_property_key_ids,
+                                         new_property_key_ids_indexes);
+            partition_cat->UpdateSchema(*client.get(), key_names, types,
+                                        universal_property_key_ids,
+                                        new_property_key_ids_indexes);
+        }
 
         // Initialize LID_TO_PID_MAP
         if (load_edge) {
@@ -1884,10 +1997,11 @@ public:
         // range-based operation for memory-efficiency
         int64_t total_num_tuples = 0;
         const size_t CLUSTER_LOAD_CHUNK = 3000;
-        size_t start_cluster_idx = 0;
+        size_t start_cluster_idx = partition_cat->GetPropertySchemaIDs()->size();
         size_t end_cluster_idx = num_clusters > CLUSTER_LOAD_CHUNK
-                                     ? CLUSTER_LOAD_CHUNK
-                                     : num_clusters;
+                                     ? start_cluster_idx + CLUSTER_LOAD_CHUNK
+                                     : start_cluster_idx + num_clusters;
+
         while (true) {
             if (start_cluster_idx >= num_clusters) {
                 break;
@@ -2094,17 +2208,157 @@ public:
     void _CreateEdgeExtents(GraphCatalogEntry *graph_cat, string &label_name, vector<string> &label_set) {
     }
 
-    void _AppendToExistingExtent(GraphComponentType gctype,
-                                 idx_t property_schema_oid)
+    void _AppendToExistingExtent(
+        GraphComponentType gctype, PartitionCatalogEntry *partition_cat,
+        std::unordered_map<idx_t, idx_t> &schema_groups_to_remove,
+        // std::vector<idx_t> &local_idx_to_schema_id,
+        // std::unordered_map<idx_t, idx_t> &schema_id_to_local_idx,
+        std::unordered_map<idx_t, std::vector<idx_t>> &best_schema_oids_to_schema_groups)
     {
-        PropertySchemaCatalogEntry *property_schema_cat =
-            (PropertySchemaCatalogEntry *)cat_instance->GetEntry(
-                *client, DEFAULT_SCHEMA, property_schema_oid);
-        auto last_extent_oid = property_schema_cat->GetExtentIds()->back();
-        auto last_extent_cat = (ExtentCatalogEntry *)cat_instance->GetEntry(
-            *client, DEFAULT_SCHEMA, last_extent_oid);
+        // initialize data structures
+        std::unordered_map<idx_t, idx_t> schema_id_to_local_idx;
+        vector<DataChunk> datas(best_schema_oids_to_schema_groups.size());
+        vector<int64_t> num_tuples_per_cluster;
+        vector<int64_t> num_tuples_in_existing_extent;
+        vector<bool> is_existing_extent;
+        vector<ExtentID> existing_eids;
+        vector<PropertySchemaCatalogEntry *> existing_property_schema_cats;
 
-        // ext_mng->AppendTuplesToExistingExtent(*client, datas[local_cluster_id], last_extent_oid);
+        // initialize vectors
+        is_existing_extent.resize(best_schema_oids_to_schema_groups.size(), true);
+        property_to_id_map_per_cluster.clear();
+        property_to_id_map_per_cluster.resize(best_schema_oids_to_schema_groups.size());
+
+        // reserve vectors
+        num_tuples_per_cluster.reserve(best_schema_oids_to_schema_groups.size());
+        num_tuples_in_existing_extent.reserve(best_schema_oids_to_schema_groups.size());
+        existing_eids.reserve(best_schema_oids_to_schema_groups.size());
+        existing_property_schema_cats.reserve(best_schema_oids_to_schema_groups.size());
+
+        idx_t local_idx = 0;
+        for (auto &[best_schema_oid, schema_groups] : best_schema_oids_to_schema_groups) {
+            PropertySchemaCatalogEntry *existing_property_schema_cat =
+                (PropertySchemaCatalogEntry *)cat_instance->GetEntry(
+                    *client, DEFAULT_SCHEMA, best_schema_oid);
+            existing_property_schema_cats.push_back(existing_property_schema_cat);
+            auto extent_ids = existing_property_schema_cat->GetExtentIds();
+            if (extent_ids->size() == 0) {
+                throw InvalidInputException("Extent not found");
+            }
+            existing_eids.push_back(extent_ids->back());
+
+            string last_extent_name = DEFAULT_EXTENT_PREFIX + std::to_string(extent_ids->back());
+            auto last_extent_cat = (ExtentCatalogEntry *)cat_instance->GetEntry(
+                *client, CatalogType::EXTENT_ENTRY, DEFAULT_SCHEMA, last_extent_name);
+            num_tuples_per_cluster.push_back(last_extent_cat->GetNumTuplesInExtent());
+            num_tuples_in_existing_extent.push_back(last_extent_cat->GetNumTuplesInExtent());
+            D_ASSERT(num_tuples_per_cluster.back() < STORAGE_STANDARD_VECTOR_SIZE);
+
+            vector<LogicalType> cur_cluster_schema_types;
+            vector<string> cur_cluster_schema_names;
+            auto *property_typesid = existing_property_schema_cat->GetTypes();
+            auto *property_key_names = existing_property_schema_cat->GetKeys();
+            for (auto j = 0; j < property_typesid->size(); j++) {
+                cur_cluster_schema_types.push_back(LogicalType(property_typesid->at(j)));
+            }
+            for (auto j = 0; j < property_key_names->size(); j++) {
+                cur_cluster_schema_names.push_back(property_key_names->at(j));
+                property_to_id_map_per_cluster[local_idx].insert(
+                    {cur_cluster_schema_names.back(), j});
+            }
+            datas[local_idx].Initialize(cur_cluster_schema_types,
+                                        STORAGE_STANDARD_VECTOR_SIZE);
+            for (auto col_idx = 0; col_idx < datas[local_idx].ColumnCount();
+                 col_idx++) {
+                auto &validity =
+                    FlatVector::Validity(datas[local_idx].data[col_idx]);
+                validity.Initialize(STORAGE_STANDARD_VECTOR_SIZE);
+                validity.SetAllInvalid(STORAGE_STANDARD_VECTOR_SIZE);
+            }
+
+            for (auto &schema_group : schema_groups) {
+                schema_id_to_local_idx[schema_group] = local_idx;
+            }
+            local_idx++;
+        }
+
+        int64_t doc_idx = 0;
+        docs = parser.iterate_many(json);
+        for (auto doc_ : docs) {
+            auto schema_id = corresponding_schemaID[doc_idx++];
+            auto local_idx = schema_id_to_local_idx[schema_id];
+            auto it = schema_groups_to_remove.find(schema_id);
+            if (it == schema_groups_to_remove.end()) {
+                continue;
+            }
+
+            // add to datas
+            recursive_iterate_jsonl(doc_["properties"], "", true,
+                                    num_tuples_per_cluster[local_idx], 0,
+                                    local_idx, datas[local_idx]);
+            
+            if (++num_tuples_per_cluster[local_idx] == STORAGE_STANDARD_VECTOR_SIZE) {
+                // check remaining memory & flush if necessary
+                size_t remaining_memory;
+                ChunkCacheManager::ccm->GetRemainingMemoryUsage(
+                    remaining_memory);
+                if (remaining_memory < 100 * 1024 * 1024 * 1024UL) {
+                    ChunkCacheManager::ccm
+                        ->FlushDirtySegmentsAndDeleteFromcache(true);
+                }
+
+                // create extent
+                if (is_existing_extent[local_idx]) {
+                    datas[local_idx].SetCardinality(
+                        num_tuples_per_cluster[local_idx] -
+                        num_tuples_in_existing_extent[local_idx]);
+                    ext_mng->AppendTuplesToExistingExtent(
+                        *client.get(), datas[local_idx],
+                        existing_eids[local_idx]);
+                    is_existing_extent[local_idx] = false;
+                }
+                else {
+                    datas[local_idx].SetCardinality(
+                        num_tuples_per_cluster[local_idx]);
+                    ExtentID new_eid = ext_mng->CreateExtent(
+                        *client.get(), datas[local_idx], *partition_cat,
+                        *existing_property_schema_cats[local_idx]);
+                }
+
+                if (load_edge) {
+                    throw NotImplementedException("Edge loading is not implemented");
+                }
+
+                // reset num_tuples_per_cluster & datas
+                num_tuples_per_cluster[local_idx] = 0;
+                datas[local_idx].Reset(STORAGE_STANDARD_VECTOR_SIZE);
+                for (auto col_idx = 0;
+                        col_idx < datas[local_idx].ColumnCount();
+                        col_idx++) {
+                    auto &validity = FlatVector::Validity(
+                        datas[local_idx].data[col_idx]);
+                    validity.Initialize(STORAGE_STANDARD_VECTOR_SIZE);
+                    validity.SetAllInvalid(STORAGE_STANDARD_VECTOR_SIZE);
+                }
+            }
+        }
+
+        // create extent for remaining datas
+        for (size_t i = 0; i < datas.size(); i++) {
+            if (is_existing_extent[i]) {
+                datas[i].SetCardinality(num_tuples_per_cluster[i] -
+                                        num_tuples_in_existing_extent[i]);
+                ext_mng->AppendTuplesToExistingExtent(*client.get(), datas[i],
+                                                      existing_eids[i]);
+                is_existing_extent[i] = false;
+            }
+            else {
+                datas[i].SetCardinality(num_tuples_per_cluster[i]);
+                ExtentID new_eid = ext_mng->CreateExtent(
+                    *client.get(), datas[i], *partition_cat,
+                    *existing_property_schema_cats[i]);
+            }
+        }
     }
 
     void _MergeInAdvance(vector<std::pair<uint32_t, std::vector<uint32_t>>> &current_merge_state) {
@@ -2375,7 +2629,7 @@ public:
                 idx_t partition_oid;
                 _LoadExistingSchemas(label_name, label_set, graph_cat, partition_oid);
 
-                _ExtractSchemaAndAssign(gctype, partition_oid);
+                _ExtractSchemaAndAssign(graph_cat, gctype, partition_oid);
                 _PreprocessSchemaForClustering(false);
 
                 // Clustering ?
@@ -2537,14 +2791,13 @@ private:
                         D_ASSERT(property_freq_vec.size() == prop_id);
 
                         property_to_id_map.insert({current_prefix, prop_id});
+                        id_to_property_map.insert({prop_id, current_prefix});
                         id_to_property_vec.push_back(current_prefix);
                         property_freq_vec.push_back(1);
-                        // printf("New %s, %ld\n", current_prefix.c_str(), prop_id);
                     } else {
                         prop_id = it->second;
                         D_ASSERT(prop_id < property_freq_vec.size());
                         property_freq_vec[prop_id]++;
-                        // printf("Find %s, %ld\n", current_prefix.c_str(), prop_id);
                     }
                     schema.push_back(prop_id);
                 }
@@ -3032,6 +3285,7 @@ private:
     vector<uint64_t> schema_property_freq_vec;
     vector<uint64_t> order;
     unordered_map<string, uint64_t> property_to_id_map;
+    unordered_map<uint64_t, string> id_to_property_map;
     vector<unordered_map<string, uint64_t>> property_to_id_map_per_cluster;
     uint64_t propertyIDver = 0;
     SchemaHashTable sch_HT;
