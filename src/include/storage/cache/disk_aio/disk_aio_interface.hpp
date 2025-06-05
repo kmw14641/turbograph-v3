@@ -65,6 +65,7 @@ public:
         reqs_pointer = 0;
 		reqs_ = new DiskAioRequest*[max_num_ongoing];
 		reqs_data_ = new DiskAioRequest[max_num_ongoing];
+		
 		for (int i = 0; i < max_num_ongoing_; ++i) {
 			DiskAioRequest* req = reqs_data_ + i;
 			request_allocator_.push(&req, 1);

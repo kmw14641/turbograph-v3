@@ -39,6 +39,7 @@ struct ClientOptions {
 	bool compile_only = false;
 	bool warmup = false;
 	bool enable_profile = false;
+    bool enable_gpu_processing = false;
 	int iterations = 1;
 	s62::PlannerConfig planner_config;
 };
@@ -102,6 +103,9 @@ void ParseConfig(int argc, char** argv, ClientOptions& options) {
         {"compile-only", [&]() { 
 			options.compile_only = true; 
 		}},
+        {"enable-gpu-processing", [&]() {
+            options.enable_gpu_processing = true;
+        }},
         {"orca-compile-only", [&]() { 
 			options.compile_only = true; 
 			options.planner_config.ORCA_COMPILE_ONLY = true; 
@@ -461,7 +465,15 @@ int main(int argc, char** argv) {
 
     InitializeDiskAIO(options.workspace);
 
-    ChunkCacheManager::ccm = new ChunkCacheManager(options.workspace.c_str(), options.standalone);
+    if (options.enable_gpu_processing) {
+        ChunkCacheManager::ccm = new GpuChunkCacheManager(
+            options.workspace.c_str(), GpuCachePolicy::CPU_THEN_GPU,
+            options.standalone);
+    }
+    else {
+        ChunkCacheManager::ccm = new ChunkCacheManager(
+            options.workspace.c_str(), options.standalone);
+    }
     auto database = std::make_unique<DuckDB>(options.workspace.c_str());
     auto client = std::make_shared<ClientContext>(database->instance->shared_from_this());
     InitializeClient(client, options);
