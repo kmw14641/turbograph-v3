@@ -10,6 +10,7 @@
 
 #include "parser/base_expression.hpp"
 #include "common/types.hpp"
+#include "common/typedefs.hpp"
 
 namespace duckdb {
 class BaseStatistics;

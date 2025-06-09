@@ -231,7 +231,7 @@ inline void GraphStorageWrapper::_fillTargetSeqnosVecAndBoundaryPosition(
     tmp_vec_cursor = 0;
 }
 
-StoreAPIResult iTbgppGraphStorageWrapper::InitializeVertexIndexSeek(
+StoreAPIResult GraphStorageWrapper::InitializeVertexIndexSeek(
     ExtentIterator *&ext_it, DataChunk &input, idx_t nodeColIdx,
     vector<ExtentID> &target_eids, vector<vector<uint32_t>> &target_seqnos_per_extent,
     vector<idx_t> &mapping_idxs, vector<idx_t> &null_tuples_idx,

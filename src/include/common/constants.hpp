@@ -10,9 +10,9 @@
 
 #include <memory>
 #include <cstdint>
+#include <string>
 #include "common/string.hpp"
 #include "common/winapi.hpp"
-#include "common/typedefs.hpp"
 
 namespace duckdb {
 
@@ -96,6 +96,11 @@ extern const transaction_t MAXIMUM_QUERY_ID;
 extern const transaction_t NOT_DELETED_ID;
 
 extern const double PI;
+
+
+extern const std::string INTERNAL_ID_SUFFIX;
+extern const idx_t INTERNAL_ID_PROPERTY_KEY_ID;
+
 
 struct DConstants {
 	//! The value used to signify an invalid index entry

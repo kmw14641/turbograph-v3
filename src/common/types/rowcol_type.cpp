@@ -1,5 +1,6 @@
 #include "common/types/rowcol_type.hpp"
-#include "common/typedef.hpp"
+#include "common/typedefs.hpp"
+#include "common/types/partial_schema.hpp"
 
 namespace duckdb {
 

@@ -9,7 +9,7 @@
 #pragma once
 
 #include "common/exception.hpp"
-#include "common/typedef.hpp"
+#include "common/typedefs.hpp"
 #include "common/types/vector.hpp"
 #include "common/vector_operations/vector_operations.hpp"
 #include "function/aggregate/distributive_functions.hpp"

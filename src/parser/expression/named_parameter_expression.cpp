@@ -9,7 +9,7 @@
 namespace duckdb {
 
 NamedParameterExpression::NamedParameterExpression(string parameter_name)
-    : ParsedExpression(ExpressionType::VALUE_PARAMETER, ExpressionClass::PARAMETER), parameter_name(move(parameter_name)) {
+    : ParsedExpression(ExpressionType::VALUE_NAMED_PARAMETER, ExpressionClass::PARAMETER), parameter_name(move(parameter_name)) {
 }
 
 string NamedParameterExpression::ToString() const {

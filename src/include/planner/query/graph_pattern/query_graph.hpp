@@ -4,8 +4,9 @@
 #include <unordered_map>
 
 #include "planner/expression.hpp"
-#include "planner/query/graph_pattern/bound_node_pattern.hpp"
-#include "planner/query/graph_pattern/bound_rel_pattern.hpp"
+#include "planner/expression/bound_node_expression.hpp"
+#include "planner/expression/bound_pattern_element_expression.hpp"
+#include "planner/expression/bound_rel_expression.hpp"
 
 namespace duckdb {
 
@@ -78,8 +79,8 @@ public:
           queryRelNameToPosMap{other.queryRelNameToPosMap}, queryNodes{other.queryNodes},
           queryRels{other.queryRels} {}
 
-    std::vector<std::shared_ptr<BoundPattern>> getAllPatterns() const {
-        std::vector<std::shared_ptr<BoundPattern>> patterns;
+    std::vector<std::shared_ptr<BoundPatternElementExpression>> getAllPatterns() const {
+        std::vector<std::shared_ptr<BoundPatternElementExpression>> patterns;
         for (auto& p : queryNodes) {
             patterns.push_back(p);
         }
@@ -95,36 +96,36 @@ public:
         return queryNodeNameToPosMap.find(queryNodeName) != queryNodeNameToPosMap.end();
     }
 
-    std::vector<std::shared_ptr<BoundNodePattern>> getQueryNodes() const { return queryNodes; }
-    std::shared_ptr<BoundNodePattern> getQueryNode(const std::string& queryNodeName) const {
+    std::vector<std::shared_ptr<BoundNodeExpression>> getQueryNodes() const { return queryNodes; }
+    std::shared_ptr<BoundNodeExpression> getQueryNode(const std::string& queryNodeName) const {
         return queryNodes[getQueryNodeIdx(queryNodeName)];
     }
-    std::vector<std::shared_ptr<BoundNodePattern>> getQueryNodes(
+    std::vector<std::shared_ptr<BoundNodeExpression>> getQueryNodes(
         const std::vector<idx_t>& nodePoses) const {
-        std::vector<std::shared_ptr<BoundNodePattern>> result;
+        std::vector<std::shared_ptr<BoundNodeExpression>> result;
         result.reserve(nodePoses.size());
         for (auto nodePos : nodePoses) {
             result.push_back(queryNodes[nodePos]);
         }
         return result;
     }
-    std::shared_ptr<BoundNodePattern> getQueryNode(idx_t nodePos) const {
+    std::shared_ptr<BoundNodeExpression> getQueryNode(idx_t nodePos) const {
         return queryNodes[nodePos];
     }
-    idx_t getQueryNodeIdx(const BoundNodePattern& node) const {
-        return getQueryNodeIdx(node.getUniqueName());
+    idx_t getQueryNodeIdx(const BoundNodeExpression& node) const {
+        return getQueryNodeIdx(node.variableName);
     }
     idx_t getQueryNodeIdx(const std::string& queryNodeName) const {
         return queryNodeNameToPosMap.at(queryNodeName);
     }
-    void addQueryNode(std::shared_ptr<BoundNodePattern> queryNode) {
+    void addQueryNode(std::shared_ptr<BoundNodeExpression> queryNode) {
         // Note that a node may be added multiple times. We should only keep one of it.
         // E.g. MATCH (a:person)-[:knows]->(b:person), (a)-[:knows]->(c:person)
         // a will be added twice during binding
-        if (containsQueryNode(queryNode->getUniqueName())) {
+        if (containsQueryNode(queryNode->variableName)) {
             return;
         } 
-        queryNodeNameToPosMap.insert({queryNode->getUniqueName(), queryNodes.size()});
+        queryNodeNameToPosMap.insert({queryNode->variableName, queryNodes.size()});
         queryNodes.push_back(std::move(queryNode));
     }
 
@@ -132,27 +133,27 @@ public:
     bool containsQueryRel(const std::string& queryRelName) const {
         return queryRelNameToPosMap.find(queryRelName) != queryRelNameToPosMap.end();
     }
-    std::vector<std::shared_ptr<BoundRelPattern>> getQueryRels() const { return queryRels; }
-    std::shared_ptr<BoundRelPattern> getQueryRel(const std::string& queryRelName) const {
+    std::vector<std::shared_ptr<BoundRelExpression>> getQueryRels() const { return queryRels; }
+    std::shared_ptr<BoundRelExpression> getQueryRel(const std::string& queryRelName) const {
         return queryRels.at(queryRelNameToPosMap.at(queryRelName));
     }
-    std::shared_ptr<BoundRelPattern> getQueryRel(idx_t relPos) const {
+    std::shared_ptr<BoundRelExpression> getQueryRel(idx_t relPos) const {
         return queryRels[relPos];
     }
     idx_t getQueryRelIdx(const std::string& queryRelName) const {
         return queryRelNameToPosMap.at(queryRelName);
     }
-    void addQueryRel(std::shared_ptr<BoundRelPattern> queryRel) {
-        if (containsQueryRel(queryRel->getUniqueName())) {
+    void addQueryRel(std::shared_ptr<BoundRelExpression> queryRel) {
+        if (containsQueryRel(queryRel->variableName)) {
             return;
         }
-        queryRelNameToPosMap.insert({queryRel->getUniqueName(), queryRels.size()});
+        queryRelNameToPosMap.insert({queryRel->variableName, queryRels.size()});
         queryRels.push_back(std::move(queryRel));
     }
 
     bool isConnected(const QueryGraph& other) const {
         for (auto& queryNode : queryNodes) {
-            if (other.containsQueryNode(queryNode->getUniqueName())) {
+            if (other.containsQueryNode(queryNode->variableName)) {
                 return true;
             }
         }
@@ -171,8 +172,8 @@ public:
 private:
     std::unordered_map<std::string, uint32_t> queryNodeNameToPosMap;
     std::unordered_map<std::string, uint32_t> queryRelNameToPosMap;
-    std::vector<std::shared_ptr<BoundNodePattern>> queryNodes;
-    std::vector<std::shared_ptr<BoundRelPattern>> queryRels;
+    std::vector<std::shared_ptr<BoundNodeExpression>> queryNodes;
+    std::vector<std::shared_ptr<BoundRelExpression>> queryRels;
 };
 
 // QueryGraphCollection represents a pattern (a set of connected components) specified in MATCH
@@ -216,8 +217,8 @@ public:
         }
         return false;
     }
-    std::vector<std::shared_ptr<BoundNodePattern>> getQueryNodes() const {
-        std::vector<std::shared_ptr<BoundNodePattern>> result;
+    std::vector<std::shared_ptr<BoundNodeExpression>> getQueryNodes() const {
+        std::vector<std::shared_ptr<BoundNodeExpression>> result;
         for (auto& queryGraph : queryGraphs) {
             for (auto& node : queryGraph->getQueryNodes()) {
                 result.push_back(node);
@@ -225,8 +226,8 @@ public:
         }
         return result;
     }
-    std::vector<std::shared_ptr<BoundRelPattern>> getQueryRels() const {
-        std::vector<std::shared_ptr<BoundRelPattern>> result;
+    std::vector<std::shared_ptr<BoundRelExpression>> getQueryRels() const {
+        std::vector<std::shared_ptr<BoundRelExpression>> result;
         for (auto& queryGraph : queryGraphs) {
             for (auto& rel : queryGraph->getQueryRels()) {
                 result.push_back(rel);

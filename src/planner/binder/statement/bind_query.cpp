@@ -46,7 +46,7 @@ std::unique_ptr<BoundStatement> Binder::bindQuery(const RegularQuery& regularQue
     for (auto i = 0u; i < regularQuery.getNumSingleQueries(); i++) {
         // Don't clear scope within bindSingleQuery() yet because it is also used for subquery
         // binding.
-        scope.clear();
+        bindContext.scope.clear();
         normalizedSingleQueries.push_back(bindSingleQuery(*regularQuery.getSingleQuery(i)));
     }
     validateUnionColumnsOfTheSameType(normalizedSingleQueries);

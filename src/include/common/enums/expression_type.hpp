@@ -69,12 +69,13 @@ enum class ExpressionType : uint8_t {
 	// -----------------------------
 	VALUE_CONSTANT = 75,
 	VALUE_PARAMETER = 76,
-	VALUE_TUPLE = 77,
-	VALUE_TUPLE_ADDRESS = 78,
-	VALUE_NULL = 79,
-	VALUE_VECTOR = 80,
-	VALUE_SCALAR = 81,
-	VALUE_DEFAULT = 82,
+	VALUE_NAMED_PARAMETER = 77,
+	VALUE_TUPLE = 78,
+	VALUE_TUPLE_ADDRESS = 79,
+	VALUE_NULL = 80,
+	VALUE_VECTOR = 81,
+	VALUE_SCALAR = 82,
+	VALUE_DEFAULT = 83,
 
 	// -----------------------------
 	// Aggregates
@@ -191,13 +192,14 @@ enum class ExpressionClass : uint8_t {
 	BOUND_FUNCTION = 33,
 	BOUND_OPERATOR = 34,
 	BOUND_PARAMETER = 35,
-	BOUND_REF = 36,
-	BOUND_SUBQUERY = 37,
-	BOUND_WINDOW = 38,
-	BOUND_BETWEEN = 39,
-	BOUND_UNNEST = 40,
-	BOUND_LAMBDA = 41,
-	BOUND_PATTERN_ELEMENT = 42,
+	BOUND_PROPERTY = 36,
+	BOUND_REF = 37,
+	BOUND_SUBQUERY = 38,
+	BOUND_WINDOW = 39,
+	BOUND_BETWEEN = 40,
+	BOUND_UNNEST = 41,
+	BOUND_LAMBDA = 42,
+	BOUND_PATTERN_ELEMENT = 43,
 	//===--------------------------------------------------------------------===//
 	// Miscellaneous
 	//===--------------------------------------------------------------------===//

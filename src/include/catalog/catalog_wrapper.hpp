@@ -105,35 +105,6 @@ public:
         }
     }
 
-    void GetSubPartitionIDsFromPartitions(ClientContext &context, vector<uint64_t> &partitionIDs, vector<idx_t> &oids, vector<size_t> &numOidsPerPartition,
-                                        GraphComponentType g_type, bool exclude_fakes = true) {
-        auto &catalog = db.GetCatalog();
-
-        for (auto &pid : partitionIDs) {
-            vector<idx_t> sub_partition_oids;
-            PartitionCatalogEntry *p_cat =
-                (PartitionCatalogEntry *)catalog.GetEntry(context, DEFAULT_SCHEMA, pid);
-            p_cat->GetPropertySchemaIDs(sub_partition_oids);
-
-            if (exclude_fakes) {
-                size_t numValidOids = 0;
-                for (auto &oid : sub_partition_oids) {
-                    PropertySchemaCatalogEntry *ps_cat =
-                        (PropertySchemaCatalogEntry *)catalog.GetEntry(context, DEFAULT_SCHEMA, oid);
-                    if (!ps_cat->is_fake) {
-                        oids.push_back(oid);
-                        numValidOids++;
-                    }
-                }
-                numOidsPerPartition.push_back(numValidOids);
-            }
-            else {
-                oids.insert(oids.end(), sub_partition_oids.begin(), sub_partition_oids.end());
-                numOidsPerPartition.push_back(sub_partition_oids.size());
-            }
-        }
-    }
-
     void GetSubPartitionIDs(ClientContext &context, vector<string> labelset_names, vector<uint64_t> &partitionIDs, vector<idx_t> &oids, GraphComponentType g_type) {
         auto &catalog = db.GetCatalog();
         GraphCatalogEntry *gcat =
@@ -159,23 +130,6 @@ public:
         for (auto &edge_pid : partitionIDs) {
             PartitionCatalogEntry *p_cat =
                 (PartitionCatalogEntry *)catalog.GetEntry(context, DEFAULT_SCHEMA, edge_pid);
-            dstPartitionIDs.push_back(p_cat->GetDstPartOid());
-        }
-    }
-
-    void GetConnectedEdgeSubPartitionIDs(ClientContext &context, vector<idx_t> &src_oids, vector<uint64_t> &partitionIDs, vector<idx_t> &oids, vector<uint64_t> &dstPartitionIDs) {
-        auto &catalog = db.GetCatalog();
-        GraphCatalogEntry *gcat =
-            (GraphCatalogEntry *)catalog.GetEntry(context, CatalogType::GRAPH_ENTRY, DEFAULT_SCHEMA, DEFAULT_GRAPH);
-
-        for (auto &src_oid : src_oids) {
-            gcat->GetConnectedEdgeOids(context, src_oid, partitionIDs);
-        }
-
-        for (auto &edge_pid : partitionIDs) {
-            PartitionCatalogEntry *p_cat =
-                (PartitionCatalogEntry *)catalog.GetEntry(context, DEFAULT_SCHEMA, edge_pid);
-            p_cat->GetPropertySchemaIDs(oids);
             dstPartitionIDs.push_back(p_cat->GetDstPartOid());
         }
     }

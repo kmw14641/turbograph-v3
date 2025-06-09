@@ -5,7 +5,7 @@
 namespace duckdb {
 
 BoundCastExpression::BoundCastExpression(unique_ptr<Expression> child_p, LogicalType target_type_p, bool try_cast_p)
-    : Expression(ExpressionType::OPERATOR_CAST, ExpressionClass::BOUND_CAST, move(target_type_p)), child(move(child_p)),
+    : Expression(ExpressionType::OPERATOR_CAST, ExpressionClass::BOUND_CAST, std::move(target_type_p)), child(std::move(child_p)),
       try_cast(try_cast_p) {
 }
 
@@ -26,7 +26,7 @@ unique_ptr<Expression> BoundCastExpression::AddCastToType(unique_ptr<Expression>
 				return expr;
 			}
 		}
-		return make_unique<BoundCastExpression>(move(expr), target_type);
+		return make_unique<BoundCastExpression>(std::move(expr), target_type);
 	}
 	return expr;
 }

@@ -26,8 +26,6 @@ class BoundRecursiveCTENode;
 class BoundRegularQuery;
 class NormalizedSingleQuery;
 class NormalizedQueryPart;
-class BoundNodePattern;
-class BoundRelPattern;
 class BoundPattern;
 class QueryGraph;
 class QueryGraphCollection;
@@ -55,12 +53,14 @@ class BoundConjunctionExpression;
 class BoundConstantExpression;
 class BoundDefaultExpression;
 class BoundFunctionExpression;
+class BoundNodeExpression;
 class BoundOperatorExpression;
 class BoundParameterExpression;
+class BoundPatternElementExpression;
 class BoundReferenceExpression;
+class BoundRelExpression;
 class BoundSubqueryExpression;
 class BoundUnnestExpression;
-class BoundWindowExpression;
 
 //===--------------------------------------------------------------------===//
 // TableRefs

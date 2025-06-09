@@ -6,7 +6,7 @@
 namespace duckdb {
 
 template <class T>
-bool ExpressionUtil::ExpressionListEquals(const vector<unique_ptr<T>> &a, const vector<unique_ptr<T>> &b) {
+bool ExpressionUtil::ExpressionListEquals(const vector<T> &a, const vector<T> &b) {
 	if (a.size() != b.size()) {
 		return false;
 	}
@@ -19,7 +19,7 @@ bool ExpressionUtil::ExpressionListEquals(const vector<unique_ptr<T>> &a, const 
 }
 
 template <class T>
-bool ExpressionUtil::ExpressionSetEquals(const vector<unique_ptr<T>> &a, const vector<unique_ptr<T>> &b) {
+bool ExpressionUtil::ExpressionSetEquals(const vector<T> &a, const vector<T> &b) {
 	if (a.size() != b.size()) {
 		return false;
 	}
@@ -53,20 +53,38 @@ bool ExpressionUtil::ExpressionSetEquals(const vector<unique_ptr<T>> &a, const v
 
 bool ExpressionUtil::ListEquals(const vector<unique_ptr<ParsedExpression>> &a,
                                 const vector<unique_ptr<ParsedExpression>> &b) {
-	return ExpressionListEquals<ParsedExpression>(a, b);
+	return ExpressionListEquals<unique_ptr<ParsedExpression>>(a, b);
+}
+
+bool ExpressionUtil::ListEquals(const vector<shared_ptr<ParsedExpression>> &a, 
+                                const vector<shared_ptr<ParsedExpression>> &b) {
+	return ExpressionListEquals<shared_ptr<ParsedExpression>>(a, b);
 }
 
 bool ExpressionUtil::ListEquals(const vector<unique_ptr<Expression>> &a, const vector<unique_ptr<Expression>> &b) {
-	return ExpressionListEquals<Expression>(a, b);
+	return ExpressionListEquals<unique_ptr<Expression>>(a, b);
+}
+
+bool ExpressionUtil::ListEquals(const vector<shared_ptr<Expression>> &a, const vector<shared_ptr<Expression>> &b) {
+	return ExpressionListEquals<shared_ptr<Expression>>(a, b);
 }
 
 bool ExpressionUtil::SetEquals(const vector<unique_ptr<ParsedExpression>> &a,
                                const vector<unique_ptr<ParsedExpression>> &b) {
-	return ExpressionSetEquals<ParsedExpression>(a, b);
+	return ExpressionSetEquals<unique_ptr<ParsedExpression>>(a, b);
+}
+
+bool ExpressionUtil::SetEquals(const vector<shared_ptr<ParsedExpression>> &a, 
+                               const vector<shared_ptr<ParsedExpression>> &b) {
+	return ExpressionSetEquals<shared_ptr<ParsedExpression>>(a, b);
 }
 
 bool ExpressionUtil::SetEquals(const vector<unique_ptr<Expression>> &a, const vector<unique_ptr<Expression>> &b) {
-	return ExpressionSetEquals<Expression>(a, b);
+	return ExpressionSetEquals<unique_ptr<Expression>>(a, b);
+}
+
+bool ExpressionUtil::SetEquals(const vector<shared_ptr<Expression>> &a, const vector<shared_ptr<Expression>> &b) {
+	return ExpressionSetEquals<shared_ptr<Expression>>(a, b);
 }
 
 } // namespace duckdb

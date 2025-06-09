@@ -46,8 +46,8 @@ typedef idx_t PropertySchemaID;
 typedef idx_t VertexLabelID;
 typedef idx_t EdgeTypeID;
 typedef uint64_t ChunkID;
-
 typedef uint64_t CatalogObjectID;
+typedef uint64_t GraphletID;
 
 #define GET_EXTENT_SEQNO_FROM_EID(eid) (eid & 0xFFFF);
 #define GET_PARTITION_ID_FROM_EID(eid) (eid >> 16);
@@ -60,5 +60,7 @@ typedef std::string Labels;
 typedef std::string NodeLabel;
 typedef std::string EdgeType;
 typedef std::vector<std::string> PropertyKeys;
+
+typedef uint64_t Bound;
 
 }  // namespace duckdb

@@ -1,152 +1,138 @@
-// //===----------------------------------------------------------------------===//
-// //                         DuckDB
-// //
-// // duckdb/planner/expression_binder.hpp
-// //
-// //
-// //===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
+//                         DuckDB
+//
+// duckdb/planner/expression_binder.hpp
+//
+//
+//===----------------------------------------------------------------------===//
 
-// #pragma once
+#pragma once
 
-// #include "common/exception.hpp"
-// #include "parser/expression/bound_expression.hpp"
-// #include "parser/parsed_expression.hpp"
-// #include "parser/tokens.hpp"
-// #include "planner/expression.hpp"
-// #include "common/unordered_map.hpp"
+#include "common/types/value.hpp"
+#include "parser/expression/bound_expression.hpp"
+#include "parser/parsed_expression.hpp"
+#include "parser/tokens.hpp"
+#include "planner/expression.hpp"
 
-// namespace duckdb {
+namespace duckdb {
 
-// class Binder;
-// class ClientContext;
-// class QueryNode;
+class Binder;
 
-// class ScalarFunctionCatalogEntry;
-// class AggregateFunctionCatalogEntry;
-// class ScalarMacroCatalogEntry;
-// class CatalogEntry;
-// class SimpleFunction;
+class ExpressionBinder {
+    friend class Binder;
 
-// struct DummyBinding;
+   public:
+    ExpressionBinder(Binder *binder) : binder(binder) {}
 
-// struct BoundColumnReferenceInfo {
-// 	string name;
-// 	idx_t query_location;
-// };
+    // DuckDB originally returns unique_ptr<Expression> (with support of Copy function).
+    // However, in schemaless design, copying property expression is too expensive.
+    // Thus, we return shared_ptr<Expression> instead.
+    void Bind(unique_ptr<ParsedExpression> *expr);
+    void BindChild(unique_ptr<ParsedExpression> &expr);
+    unique_ptr<Expression> BindExpression(
+        unique_ptr<ParsedExpression> *expr_ptr);
 
-// struct BindResult {
-// 	BindResult() {
-// 	}
-// 	explicit BindResult(string error) : error(error) {
-// 	}
-// 	explicit BindResult(unique_ptr<Expression> expr) : expression(move(expr)) {
-// 	}
+    static bool ContainsType(const LogicalType &type, LogicalTypeId target);
+    static LogicalType ExchangeType(const LogicalType &type,
+                                    LogicalTypeId target, LogicalType new_type);
 
-// 	bool HasError() {
-// 		return !error.empty();
-// 	}
+    static void ResolveParameterType(LogicalType &type);
+    static void ResolveParameterType(unique_ptr<Expression> &expr);
 
-// 	unique_ptr<Expression> expression;
-// 	string error;
-// };
+   public:
+    unique_ptr<Expression> BindExpression(BetweenExpression &expr);
+    unique_ptr<Expression> BindExpression(CaseExpression &expr);
+    unique_ptr<Expression> BindExpression(CastExpression &expr);
+    unique_ptr<Expression> BindExpression(ComparisonExpression &expr);
+    unique_ptr<Expression> BindExpression(ConjunctionExpression &expr);
+    unique_ptr<Expression> BindExpression(ConstantExpression &expr);
+    unique_ptr<Expression> BindExpression(FunctionExpression &expr);
+    unique_ptr<Expression> BindExpression(LambdaExpression &expr);
+    unique_ptr<Expression> BindExpression(OperatorExpression &expr);
+    unique_ptr<Expression> BindExpression(SubqueryExpression &expr);
+    unique_ptr<Expression> BindExpression(NamedParameterExpression &expr);
+    unique_ptr<Expression> BindExpression(StarExpression &expr);
+    unique_ptr<Expression> BindExpression(PropertyExpression &expr);
+    unique_ptr<Expression> BindExpression(VariableExpression &expr);
 
-// class ExpressionBinder {
-// public:
-// 	ExpressionBinder(Binder &binder, ClientContext &context, bool replace_binder = false);
-// 	virtual ~ExpressionBinder();
+   public:
+    unique_ptr<Expression> CreatePropertyExpression(
+        PropertyKeyID propertyKeyID, idx_t patternElementBindingIdx);
+    unique_ptr<Expression> CreateInternalIDPropertyExpression(
+        idx_t patternElementBindingIdx);
 
-// 	//! The target type that should result from the binder. If the result is not of this type, a cast to this type will
-// 	//! be added. Defaults to INVALID.
-// 	LogicalType target_type;
+    unique_ptr<Expression> BindScalarFunction(FunctionExpression &expr, vector<unique_ptr<Expression>> &children, vector<LogicalType> &child_types);
+    unique_ptr<Expression> BindAggregateFunction(FunctionExpression &expr, vector<unique_ptr<Expression>> &children, vector<LogicalType> &child_types);
 
-// 	DummyBinding *macro_binding;
-// 	vector<DummyBinding> *lambda_bindings = nullptr;
+    // /* Boolean Expressions */
+    // shared_ptr<Expression> bindBooleanExpression(const ParsedExpression& parsedExpression);
+    // shared_ptr<Expression> bindBooleanExpression(
+    //     ExpressionType expressionType, const Expressions& children);
 
-// public:
-// 	unique_ptr<Expression> Bind(unique_ptr<ParsedExpression> &expr, LogicalType *result_type = nullptr,
-// 	                            bool root_expression = true);
+    // /* Comparison Expressions */
+    // shared_ptr<Expression> bindComparisonExpression(const ParsedExpression& parsedExpression);
+    // shared_ptr<Expression> bindComparisonExpression(
+    //     ExpressionType expressionType, const Expressions& children);
 
-// 	//! Returns whether or not any columns have been bound by the expression binder
-// 	bool HasBoundColumns() {
-// 		return !bound_columns.empty();
-// 	}
-// 	const vector<BoundColumnReferenceInfo> &GetBoundColumns() {
-// 		return bound_columns;
-// 	}
+    // /* Null Operator Expressions */
+    // std::shared_ptr<Expression> bindNullOperatorExpression(
+    //     const ParsedExpression& parsedExpression);
+    // std::shared_ptr<Expression> bindNullOperatorExpression(ExpressionType expressionType,
+    //     const Expressions& children);
 
-// 	string Bind(unique_ptr<ParsedExpression> *expr, idx_t depth, bool root_expression = false);
+    // /* Property Expressions */
+    // Expressions bindPropertyStarExpression(const ParsedExpression& parsedExpression);
+    // Expressions bindNodeOrRelPropertyStarExpression(const Expression& child);
+    // std::shared_ptr<Expression> bindPropertyExpression(
+    //     const ParsedExpression& parsedExpression);
+    // std::shared_ptr<Expression> bindNodeOrRelPropertyExpression(const Expression& child,
+    //     const std::string& propertyName);
 
-// 	unique_ptr<ParsedExpression> CreateStructExtract(unique_ptr<ParsedExpression> base, string field_name);
-// 	unique_ptr<ParsedExpression> CreateStructPack(ColumnRefExpression &colref);
-// 	BindResult BindQualifiedColumnName(ColumnRefExpression &colref, const string &table_name);
+    // /* Function Expressions */
+    // std::shared_ptr<Expression> bindFunctionExpression(const ParsedExpression& expr);
+    // std::shared_ptr<Expression> bindScalarFunctionExpression(
+    //     const ParsedExpression& parsedExpression, const std::string& functionName);
+    // std::shared_ptr<Expression> bindScalarFunctionExpression(const Expressions& children,
+    //     const std::string& functionName,
+    //     std::vector<std::string> optionalArguments = std::vector<std::string>{});
+    // std::shared_ptr<Expression> bindRewriteFunctionExpression(const ParsedExpression& expr);
+    // std::shared_ptr<Expression> bindAggregateFunctionExpression(
+    //     const ParsedExpression& parsedExpression, const std::string& functionName,
+    //     bool isDistinct);
+    // shared_ptr<Expression> bindInternalIDExpression(const ParsedExpression& parsedExpression);
+    // shared_ptr<Expression> bindInternalIDExpression(const Expression& expression);
+    // unique_ptr<Expression> createInternalNodeIDExpression(const Expression& node,
+    //     std::unordered_map<uint64_t, uint32_t>* propertyIDPerTable);
 
-// 	unique_ptr<ParsedExpression> QualifyColumnName(const string &column_name, string &error_message);
-// 	unique_ptr<ParsedExpression> QualifyColumnName(ColumnRefExpression &colref, string &error_message);
+    // /* Parameter Expression */
+    // shared_ptr<Expression> bindParameterExpression(const ParsedExpression& parsedExpression);
 
-// 	// Bind table names to ColumnRefExpressions
-// 	void QualifyColumnNames(unique_ptr<ParsedExpression> &expr);
-// 	static void QualifyColumnNames(Binder &binder, unique_ptr<ParsedExpression> &expr);
+    // /* Constant Expression */
+    // shared_ptr<Expression> bindConstantExpression(const ParsedExpression& parsedExpression);
 
-// 	static unique_ptr<Expression> PushCollation(ClientContext &context, unique_ptr<Expression> source,
-// 	                                            const string &collation, bool equality_only = false);
-// 	static void TestCollation(ClientContext &context, const string &collation);
+    // /* Variable Expression */
+    // shared_ptr<Expression> bindVariableExpression(const ParsedExpression& parsedExpression);
 
-// 	bool BindCorrelatedColumns(unique_ptr<ParsedExpression> &expr);
+    // /* Subquery Expression */
+    // shared_ptr<Expression> bindExistentialSubqueryExpression(
+    //     const ParsedExpression& parsedExpression);
 
-// 	void BindChild(unique_ptr<ParsedExpression> &expr, idx_t depth, string &error);
-// 	static void ExtractCorrelatedExpressions(Binder &binder, Expression &expr);
+    // /* Case Expression */
+    // shared_ptr<Expression> bindCaseExpression(const ParsedExpression& parsedExpression);
 
-// 	static bool ContainsNullType(const LogicalType &type);
-// 	static LogicalType ExchangeNullType(const LogicalType &type);
-// 	static bool ContainsType(const LogicalType &type, LogicalTypeId target);
-// 	static LogicalType ExchangeType(const LogicalType &type, LogicalTypeId target, LogicalType new_type);
+    // /* Cast */
+    // std::shared_ptr<Expression> implicitCastIfNecessary(
+    //     const std::shared_ptr<Expression>& expression, const LogicalType& targetType);
+    // // Use implicitCast to cast to types you have obtained through known implicit casting rules.
+    // // Use forceCast to cast to types you have obtained through other means, for example,
+    // // through a maxLogicalType function
+    // std::shared_ptr<Expression> implicitCast(const std::shared_ptr<Expression>& expression,
+    //     const LogicalType& targetType);
 
-// 	//! Bind the given expresion. Unlike Bind(), this does *not* mute the given ParsedExpression.
-// 	//! Exposed to be used from sub-binders that aren't subclasses of ExpressionBinder.
-// 	virtual BindResult BindExpression(unique_ptr<ParsedExpression> *expr_ptr, idx_t depth,
-// 	                                  bool root_expression = false);
+   private:
+    Binder *binder;
+    std::unordered_map<std::string, Value> parameterMap;
+    uint64_t currentORGroupID = 0;
+};
 
-// 	void ReplaceMacroParametersRecursive(unique_ptr<ParsedExpression> &expr);
-
-// protected:
-// 	BindResult BindExpression(BetweenExpression &expr, idx_t depth);
-// 	BindResult BindExpression(CaseExpression &expr, idx_t depth);
-// 	BindResult BindExpression(CollateExpression &expr, idx_t depth);
-// 	BindResult BindExpression(CastExpression &expr, idx_t depth);
-// 	BindResult BindExpression(ColumnRefExpression &expr, idx_t depth);
-// 	BindResult BindExpression(ComparisonExpression &expr, idx_t depth);
-// 	BindResult BindExpression(ConjunctionExpression &expr, idx_t depth);
-// 	BindResult BindExpression(ConstantExpression &expr, idx_t depth);
-// 	//BindResult BindExpression(FunctionExpression &expr, idx_t depth, unique_ptr<ParsedExpression> *expr_ptr);
-// 	BindResult BindExpression(LambdaExpression &expr, idx_t depth, const bool is_lambda,
-// 	                          const LogicalType &list_child_type);
-// 	BindResult BindExpression(OperatorExpression &expr, idx_t depth);
-// 	BindResult BindExpression(ParameterExpression &expr, idx_t depth);
-// 	BindResult BindExpression(PositionalReferenceExpression &ref, idx_t depth);
-// 	BindResult BindExpression(SubqueryExpression &expr, idx_t depth);
-
-// 	void TransformCapturedLambdaColumn(unique_ptr<Expression> &original, unique_ptr<Expression> &replacement,
-// 	                                   vector<unique_ptr<Expression>> &captures, LogicalType &list_child_type,
-// 	                                   string &alias);
-// 	void CaptureLambdaColumns(vector<unique_ptr<Expression>> &captures, LogicalType &list_child_type,
-// 	                          unique_ptr<Expression> &expr, string &alias);
-
-// protected:
-// 	virtual BindResult BindGroupingFunction(OperatorExpression &op, idx_t depth);
-// 	virtual BindResult BindFunction(FunctionExpression &expr, ScalarFunctionCatalogEntry *function, idx_t depth);
-// 	virtual BindResult BindLambdaFunction(FunctionExpression &expr, ScalarFunctionCatalogEntry *function, idx_t depth);
-// 	virtual BindResult BindAggregate(FunctionExpression &expr, AggregateFunctionCatalogEntry *function, idx_t depth);
-// 	virtual BindResult BindUnnest(FunctionExpression &expr, idx_t depth);
-// 	virtual BindResult BindMacro(FunctionExpression &expr, ScalarMacroCatalogEntry *macro, idx_t depth,
-// 	                             unique_ptr<ParsedExpression> *expr_ptr);
-
-// 	virtual string UnsupportedAggregateMessage();
-// 	virtual string UnsupportedUnnestMessage();
-
-// 	Binder &binder;
-// 	ClientContext &context;
-// 	ExpressionBinder *stored_binder;
-// 	vector<BoundColumnReferenceInfo> bound_columns;
-// };
-
-// } // namespace duckdb
+}  // namespace duckdb

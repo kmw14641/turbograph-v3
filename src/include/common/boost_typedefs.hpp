@@ -3,6 +3,7 @@
 #include "common/common.hpp"
 #include "common/boost.hpp"
 #include "common/types.hpp"
+#include "common/typedefs.hpp"
 
 namespace duckdb {
     #define MIN_MAX_ARRAY_SIZE 1024

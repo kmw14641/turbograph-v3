@@ -2,6 +2,7 @@
 
 #include "planner/query/reading_clause/bound_reading_clause.hpp"
 #include "planner/query/return_with_clause/bound_projection_body.hpp"
+#include "planner/query/updating_clause/bound_updating_clause.hpp"
 #include "planner/expression.hpp"
 
 namespace duckdb {
@@ -18,6 +19,12 @@ public:
     std::shared_ptr<BoundReadingClause> getReadingClause(uint32_t idx) const { 
         return readingClauses[idx]; 
     }
+
+    void addUpdatingClause(std::shared_ptr<BoundUpdatingClause> boundUpdatingClause) {
+        updatingClauses.push_back(std::move(boundUpdatingClause));
+    }
+    bool hasUpdatingClause() const { return !updatingClauses.empty(); }
+    uint32_t getNumUpdatingClause() const { return updatingClauses.size(); }
 
     void setProjectionBody(std::shared_ptr<BoundProjectionBody> boundProjectionBody) {
         projectionBody = std::move(boundProjectionBody);
@@ -37,6 +44,7 @@ public:
 
 private:
     std::vector<std::shared_ptr<BoundReadingClause>> readingClauses;
+    std::vector<std::shared_ptr<BoundUpdatingClause>> updatingClauses;
     std::shared_ptr<BoundProjectionBody> projectionBody;
     std::shared_ptr<Expression> projectionBodyPredicate;
 };
