@@ -78,7 +78,6 @@ class FunctionExpression;
 class LambdaExpression;
 class OperatorExpression;
 class ParameterExpression;
-class NamedParameterExpression;
 class PositionalReferenceExpression;
 class PropertyExpression;
 class StarExpression;

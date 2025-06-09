@@ -35,7 +35,7 @@ unique_ptr<Expression> ExpressionBinder::BindExpression(
         case ExpressionClass::SUBQUERY:
             expression = BindExpression((SubqueryExpression &)expr_ref);
         case ExpressionClass::PARAMETER:
-            expression = BindExpression((NamedParameterExpression &)expr_ref);
+            expression = BindExpression((ParameterExpression &)expr_ref);
         case ExpressionClass::PROPERTY:
             expression = BindExpression((PropertyExpression &)expr_ref);
         default:
@@ -162,40 +162,6 @@ unique_ptr<Expression> ExpressionBinder::CreateInternalIDPropertyExpression(
     idx_t patternElementBindingIdx)
 {
     return CreatePropertyExpression(INTERNAL_ID_PROPERTY_KEY_ID, patternElementBindingIdx);
-}
-
-unique_ptr<Expression> ExpressionBinder::BindExpression(LambdaExpression &expr)
-{
-    return nullptr;
-}
-
-unique_ptr<Expression> ExpressionBinder::BindExpression(
-    OperatorExpression &expr)
-{
-    return nullptr;
-}
-
-unique_ptr<Expression> ExpressionBinder::BindExpression(
-    NamedParameterExpression &expr)
-{
-    return nullptr;
-}
-
-unique_ptr<Expression> ExpressionBinder::BindExpression(StarExpression &expr)
-{
-    return nullptr;
-}
-
-unique_ptr<Expression> ExpressionBinder::BindExpression(
-    PropertyExpression &expr)
-{
-    return nullptr;
-}
-
-unique_ptr<Expression> ExpressionBinder::BindExpression(
-    VariableExpression &expr)
-{
-    return nullptr;
 }
 
 }  // namespace duckdb

@@ -11,6 +11,7 @@ unique_ptr<Expression> ExpressionBinder::BindExpression(
 	// first try to bind the children of the case expression
 	for (idx_t i = 0; i < expr.children.size(); i++) {
 		BindChild(expr.children[i]);
+		if (expr.type == ExpressionType::CONJUNCTION_OR) currentORGroupID++;
 	}
 
 	// the children have been successfully resolved

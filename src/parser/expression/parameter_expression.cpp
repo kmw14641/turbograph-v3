@@ -3,42 +3,42 @@
 #include "common/exception.hpp"
 #include "common/field_writer.hpp"
 #include "common/types/hash.hpp"
-#include "common/to_string.hpp"
+#include "common/types/string_type.hpp"
 
 namespace duckdb {
 
 ParameterExpression::ParameterExpression()
-    : ParsedExpression(ExpressionType::VALUE_PARAMETER, ExpressionClass::PARAMETER), parameter_nr(0) {
+    : ParsedExpression(ExpressionType::VALUE_PARAMETER, ExpressionClass::PARAMETER), parameter_name("") {
 }
 
 string ParameterExpression::ToString() const {
-	return "$" + to_string(parameter_nr);
+	return "$" + parameter_name;
 }
 
 unique_ptr<ParsedExpression> ParameterExpression::Copy() const {
 	auto copy = make_unique<ParameterExpression>();
-	copy->parameter_nr = parameter_nr;
+	copy->parameter_name = parameter_name;
 	copy->CopyProperties(*this);
-	return move(copy);
+	return std::move(copy);
 }
 
 bool ParameterExpression::Equals(const ParameterExpression *a, const ParameterExpression *b) {
-	return a->parameter_nr == b->parameter_nr;
+	return a->parameter_name == b->parameter_name;
 }
 
 hash_t ParameterExpression::Hash() const {
 	hash_t result = ParsedExpression::Hash();
-	return CombineHash(duckdb::Hash(parameter_nr), result);
+	return CombineHash(duckdb::Hash(duckdb::string_t(parameter_name)), result);
 }
 
 void ParameterExpression::Serialize(FieldWriter &writer) const {
-	writer.WriteField<idx_t>(parameter_nr);
+	writer.WriteString(parameter_name);
 }
 
 unique_ptr<ParsedExpression> ParameterExpression::Deserialize(ExpressionType type, FieldReader &reader) {
 	auto expression = make_unique<ParameterExpression>();
-	expression->parameter_nr = reader.ReadRequired<idx_t>();
-	return move(expression);
+	expression->parameter_name = reader.ReadRequired<string>();
+	return std::move(expression);
 }
 
 } // namespace duckdb

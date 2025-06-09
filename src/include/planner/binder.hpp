@@ -2,6 +2,7 @@
 
 #include <utility>
 #include "catalog/catalog.hpp"
+#include "common/typedefs.hpp"
 #include "main/client_context.hpp"
 #include "parser/cypher_statement.hpp"
 #include "parser/query/graph_pattern/rel_pattern.hpp"
@@ -12,11 +13,11 @@
 
 namespace duckdb {
 
+class BoundExpression;
+
 class Binder {
    public:
-    explicit Binder(std::shared_ptr<ClientContext> &client)
-        : client{client}, bindContext{}
-    {}
+    explicit Binder(std::shared_ptr<ClientContext> &client);
 
     std::unique_ptr<BoundStatement> bind(const CypherStatement &statement);
 
@@ -92,12 +93,20 @@ class Binder {
 
     /** helper functions **/
     std::string getUniqueExpressionName(const std::string &name);
+    PropertyKeyID getPropertyKeyID(const string &propertyName);
 
+    /** resolve functions **/
+    LogicalType ResolveNotType(OperatorExpression &op, vector<BoundExpression *> &children);
+    LogicalType ResolveInType(OperatorExpression &op, vector<BoundExpression *> &children);
+    LogicalType ResolveOperatorType(OperatorExpression &op, vector<BoundExpression *> &children);
+
+    /** getters **/
     inline BindContext& getContext() { return bindContext; }
     inline shared_ptr<ClientContext> getClient() { return client; }
 
    private:
     std::shared_ptr<ClientContext> client;
+    GraphCatalogEntry *graph_catalog_entry;
     BindContext bindContext;
 };
 

@@ -50,7 +50,7 @@ class ExpressionBinder {
     unique_ptr<Expression> BindExpression(LambdaExpression &expr);
     unique_ptr<Expression> BindExpression(OperatorExpression &expr);
     unique_ptr<Expression> BindExpression(SubqueryExpression &expr);
-    unique_ptr<Expression> BindExpression(NamedParameterExpression &expr);
+    unique_ptr<Expression> BindExpression(ParameterExpression &expr);
     unique_ptr<Expression> BindExpression(StarExpression &expr);
     unique_ptr<Expression> BindExpression(PropertyExpression &expr);
     unique_ptr<Expression> BindExpression(VariableExpression &expr);
@@ -63,71 +63,6 @@ class ExpressionBinder {
 
     unique_ptr<Expression> BindScalarFunction(FunctionExpression &expr, vector<unique_ptr<Expression>> &children, vector<LogicalType> &child_types);
     unique_ptr<Expression> BindAggregateFunction(FunctionExpression &expr, vector<unique_ptr<Expression>> &children, vector<LogicalType> &child_types);
-
-    // /* Boolean Expressions */
-    // shared_ptr<Expression> bindBooleanExpression(const ParsedExpression& parsedExpression);
-    // shared_ptr<Expression> bindBooleanExpression(
-    //     ExpressionType expressionType, const Expressions& children);
-
-    // /* Comparison Expressions */
-    // shared_ptr<Expression> bindComparisonExpression(const ParsedExpression& parsedExpression);
-    // shared_ptr<Expression> bindComparisonExpression(
-    //     ExpressionType expressionType, const Expressions& children);
-
-    // /* Null Operator Expressions */
-    // std::shared_ptr<Expression> bindNullOperatorExpression(
-    //     const ParsedExpression& parsedExpression);
-    // std::shared_ptr<Expression> bindNullOperatorExpression(ExpressionType expressionType,
-    //     const Expressions& children);
-
-    // /* Property Expressions */
-    // Expressions bindPropertyStarExpression(const ParsedExpression& parsedExpression);
-    // Expressions bindNodeOrRelPropertyStarExpression(const Expression& child);
-    // std::shared_ptr<Expression> bindPropertyExpression(
-    //     const ParsedExpression& parsedExpression);
-    // std::shared_ptr<Expression> bindNodeOrRelPropertyExpression(const Expression& child,
-    //     const std::string& propertyName);
-
-    // /* Function Expressions */
-    // std::shared_ptr<Expression> bindFunctionExpression(const ParsedExpression& expr);
-    // std::shared_ptr<Expression> bindScalarFunctionExpression(
-    //     const ParsedExpression& parsedExpression, const std::string& functionName);
-    // std::shared_ptr<Expression> bindScalarFunctionExpression(const Expressions& children,
-    //     const std::string& functionName,
-    //     std::vector<std::string> optionalArguments = std::vector<std::string>{});
-    // std::shared_ptr<Expression> bindRewriteFunctionExpression(const ParsedExpression& expr);
-    // std::shared_ptr<Expression> bindAggregateFunctionExpression(
-    //     const ParsedExpression& parsedExpression, const std::string& functionName,
-    //     bool isDistinct);
-    // shared_ptr<Expression> bindInternalIDExpression(const ParsedExpression& parsedExpression);
-    // shared_ptr<Expression> bindInternalIDExpression(const Expression& expression);
-    // unique_ptr<Expression> createInternalNodeIDExpression(const Expression& node,
-    //     std::unordered_map<uint64_t, uint32_t>* propertyIDPerTable);
-
-    // /* Parameter Expression */
-    // shared_ptr<Expression> bindParameterExpression(const ParsedExpression& parsedExpression);
-
-    // /* Constant Expression */
-    // shared_ptr<Expression> bindConstantExpression(const ParsedExpression& parsedExpression);
-
-    // /* Variable Expression */
-    // shared_ptr<Expression> bindVariableExpression(const ParsedExpression& parsedExpression);
-
-    // /* Subquery Expression */
-    // shared_ptr<Expression> bindExistentialSubqueryExpression(
-    //     const ParsedExpression& parsedExpression);
-
-    // /* Case Expression */
-    // shared_ptr<Expression> bindCaseExpression(const ParsedExpression& parsedExpression);
-
-    // /* Cast */
-    // std::shared_ptr<Expression> implicitCastIfNecessary(
-    //     const std::shared_ptr<Expression>& expression, const LogicalType& targetType);
-    // // Use implicitCast to cast to types you have obtained through known implicit casting rules.
-    // // Use forceCast to cast to types you have obtained through other means, for example,
-    // // through a maxLogicalType function
-    // std::shared_ptr<Expression> implicitCast(const std::shared_ptr<Expression>& expression,
-    //     const LogicalType& targetType);
 
    private:
     Binder *binder;

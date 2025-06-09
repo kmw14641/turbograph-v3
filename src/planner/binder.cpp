@@ -1,9 +1,21 @@
 #include "planner/binder.hpp"
 #include "common/exception.hpp"
 #include "parser/cypher_statement.hpp"
+#include "main/database.hpp"
+#include "catalog/catalog_entry/graph_catalog_entry.hpp"
 #include <set>
 
 namespace duckdb {
+
+Binder::Binder(std::shared_ptr<ClientContext> &client)
+        : client{client}, bindContext{}
+{
+    graph_catalog_entry =
+        (duckdb::GraphCatalogEntry *)client->db->GetCatalog().GetEntry(
+            *client, duckdb::CatalogType::GRAPH_ENTRY, DEFAULT_SCHEMA,
+            DEFAULT_GRAPH);
+}
+
 
 std::unique_ptr<BoundStatement> Binder::bind(const CypherStatement& statement) {
     switch (statement.type) {
@@ -46,5 +58,10 @@ void Binder::replaceExpressionInScope(const std::string& oldName, const std::str
 std::string Binder::getUniqueExpressionName(const std::string &name) {
     return "_" + to_string(bindContext.lastExpressionId++) + "_" + name;
 }
+
+PropertyKeyID Binder::getPropertyKeyID(const string &propertyName) {
+    return graph_catalog_entry->GetPropertyKeyID(*client, propertyName);
+}
+
 
 }

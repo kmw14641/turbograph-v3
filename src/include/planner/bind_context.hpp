@@ -95,6 +95,9 @@ class BindContext {
                                idx_t groupIdx = 0);
     vector<idx_t> getReferencedORGroupIDs(idx_t patternElementBindingIdx);
 
+    // Scope
+    inline BinderScope &getScope() { return scope; }
+
    private:
     std::vector<PatternElementBinding> patternElementBindings;
     idx_t lastExpressionId;

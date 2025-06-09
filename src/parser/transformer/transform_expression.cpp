@@ -369,7 +369,9 @@ unique_ptr<ParsedExpression> Transformer::transformParameterExpression(
 
     auto parameter_name = ctx.oC_SymbolicName() ? ctx.oC_SymbolicName()->getText()
                                                 : ctx.DecimalInteger()->getText();
-    return make_unique<NamedParameterExpression>(parameter_name);
+    auto parameter_expr = make_unique<ParameterExpression>();
+    parameter_expr->parameter_name = parameter_name;
+    return std::move(parameter_expr);
 }
 
 unique_ptr<ParsedExpression> Transformer::transformParenthesizedExpression(

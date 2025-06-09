@@ -15,7 +15,7 @@ class ParameterExpression : public ParsedExpression {
 public:
 	ParameterExpression();
 
-	idx_t parameter_nr;
+	std::string parameter_name;
 
 public:
 	bool IsScalar() const override {

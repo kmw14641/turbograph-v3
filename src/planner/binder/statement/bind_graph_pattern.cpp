@@ -234,8 +234,8 @@ std::shared_ptr<BoundRelExpression> Binder::bindQueryRel(
     }
 
     PatternElementGraphletInfo graphletInfo;
-    bindRelAndConnectedNodePartitionIDs(relPattern.getTypeNames(), leftNode,
-                                        rightNode, graphletInfo.partitionOIDs);
+    bindRelAndConnectedNodePartitionIDs(relPattern.getTypeNames(), srcNode,
+                                        dstNode, graphletInfo.partitionOIDs);
     client->db->GetCatalogWrapper().GetSubPartitionIDsFromPartitions(
         *client, graphletInfo.partitionOIDs, graphletInfo.graphletOIDs,
         graphletInfo.numGrahpletsPerPartition, GraphComponentType::EDGE);
@@ -246,6 +246,8 @@ std::shared_ptr<BoundRelExpression> Binder::bindQueryRel(
         LogicalType::REL, getUniqueExpressionName(parsedName), bindingIdx,
         srcNode, dstNode, directionType, relPattern.getRelType(),
         boundPair.first, boundPair.second);
+    queryRel->setLeftNode(leftNode);
+    queryRel->setRightNode(rightNode);
     queryRel->SetAlias(parsedName);
     if (!parsedName.empty()) {
         addToScope(parsedName, queryRel);

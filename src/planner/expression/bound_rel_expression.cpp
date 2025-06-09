@@ -73,6 +73,9 @@ unique_ptr<Expression> BoundRelExpression::Copy()
     auto copy = std::make_unique<BoundRelExpression>(
         return_type, variableName, bindingIdx, srcNode, dstNode, directionType,
         relType, lowerBound, upperBound);
+    copy->setDirectionExpr(directionExpr);
+    copy->setLeftNode(leftNode);
+    copy->setRightNode(rightNode);
     copy->CopyProperties(*this);
     return std::move(copy);
 }
