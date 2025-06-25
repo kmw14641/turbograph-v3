@@ -27,7 +27,7 @@ extern "C" {
 
 // Temporary defines..
 typedef signed short int16; // From src/include/c.h
-typedef float float4; // From src/include/c.h
+typedef float pg_float4; // From src/include/c.h
 typedef int16 AttrNumber; // From src/include/access/attnum.h
 
 #include "gpos/base.h"
@@ -209,7 +209,7 @@ private:
 	// transform GPDB's MCV information to optimizer's histogram structure
 	static CHistogram *TransformMcvToOrcaHistogram(
 		CMemoryPool *mp, const IMDType *md_type, const Datum *mcv_values,
-		const float4 *mcv_frequencies, ULONG num_mcv_values);
+		const pg_float4 *mcv_frequencies, ULONG num_mcv_values);
 
 	// transform GPDB's hist information to optimizer's histogram structure
     static CHistogram *TransformHistToOrcaHistogram(
@@ -224,7 +224,7 @@ private:
 	// transform stats from pg_stats form to optimizer's preferred form
     static CDXLBucketArray *TransformStatsToDXLBucketArray(
         CMemoryPool *mp, OID att_type, CDouble num_distinct, CDouble null_freq,
-        const Datum *mcv_values, const float4 *mcv_frequencies,
+        const Datum *mcv_values, const pg_float4 *mcv_frequencies,
         ULONG num_mcv_values, const Datum *hist_values,
         const Datum *hist_freq_values, ULONG num_hist_values);
 
@@ -244,7 +244,7 @@ private:
 		CHAR storage_type);
 
 	// fix frequencies if they add up to more than 1.0
-	static void NormalizeFrequencies(float4 *pdrgf, ULONG length,
+	static void NormalizeFrequencies(pg_float4 *pdrgf, ULONG length,
 									 CDouble *null_freq);
 
 	// get the relation columns

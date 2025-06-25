@@ -1,4 +1,3 @@
-
 #include "execution/cypher_pipeline_executor.hpp"
 #include "common/limits.hpp"
 #include "common/types.hpp"
@@ -17,30 +16,31 @@ namespace duckdb {
 CypherPipelineExecutor::CypherPipelineExecutor(ExecutionContext *context,
                                                CypherPipeline *pipeline)
     : CypherPipelineExecutor(
-          context, pipeline, std::move(vector<CypherPipelineExecutor *>()),
+          context, pipeline, std::move(std::vector<BasePipelineExecutor *>()),
           std::move(
-              std::map<CypherPhysicalOperator *, CypherPipelineExecutor *>()))
+              std::map<CypherPhysicalOperator *, BasePipelineExecutor *>()))
 {}
 
 CypherPipelineExecutor::CypherPipelineExecutor(
     ExecutionContext *context, CypherPipeline *pipeline,
-    vector<CypherPipelineExecutor *> childs_p)
+    std::vector<BasePipelineExecutor *> childs_p)
     : CypherPipelineExecutor(
-          context, pipeline, childs_p,
+          context, pipeline, std::move(childs_p),
           std::move(
-              std::map<CypherPhysicalOperator *, CypherPipelineExecutor *>()))
+              std::map<CypherPhysicalOperator *, BasePipelineExecutor *>()))
 {}  // need to deprecate
 
 CypherPipelineExecutor::CypherPipelineExecutor(
     ExecutionContext *context_p, CypherPipeline *pipeline_p,
-    vector<CypherPipelineExecutor *> childs_p,
-    std::map<CypherPhysicalOperator *, CypherPipelineExecutor *> deps_p)
-    : pipeline(pipeline_p),
+    std::vector<BasePipelineExecutor *> childs_p,
+    std::map<CypherPhysicalOperator *, BasePipelineExecutor *> deps_p)
+    : BasePipelineExecutor(),
       thread(*(context_p->client)),
-      context(context_p),
       childs(std::move(childs_p)),
       deps(std::move(deps_p))
 {
+	this->pipeline = pipeline_p;
+	this->context = context_p;
 	// set context.thread
 	context->thread = &thread;
 
@@ -65,31 +65,32 @@ CypherPipelineExecutor::CypherPipelineExecutor(ExecutionContext *context,
                                                CypherPipeline *pipeline,
                                                SchemaFlowGraph &sfg)
     : CypherPipelineExecutor(
-          context, pipeline, sfg, std::move(vector<CypherPipelineExecutor *>()),
+          context, pipeline, sfg, std::move(std::vector<BasePipelineExecutor *>()),
           std::move(
-              std::map<CypherPhysicalOperator *, CypherPipelineExecutor *>()))
+              std::map<CypherPhysicalOperator *, BasePipelineExecutor *>()))
 {}
 
 CypherPipelineExecutor::CypherPipelineExecutor(
     ExecutionContext *context, CypherPipeline *pipeline, SchemaFlowGraph &sfg,
-    vector<CypherPipelineExecutor *> childs_p)
+    std::vector<BasePipelineExecutor *> childs_p)
     : CypherPipelineExecutor(
-          context, pipeline, sfg, childs_p,
+          context, pipeline, sfg, std::move(childs_p),
           std::move(
-              std::map<CypherPhysicalOperator *, CypherPipelineExecutor *>()))
+              std::map<CypherPhysicalOperator *, BasePipelineExecutor *>()))
 {}
 
 CypherPipelineExecutor::CypherPipelineExecutor(
     ExecutionContext *context_p, CypherPipeline *pipeline_p,
-    SchemaFlowGraph &sfg, vector<CypherPipelineExecutor *> childs_p,
-    std::map<CypherPhysicalOperator *, CypherPipelineExecutor *> deps_p)
-    : pipeline(pipeline_p),
+    SchemaFlowGraph &sfg, std::vector<BasePipelineExecutor *> childs_p,
+    std::map<CypherPhysicalOperator *, BasePipelineExecutor *> deps_p)
+    : BasePipelineExecutor(),
       thread(*(context_p->client)),
-      context(context_p),
       sfg(std::move(sfg)),
       childs(std::move(childs_p)),
       deps(std::move(deps_p))
 {
+	this->pipeline = pipeline_p;
+	this->context = context_p;
 	// set context.thread
 	context->thread = &thread;
 
@@ -113,7 +114,7 @@ CypherPipelineExecutor::CypherPipelineExecutor(
 	}
 
 #ifdef DEBUG_PRINT_PIPELINE
-    sfg.printSchemaGraph();
+    this->sfg.printSchemaGraph();
 #endif
 }
 

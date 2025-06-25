@@ -1,4 +1,6 @@
 #include "planner/planner.hpp"
+#include "execution/base_pipeline_executor.hpp"
+#include "planner/gpu/gpu_code_generator.hpp"
 #include "optimizer/mdprovider/MDProviderTBGPP.h"
 #include "common/scoped_timer.hpp"
 
@@ -537,20 +539,25 @@ void *Planner::_orcaExec(void *planner_ptr)
     return nullptr;
 }
 
-vector<duckdb::CypherPipelineExecutor *> Planner::genPipelineExecutors()
+vector<duckdb::BasePipelineExecutor *> Planner::genPipelineExecutors(bool enable_gpu_processing)
 {
     D_ASSERT(pipelines.size() > 0);
-
-    /* inject per-operator-dependencies and per-pipeline dependencies
-		- per-op: CypherPhysicalOperator::children
-		- per-pipeline: child_executors / dep_executors
-	*/
-
-    std::vector<duckdb::CypherPipelineExecutor *> executors;
+    std::vector<duckdb::BasePipelineExecutor *> executors;
 
     if (generate_sfg) {
         D_ASSERT(pipelines.size() == sfgs.size());
     }
+
+    // Initialize GPU code generator if needed
+    unique_ptr<duckdb::GpuCodeGenerator> code_gen;
+    if (enable_gpu_processing) {
+        code_gen = make_unique<duckdb::GpuCodeGenerator>(*context);
+    }
+
+    /* inject per-operator-dependencies and per-pipeline dependencies
+        - per-op: CypherPhysicalOperator::children
+        - per-pipeline: child_executors / dep_executors
+    */
 
     for (auto pipe_idx = 0; pipe_idx < pipelines.size(); pipe_idx++) {
         auto &pipe = pipelines[pipe_idx];
@@ -559,10 +566,10 @@ vector<duckdb::CypherPipelineExecutor *> Planner::genPipelineExecutors()
         // find children and deps - the child/dep ordering matters.
         // must run in ascending order of the vector
         auto *new_ctxt = new duckdb::ExecutionContext(context);
-        vector<duckdb::CypherPipelineExecutor *>
+        vector<duckdb::BasePipelineExecutor *>
             child_executors;  // child : pipe's sink == op's source
         std::map<duckdb::CypherPhysicalOperator *,
-                duckdb::CypherPipelineExecutor *>
+                duckdb::BasePipelineExecutor *>
             dep_executors;  // dep   : pipe's sink == op's operator
 
         // inject per-operator dependencies in a pipeline
@@ -601,21 +608,55 @@ vector<duckdb::CypherPipelineExecutor *> Planner::genPipelineExecutors()
                 }
             }
         }
-        duckdb::CypherPipelineExecutor *pipe_exec;
-        if (generate_sfg) {
-            pipe_exec = new duckdb::CypherPipelineExecutor(
-                new_ctxt, pipe, *sfg, move(child_executors),
-                move(dep_executors));
+
+        // GPU specific processing
+        void *main_function = nullptr;
+        vector<duckdb::KernelParam> kernel_params;
+        if (enable_gpu_processing) {
+            // Generate GPU kernel code for this pipeline
+            code_gen->GenerateGPUCode(*pipe);
+            
+            // Compile generated code
+            if (!code_gen->CompileGeneratedCode()) {
+                throw std::runtime_error("Failed to compile GPU kernel code");
+            }
+
+            // Get compiled kernel function
+            main_function = code_gen->GetCompiledHost();
+            if (!main_function) {
+                throw std::runtime_error("Failed to get compiled kernel function");
+            }
+
+            // Get kernel parameters that were generated during code generation
+            kernel_params = code_gen->GetKernelParams();
+
+            pipe->SetIsGpuPipeline(true);
         }
-        else {
-            pipe_exec = new duckdb::CypherPipelineExecutor(
-                new_ctxt, pipe, move(child_executors), move(dep_executors));
+
+        // Create pipeline executor
+        duckdb::BasePipelineExecutor *pipe_exec;
+        if (generate_sfg) {
+            if (enable_gpu_processing) {
+                pipe_exec = new duckdb::GPUPipelineExecutor(
+                    new_ctxt, pipe, *sfg, main_function);
+            } else {
+                pipe_exec = new duckdb::CypherPipelineExecutor(
+                    new_ctxt, pipe, *sfg, move(child_executors), move(dep_executors));
+            }
+        } else {
+            if (enable_gpu_processing) {
+                pipe_exec = new duckdb::GPUPipelineExecutor(
+                    new_ctxt, pipe, main_function);
+            } else {
+                pipe_exec = new duckdb::CypherPipelineExecutor(
+                    new_ctxt, pipe, move(child_executors), move(dep_executors));
+            }
         }
 
         executors.push_back(pipe_exec);
     }
 
-    return executors;
+    return std::move(executors);
 }
 
 vector<string> Planner::getQueryOutputColNames()

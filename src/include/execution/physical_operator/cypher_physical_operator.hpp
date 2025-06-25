@@ -111,6 +111,7 @@ class CypherPhysicalOperator {
     virtual std::string ToString() const { return ""; }
 
     idx_t GetOperatorId() const { return operator_id; }
+    PhysicalOperatorType GetOperatorType() const { return type; }
 
     virtual size_t GetLoopCount() const { return 1; }
 

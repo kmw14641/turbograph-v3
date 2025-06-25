@@ -2992,7 +2992,7 @@ CTranslatorTBGPPToDXL::RetrieveScCmp(CMemoryPool *mp, IMDId *mdid)
 CDXLBucketArray *
 CTranslatorTBGPPToDXL::TransformStatsToDXLBucketArray(
     CMemoryPool *mp, OID att_type, CDouble num_distinct, CDouble null_freq,
-    const Datum *mcv_values, const float4 *mcv_frequencies,
+    const Datum *mcv_values, const pg_float4 *mcv_frequencies,
     ULONG num_mcv_values, const Datum *hist_values,
     const Datum *hist_freq_values, ULONG num_hist_values)
 {
@@ -3089,7 +3089,7 @@ CTranslatorTBGPPToDXL::TransformStatsToDXLBucketArray(
 CHistogram *
 CTranslatorTBGPPToDXL::TransformMcvToOrcaHistogram(
 	CMemoryPool *mp, const IMDType *md_type, const Datum *mcv_values,
-	const float4 *mcv_frequencies, ULONG num_mcv_values)
+	const pg_float4 *mcv_frequencies, ULONG num_mcv_values)
 {
 	IDatumArray *datums = GPOS_NEW(mp) IDatumArray(mp);
 	CDoubleArray *freqs = GPOS_NEW(mp) CDoubleArray(mp);
@@ -3452,7 +3452,7 @@ CTranslatorTBGPPToDXL::RetrieveRelKeysets(CMemoryPool *mp, OID oid,
 //
 //---------------------------------------------------------------------------
 void
-CTranslatorTBGPPToDXL::NormalizeFrequencies(float4 *freqs, ULONG length,
+CTranslatorTBGPPToDXL::NormalizeFrequencies(pg_float4 *freqs, ULONG length,
 											   CDouble *null_freq)
 {
 	if (length == 0 && (*null_freq) < 1.0)
@@ -3468,7 +3468,7 @@ CTranslatorTBGPPToDXL::NormalizeFrequencies(float4 *freqs, ULONG length,
 
 	if (total > CDouble(1.0))
 	{
-		float4 denom = (float4)(total + CStatistics::Epsilon).Get();
+		pg_float4 denom = (pg_float4)(total + CStatistics::Epsilon).Get();
 
 		// divide all values by the total
 		for (ULONG ul = 0; ul < length; ul++)

@@ -11,6 +11,7 @@
 #include "main/client_context.hpp"
 #include "storage/statistics/histogram_generator.hpp"
 #include "storage/cache/chunk_cache_manager.h"
+#include "storage/cache/gpu_chunk_cache_manager.h"
 #include "planner/planner.hpp"
 #include "CypherLexer.h"
 #include "kuzu/parser/transformer.h"
@@ -58,7 +59,8 @@ void ParseConfig(int argc, char** argv, ClientOptions& options) {
         ("log-level", po::value<std::string>(), "Set logging level (trace/debug/info/warn/error)")
 		("slient", "Disable output to console")
 		("output-file", po::value<std::string>(), "Output file path")
-        ("standalone", "Run client as standalone");
+        ("standalone", "Run client as standalone")
+        ("enable-gpu-processing", "Run query using GPU");
 
 	po::options_description compiler_options("Compiler Options");
 	compiler_options.add_options()
@@ -221,15 +223,17 @@ void CompileQuery(const string& query, std::shared_ptr<ClientContext> client, s6
 	SUBTIMER_STOP(CompileQuery, "Orca Compile");
 }
 
-void ExecuteQuery(const string& query, std::shared_ptr<ClientContext> client, ClientOptions& options, vector<duckdb::CypherPipelineExecutor *>& executors, double &exec_elapsed_time) {	
+void ExecuteQuery(const string& query, std::shared_ptr<ClientContext> client, ClientOptions& options, vector<BasePipelineExecutor *>& executors, double &exec_elapsed_time) {	
 	if (executors.size() == 0) {
 		spdlog::error("[ExecuteQuery] Plan Empty");
 		return; 
 	}
 
 	auto &profiler = QueryProfiler::Get(*client.get());
-	profiler.StartQuery(query, options.enable_profile);	
-	profiler.Initialize(executors[executors.size()-1]->pipeline->GetSink());
+    if (!options.enable_gpu_processing) {
+	    profiler.StartQuery(query, options.enable_profile);
+	    profiler.Initialize(executors[executors.size()-1]->pipeline->GetSink());
+    }
 	
 	{
 		SCOPED_TIMER(ExecuteQuery, spdlog::level::info, spdlog::level::info, exec_elapsed_time);
@@ -244,7 +248,9 @@ void ExecuteQuery(const string& query, std::shared_ptr<ClientContext> client, Cl
 		}
 	}
 
-	profiler.EndQuery();
+    if (!options.enable_gpu_processing) {
+	    profiler.EndQuery();
+    }
 }
 
 void PrintOutputToFile(PropertyKeys col_names, 
@@ -313,7 +319,7 @@ size_t GetResultSizeInBytes(std::vector<std::shared_ptr<duckdb::DataChunk>> &que
     return result_size;
 }
 
-void DeallocateIterationMemory(std::vector<duckdb::CypherPipelineExecutor *> &executors) {
+void DeallocateIterationMemory(std::vector<BasePipelineExecutor *> &executors) {
     auto &exec_context = executors.back()->context;
     auto &query_results = *exec_context->query_results;
     auto result_size = GetResultSizeInBytes(query_results);
@@ -341,7 +347,7 @@ void CompileAndExecuteIteration(const std::string &query_str,
     CompileQuery(query_str, client, planner, compile_time);
 
     if (!options.compile_only) {
-        auto executors = planner.genPipelineExecutors();
+        auto executors = planner.genPipelineExecutors(options.enable_gpu_processing);
         ExecuteQuery(query_str, client, options, executors, exec_time);
 
         auto &query_results = executors.back()->context->query_results;
@@ -466,7 +472,7 @@ int main(int argc, char** argv) {
     InitializeDiskAIO(options.workspace);
 
     if (options.enable_gpu_processing) {
-        ChunkCacheManager::ccm = new GpuChunkCacheManager(
+        GpuChunkCacheManager::g_ccm = new GpuChunkCacheManager(
             options.workspace.c_str(), GpuCachePolicy::CPU_THEN_GPU,
             options.standalone);
     }

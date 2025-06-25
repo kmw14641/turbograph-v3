@@ -3,6 +3,8 @@
 
 namespace duckdb {
 
+GpuChunkCacheManager *GpuChunkCacheManager::g_ccm;
+
 GpuChunkCacheManager::GpuChunkCacheManager(const char *path,
                                            GpuCachePolicy policy,
                                            bool standalone)
@@ -18,7 +20,7 @@ GpuChunkCacheManager::GpuChunkCacheManager(const char *path,
 
     // initialize gpu arena
     const size_t gpu_arena_size = 1024 * 1024 * 1024;  // 1GB
-    gpu_arena = new facebook::velox::wave::GpuArena(gpu_arena_size, nullptr);
+    // gpu_arena = new facebook::velox::wave::GpuArena(gpu_arena_size, nullptr);
 }
 
 GpuChunkCacheManager::~GpuChunkCacheManager()
@@ -26,14 +28,14 @@ GpuChunkCacheManager::~GpuChunkCacheManager()
     // delete gpu memory
     for (auto &pair : gpu_ptrs_) {
         if (pair.second) {
-            gpu_arena->free(
-                static_cast<facebook::velox::wave::Buffer *>(pair.second));
+            // gpu_arena->free(
+            //     static_cast<facebook::velox::wave::Buffer *>(pair.second));
         }
     }
     gpu_ptrs_.clear();
 
     // delete gpu arena
-    delete gpu_arena;
+    // delete gpu_arena;
 
     // delete cpu cache manager
     if (cpu_cache_manager_) {
@@ -73,7 +75,7 @@ ReturnStatus GpuChunkCacheManager::PinSegment(ChunkID cid,
         }
 
         // allocate and copy to GPU memory
-        void *gpu_mem = gpu_arena->allocateBytes(cpu_size);
+        void *gpu_mem; //= gpu_arena->allocateBytes(cpu_size);
         if (!gpu_mem) {
             cpu_cache_manager_->UnPinSegment(cid);
             return ReturnStatus::NOERROR;
@@ -93,7 +95,7 @@ ReturnStatus GpuChunkCacheManager::PinSegment(ChunkID cid,
     else {  // GPU_DIRECT
         // load directly from file to GPU
         size_t file_size = GetFileSize(cid, file_path);
-        void *gpu_mem = gpu_arena->allocateBytes(file_size);
+        void *gpu_mem; //= gpu_arena->allocateBytes(file_size);
         if (!gpu_mem) {
             return ReturnStatus::NOERROR;
         }
@@ -102,8 +104,8 @@ ReturnStatus GpuChunkCacheManager::PinSegment(ChunkID cid,
         Turbo_bin_aio_handler *file_handler =
             cpu_cache_manager_->GetFileHandler(cid);
         if (!file_handler) {
-            gpu_arena->free(
-                static_cast<facebook::velox::wave::Buffer *>(gpu_mem));
+            // gpu_arena->free(
+            //     static_cast<facebook::velox::wave::Buffer *>(gpu_mem));
             return ReturnStatus::NOERROR;
         }
 
@@ -132,8 +134,8 @@ ReturnStatus GpuChunkCacheManager::UnPinSegment(ChunkID cid)
 
     auto it = gpu_ptrs_.find(cid);
     if (it != gpu_ptrs_.end()) {
-        gpu_arena->free(
-            static_cast<facebook::velox::wave::Buffer *>(it->second));
+        // gpu_arena->free(
+        //     static_cast<facebook::velox::wave::Buffer *>(it->second));
         gpu_ptrs_.erase(it);
     }
 
@@ -168,7 +170,7 @@ ReturnStatus GpuChunkCacheManager::CreateSegment(ChunkID cid,
     }
 
     // allocate GPU memory
-    void *gpu_mem = gpu_arena->allocateBytes(alloc_size);
+    void *gpu_mem; //= gpu_arena->allocateBytes(alloc_size);
     if (!gpu_mem) {
         cpu_cache_manager_->DestroySegment(cid);
         return ReturnStatus::NOERROR;
@@ -187,8 +189,8 @@ ReturnStatus GpuChunkCacheManager::DestroySegment(ChunkID cid)
     // free GPU memory
     auto it = gpu_ptrs_.find(cid);
     if (it != gpu_ptrs_.end()) {
-        gpu_arena->free(
-            static_cast<facebook::velox::wave::Buffer *>(it->second));
+        // gpu_arena->free(
+        //     static_cast<facebook::velox::wave::Buffer *>(it->second));
         gpu_ptrs_.erase(it);
     }
 
@@ -237,8 +239,8 @@ ReturnStatus GpuChunkCacheManager::FlushDirtySegmentsAndDeleteFromcache(
     if (destroy_segment) {
         // free GPU memory
         for (auto &pair : gpu_ptrs_) {
-            gpu_arena->free(
-                static_cast<facebook::velox::wave::Buffer *>(pair.second));
+            // gpu_arena->free(
+            //     static_cast<facebook::velox::wave::Buffer *>(pair.second));
         }
         gpu_ptrs_.clear();
     }
@@ -255,7 +257,7 @@ ReturnStatus GpuChunkCacheManager::GetRemainingMemoryUsage(
         gpu_used += GetSegmentSize(pair.first, "");
     }
 
-    remaining_memory_usage = gpu_arena->maxCapacity() - gpu_used;
+    // remaining_memory_usage = gpu_arena->maxCapacity() - gpu_used;
     return ReturnStatus::OK;
 }
 

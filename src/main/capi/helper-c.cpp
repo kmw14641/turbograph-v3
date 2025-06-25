@@ -196,20 +196,19 @@ bool hasMatchingOperator(duckdb::CypherPipeline* lhs_pipeline, duckdb::CypherPip
 }
 
 // Main function to generate PostgreSQL-style query plan
-std::string generatePostgresStylePlan(std::vector<CypherPipelineExecutor*>& executors, bool is_executed) {
+std::string generatePostgresStylePlan(std::vector<BasePipelineExecutor*>& executors, bool is_executed) {
     std::ostringstream oss;
 
     // Step 1: Map parent-child relationships and rhs mappings for binary operators
     std::unordered_map<duckdb::CypherPipeline*, duckdb::CypherPipeline*> parent_map;
     std::unordered_map<duckdb::CypherPipeline*, duckdb::CypherPipeline*> rhs_map;
 
-
     for (size_t i = 0; i < executors.size(); ++i) {
-        auto* pipeline = executors[i]->pipeline;
+        auto* pipeline = static_cast<CypherPipelineExecutor*>(executors[i])->pipeline;
         
         // Identify if the pipeline contains a binary operator as sink
         for (size_t j = i + 1; j < executors.size(); ++j) {
-            auto* next_pipeline = executors[j]->pipeline;
+            auto* next_pipeline = static_cast<CypherPipelineExecutor*>(executors[j])->pipeline;
 
             // For binary operators, look for middle of lhs and sink in rhs pipeline
             if (isBinaryOperatorSink(next_pipeline) && hasMatchingOperator(pipeline, next_pipeline)) {
@@ -225,7 +224,7 @@ std::string generatePostgresStylePlan(std::vector<CypherPipelineExecutor*>& exec
     }
 
     // Step 2: Start from the root pipeline and recursively output the plan tree
-    auto root_pipeline = executors.back()->pipeline;
+    auto root_pipeline = static_cast<CypherPipelineExecutor*>(executors.back())->pipeline;
     oss << pipelineToPostgresPlan(root_pipeline, parent_map, rhs_map, 0, is_executed);
 
     return oss.str();

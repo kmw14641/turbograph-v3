@@ -13,6 +13,7 @@
 #include "common/types.hpp"
 #include "common/types/data_chunk.hpp"
 #include "common/case_insensitive_map.hpp"
+#include "execution/base_pipeline_executor.hpp"
 #include "execution/cypher_pipeline_executor.hpp"
 
 #include "nlohmann/json.hpp"
@@ -33,6 +34,6 @@ namespace duckdb {
 s62_type ConvertCPPTypeToC(const LogicalType &type);
 LogicalTypeId ConvertCTypeToCPP(s62_type c_type);
 idx_t GetCTypeSize(s62_type type);
-std::string generatePostgresStylePlan(std::vector<CypherPipelineExecutor*>& executors, bool is_executed = false);
+std::string generatePostgresStylePlan(std::vector<BasePipelineExecutor*>& executors, bool is_executed = false);
 
 } // namespace duckdb

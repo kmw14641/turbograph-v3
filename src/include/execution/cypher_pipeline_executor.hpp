@@ -1,6 +1,7 @@
 #ifndef CYPHER_PIPELINE_EXECUTOR
 #define CYPHER_PIPELINE_EXECUTOR
 
+#include "execution/base_pipeline_executor.hpp"
 #include "common/output_util.hpp"
 #include "common/types/data_chunk.hpp"
 #include "common/stack.hpp"
@@ -25,25 +26,34 @@ class SchemaFlowGraph;
 // class SchemalessDataChunk;
 
 //! The Pipeline class represents an execution pipeline
-class CypherPipelineExecutor {
+class CypherPipelineExecutor : public BasePipelineExecutor {
 	static constexpr const idx_t CACHE_THRESHOLD = 64;
 
 public:
 	
 	CypherPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline);
-	CypherPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline, vector<CypherPipelineExecutor *> childs_p);
-	CypherPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline, vector<CypherPipelineExecutor *> childs_p,
-		std::map<CypherPhysicalOperator *, CypherPipelineExecutor *> deps_p);
+	CypherPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline, std::vector<BasePipelineExecutor *> childs_p);
+	CypherPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline, std::vector<BasePipelineExecutor *> childs_p,
+		std::map<CypherPhysicalOperator *, BasePipelineExecutor *> deps_p);
 	CypherPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline, SchemaFlowGraph &sfg);
 	CypherPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline, SchemaFlowGraph &sfg,
-		vector<CypherPipelineExecutor *> childs_p);
+		std::vector<BasePipelineExecutor *> childs_p);
 	CypherPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline, SchemaFlowGraph &sfg,
-		 vector<CypherPipelineExecutor *> childs_p, std::map<CypherPhysicalOperator *, CypherPipelineExecutor *> deps_p);
+		 std::vector<BasePipelineExecutor *> childs_p, std::map<CypherPhysicalOperator *, BasePipelineExecutor *> deps_p);
 
 	~CypherPipelineExecutor();
 	
 	//! Fully execute a pipeline with a source and a sink until the source is completely exhausted
-	virtual void ExecutePipeline();
+	void ExecutePipeline() override;
+
+	//! Get pipeline pointer
+	CypherPipeline* GetPipeline() const override { return pipeline; }
+	
+	//! Get context pointer
+	ExecutionContext* GetContext() const override { return context; }
+
+	//! Get schema flow graph
+	SchemaFlowGraph* GetSchemaFlowGraph() override { return &sfg; }
 
 	//! Push a single input DataChunk into the pipeline.
 	// //! Returns either OperatorResultType::NEED_MORE_INPUT or OperatorResultType::FINISHED
@@ -56,16 +66,11 @@ public:
 
 	//! Initializes a chunk with the types that will flow out of ExecutePull
 	//void InitializeChunk(DataChunk &chunk);
-
-	//! The pipeline to process
-	ExecutionContext *context;
-	CypherPipeline *pipeline;
+	
 	SchemaFlowGraph sfg;
+
 	//! The thread context of this executor
 	ThreadContext thread;
-
-
-	// TODO add statistics reporter.
 
 
 	//! Intermediate chunks for the operators
@@ -84,8 +89,6 @@ public:
 	// in our demo it is sufficient to keep only local states
 	vector<unique_ptr<OperatorState>> local_operator_states;
 	unique_ptr<LocalSourceState> local_source_state;
-	unique_ptr<LocalSinkState> local_sink_state;
-
 
 	//! The operators that are not yet finished executing and have data remaining
 	//! If the stack of in_process_operators is empty, we fetch from the source instead
@@ -101,9 +104,9 @@ public:
 	vector<unique_ptr<DataChunk>> cached_chunks;
 
 	//! Child executors - to access sink information of the source 			// child : pipe's sink == op's source
-	vector<CypherPipelineExecutor *> childs;
+	std::vector<BasePipelineExecutor *> childs;
 	//! Dependent executors - to access sink information of the operator	// dep   : pipe's sink == op's operator
-	std::map<duckdb::CypherPhysicalOperator*, duckdb::CypherPipelineExecutor*> deps;
+	std::map<duckdb::CypherPhysicalOperator*, BasePipelineExecutor*> deps;
 
 private:
 	void StartOperator(CypherPhysicalOperator *op);

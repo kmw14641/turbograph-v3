@@ -15,14 +15,16 @@
 #include "storage/cache/common.h"
 #include "storage/cache/disk_aio/Turbo_bin_aio_handler.hpp"
 
-// GPU 메모리 관리 유틸리티 (예시)
-#include "velox/experimental/wave/common/GpuArena.h"
+// #include "velox/experimental/wave/common/GpuArena.h"
 
 namespace duckdb {
 
 enum class GpuCachePolicy { CPU_THEN_GPU, GPU_DIRECT };
 
 class GpuChunkCacheManager {
+   public:  
+    static GpuChunkCacheManager *g_ccm;
+
    public:
     GpuChunkCacheManager(const char *path,
                          GpuCachePolicy policy = GpuCachePolicy::CPU_THEN_GPU,
@@ -56,7 +58,7 @@ class GpuChunkCacheManager {
     size_t GetSegmentSize(ChunkID cid, std::string file_path);
     size_t GetFileSize(ChunkID cid, std::string file_path);
 
-    facebook::velox::wave::GpuArena *gpu_arena;
+    // facebook::velox::wave::GpuArena *gpu_arena;
 
     GpuCachePolicy policy_;
 

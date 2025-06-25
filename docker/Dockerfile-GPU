@@ -1,28 +1,41 @@
 # Dockerfile for turbograph-v3
 
-FROM nvidia/cuda:11.0.3-devel-ubuntu20.04
+FROM nvidia/cuda:11.8.0-devel-ubuntu20.04
 
 # Set working directory
 WORKDIR /root/
 
 # Environment variables
-ENV LLVM_RELEASE=14 \
+ENV LLVM_RELEASE=17 \
     CMAKE_VERSION=3.28.6 \
     GCC_VERSION=11 \
     DEBIAN_FRONTEND=noninteractive
 
+# Get CUDA version from base image
+RUN CUDA_VERSION=$(nvcc --version | grep "release" | awk '{print $5}' | cut -d',' -f1) && \
+   echo "Detected CUDA version: $CUDA_VERSION" && \
+   echo "CUDA_VERSION=$CUDA_VERSION" >> /etc/environment
+
 # Pre-configuration: essential packages, repositories, and keys
 RUN apt-get -qq update && \
     apt-get install -qqy --no-install-recommends software-properties-common lsb-release ca-certificates autoconf automake dpkg-dev file git make patch libc-dev libc++-dev dirmngr gnupg lbzip2 wget xz-utils libtinfo5 curl
+
+# Install CUDA toolkit matching the base image version
+RUN CUDA_VERSION=$(nvcc --version | grep "release" | awk '{print $5}' | cut -d',' -f1) && \
+   CUDA_MAJOR=$(echo $CUDA_VERSION | cut -d'.' -f1) && \
+   CUDA_MINOR=$(echo $CUDA_VERSION | cut -d'.' -f2) && \
+   apt-get update && \
+   apt-get install -y --no-install-recommends \
+       cuda-toolkit-${CUDA_MAJOR}-${CUDA_MINOR} \
+       cuda-toolkit-${CUDA_MAJOR}-${CUDA_MINOR}-config-common
+
 RUN curl -fsSL https://bazel.build/bazel-release.pub.gpg | gpg --dearmor >bazel-archive-keyring.gpg && \
     mv bazel-archive-keyring.gpg /usr/share/keyrings && \
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/bazel-archive-keyring.gpg] https://storage.googleapis.com/bazel-apt stable jdk1.8" | tee /etc/apt/sources.list.d/bazel.list
 RUN wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null && \
     echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | tee /etc/apt/sources.list.d/oneAPI.list
 RUN add-apt-repository ppa:ubuntu-toolchain-r/test && \
-    apt-get -qq update && \
-    apt-get -qq --fix-broken install && \
-    apt-get -y remove gcc
+    apt-get -qq update
 
 # Build-related dependencies
 RUN apt-get install -y \
@@ -43,7 +56,7 @@ RUN apt-get install -y \
     libhwloc-dev \
     python3-pip
 
-RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${GCC_VERSION} 50 --slave /usr/bin/g++ g++ /usr/bin/g++-${GCC_VERSION}
+RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${GCC_VERSION} 100 --slave /usr/bin/g++ g++ /usr/bin/g++-${GCC_VERSION}
 
 # Install CMake
 RUN curl -OL https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}.tar.gz && \
@@ -53,8 +66,10 @@ RUN curl -OL https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION
     make -j$(nproc) && \
     make install
 
-# Install LLVM
-RUN wget https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && ./llvm.sh ${LLVM_RELEASE}
+# Install LLVM/Clang development packages
+RUN wget https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && ./llvm.sh ${LLVM_RELEASE} all && \
+    apt-get install -y --no-install-recommends \
+        libclang-${LLVM_RELEASE}-dev
 
 # Install Catch2
 RUN git clone https://github.com/catchorg/Catch2.git && \

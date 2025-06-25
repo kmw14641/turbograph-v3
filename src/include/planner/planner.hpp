@@ -151,7 +151,9 @@
 #include "kuzu/binder/expression/path_expression.h"
 
 #include "execution/cypher_pipeline.hpp"
+#include "execution/base_pipeline_executor.hpp"
 #include "execution/cypher_pipeline_executor.hpp"
+#include "execution/gpu_pipeline_executor.hpp"
 #include "execution/cypher_physical_operator_group.hpp"
 #include "execution/physical_operator/cypher_physical_operator.hpp"
 #include "common/enums/order_type.hpp"
@@ -233,7 +235,7 @@ public:
 	~Planner();
 
 	void execute(BoundStatement *bound_statement);
-	vector<duckdb::CypherPipelineExecutor *> genPipelineExecutors();
+	vector<duckdb::BasePipelineExecutor *> genPipelineExecutors(bool enable_gpu_processing = false);
 	vector<string> getQueryOutputColNames();
 	vector<OID> getQueryOutputOIDs();
 

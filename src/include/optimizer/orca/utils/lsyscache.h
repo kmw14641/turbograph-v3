@@ -66,7 +66,7 @@ typedef struct AttStatsSlot
 	Datum	   *freq_values;			/* slot's "values" array, or NULL if none */
 	int			nvalues;		/* length of values[], or 0 */
 	/* Filled if ATTSTATSSLOT_NUMBERS is specified: */
-	float4	   *numbers;		/* slot's "numbers" array, or NULL if none */
+	pg_float4	   *numbers;		/* slot's "numbers" array, or NULL if none */
 	int			nnumbers;		/* length of numbers[], or 0 */
 
 	/* Remaining fields are private to get_attstatsslot/free_attstatsslot */

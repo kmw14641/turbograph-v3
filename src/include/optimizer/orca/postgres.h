@@ -331,8 +331,8 @@ typedef union Datum_U
 {
 	Datum d;
 
-	float4 f4[2];
-	float8 f8;
+	pg_float4 f4[2];
+	pg_float8 f8;
 
 	void *ptr;
 } Datum_U;
@@ -456,16 +456,16 @@ static inline Name DatumGetName(Datum d) { return (Name) DatumGetPointer(d); }
 static inline Datum NameGetDatum(const Name n) { return PointerGetDatum(n); }
 
 #ifndef WORDS_BIGENDIAN 
-static inline float4 DatumGetFloat4(Datum d) { Datum_U du; du.d = d; return du.f4[0]; } 
-static inline Datum Float4GetDatum(float4 f) { Datum_U du; du.d = 0; du.f4[0] = f; return du.d; } 
+static inline pg_float4 DatumGetFloat4(Datum d) { Datum_U du; du.d = d; return du.f4[0]; } 
+static inline Datum Float4GetDatum(pg_float4 f) { Datum_U du; du.d = 0; du.f4[0] = f; return du.d; } 
 #else
-static inline float4 DatumGetFloat4(Datum d) { Datum_U du; du.d = d; return du.f4[1]; } 
-static inline Datum Float4GetDatum(float4 f) { Datum_U du; du.d = 0; du.f4[1] = f; return du.d; } 
+static inline pg_float4 DatumGetFloat4(Datum d) { Datum_U du; du.d = d; return du.f4[1]; } 
+static inline Datum Float4GetDatum(pg_float4 f) { Datum_U du; du.d = 0; du.f4[1] = f; return du.d; } 
 #endif
 
-static inline float8 DatumGetFloat8(Datum d) { Datum_U du; du.d = d; return du.f8; } 
-static inline Datum Float8GetDatum(float8 f) { Datum_U du; du.f8 = f; return du.d; }
-static inline Datum Float8GetDatumFast(float8 f) { return Float8GetDatum(f); }
+static inline pg_float8 DatumGetFloat8(Datum d) { Datum_U du; du.d = d; return du.f8; } 
+static inline Datum Float8GetDatum(pg_float8 f) { Datum_U du; du.f8 = f; return du.d; }
+static inline Datum Float8GetDatumFast(pg_float8 f) { return Float8GetDatum(f); }
 
 
 // static inline ItemPointer DatumGetItemPointer(Datum d) { return (ItemPointer) DatumGetPointer(d); } // TODO necessary?

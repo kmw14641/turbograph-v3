@@ -89,6 +89,7 @@ option(NATIVE_ARCH "Compile targeting the native architecture" TRUE)
 option(ENABLE_AVX "Enable AVX instructions" TRUE)
 option(ENABLE_TBB "Enable Intel TBB" TRUE)
 option(ENABLE_OPENMP "Enable Open MP" TRUE)
+option(ENABLE_CUDA "Enable CUDA" FALSE)
 option(ENABLE_TCMALLOC "Enable TCMalloc" TRUE)
 option(BUILD_UNITTESTS "Build the C++ Unit Tests." FALSE)
 option(BUILD_TOOLS "Build the S62GDB Tools" TRUE)
@@ -143,6 +144,40 @@ if(ENABLE_OPENMP)
   set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
   set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
   set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
+endif()
+
+set(LLVM_LINK_LLVM_DYLIB ON  CACHE BOOL "Use shared libLLVM.so"  FORCE)
+set(LLVM_USE_STATIC_LIBS  OFF CACHE BOOL "Don't use static LLVM" FORCE)
+
+if(ENABLE_CUDA)
+  # enable_language(CUDA)
+  find_package(CUDA REQUIRED)
+  find_package(CUDAToolkit REQUIRED)
+  find_library(CUDA_CUDADEVRT_LIBRARY
+               NAMES cudadevrt
+               HINTS ${CUDAToolkit_LIBRARY_DIR} ${CUDA_TOOLKIT_ROOT_DIR}/lib64
+               REQUIRED)
+  add_library(CUDA::cudadevrt STATIC IMPORTED GLOBAL)
+  set_target_properties(CUDA::cudadevrt PROPERTIES
+      IMPORTED_LOCATION "${CUDA_CUDADEVRT_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${CUDAToolkit_INCLUDE_DIRS}")
+
+  include_directories(${CUDA_INCLUDE_DIRS})
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CUDA_NVCC_FLAGS}")
+
+  find_package(LLVM  REQUIRED CONFIG)
+  find_package(Clang REQUIRED CONFIG)
+  
+  include_directories(${LLVM_INCLUDE_DIRS}  ${CLANG_INCLUDE_DIRS})
+  
+  set(S62_LLVM_LIBS LLVM)
+  set(S62_CLANG_LIB clang-cpp)
+  set(S62_CUDA_LIB
+    CUDA::cudart_static
+    CUDA::cudadevrt
+    CACHE INTERNAL "cuda runtime")
+  set(S62_LLVM_LIBS ${S62_LLVM_LIBS} CACHE INTERNAL "llvm libs")
+  set(S62_CLANG_LIB ${S62_CLANG_LIB} CACHE INTERNAL "clang lib")
 endif()
 
 if(NOT MSVC)

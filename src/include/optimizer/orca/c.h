@@ -472,8 +472,8 @@ typedef signed int Offset;
 /*
  * Common Postgres datatype names (as used in the catalogs)
  */
-typedef float float4;
-typedef double float8;
+typedef float pg_float4;
+typedef double pg_float8;
 
 /*
  * Oid, RegProcedure, TransactionId, SubTransactionId, MultiXactId,
@@ -1059,17 +1059,17 @@ typedef NameData *Name;
  * so check isnan(num) first if that's a possibility.
  */
 #define FLOAT4_FITS_IN_INT16(num) \
-	((num) >= (float4) PG_INT16_MIN && (num) < -((float4) PG_INT16_MIN))
+	((num) >= (pg_float4) PG_INT16_MIN && (num) < -((pg_float4) PG_INT16_MIN))
 #define FLOAT4_FITS_IN_INT32(num) \
-	((num) >= (float4) PG_INT32_MIN && (num) < -((float4) PG_INT32_MIN))
+	((num) >= (pg_float4) PG_INT32_MIN && (num) < -((pg_float4) PG_INT32_MIN))
 #define FLOAT4_FITS_IN_INT64(num) \
-	((num) >= (float4) PG_INT64_MIN && (num) < -((float4) PG_INT64_MIN))
+	((num) >= (pg_float4) PG_INT64_MIN && (num) < -((pg_float4) PG_INT64_MIN))
 #define FLOAT8_FITS_IN_INT16(num) \
-	((num) >= (float8) PG_INT16_MIN && (num) < -((float8) PG_INT16_MIN))
+	((num) >= (pg_float8) PG_INT16_MIN && (num) < -((pg_float8) PG_INT16_MIN))
 #define FLOAT8_FITS_IN_INT32(num) \
-	((num) >= (float8) PG_INT32_MIN && (num) < -((float8) PG_INT32_MIN))
+	((num) >= (pg_float8) PG_INT32_MIN && (num) < -((pg_float8) PG_INT32_MIN))
 #define FLOAT8_FITS_IN_INT64(num) \
-	((num) >= (float8) PG_INT64_MIN && (num) < -((float8) PG_INT64_MIN))
+	((num) >= (pg_float8) PG_INT64_MIN && (num) < -((pg_float8) PG_INT64_MIN))
 
 
 /* ----------------------------------------------------------------
