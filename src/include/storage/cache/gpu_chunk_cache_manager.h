@@ -15,7 +15,7 @@
 #include "storage/cache/common.h"
 #include "storage/cache/disk_aio/Turbo_bin_aio_handler.hpp"
 
-// #include "velox/experimental/wave/common/GpuArena.h"
+#include "velox/experimental/wave/common/GpuArena.h"
 
 namespace duckdb {
 
@@ -58,7 +58,7 @@ class GpuChunkCacheManager {
     size_t GetSegmentSize(ChunkID cid, std::string file_path);
     size_t GetFileSize(ChunkID cid, std::string file_path);
 
-    // facebook::velox::wave::GpuArena *gpu_arena;
+    facebook::velox::wave::GpuArena *gpu_arena;
 
     GpuCachePolicy policy_;
 

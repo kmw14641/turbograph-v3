@@ -61,6 +61,7 @@ class GpuJitCompiler {
 
     // Compiler configuration
     CudaCompilerConfig cuda_config;
+    std::string project_include_path;  // Project include path for JIT compilation
     std::unique_ptr<clang::CompilerInstance> compiler;
     std::unique_ptr<llvm::orc::LLJIT> jit;
     llvm::orc::ThreadSafeContext ts_ctx;

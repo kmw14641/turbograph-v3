@@ -40,6 +40,15 @@ GpuJitCompiler::GpuJitCompiler()
         "-O3"                     // Optimization level
     };
 
+    // Calculate project include path once
+#ifdef S62GDB_ROOT
+    project_include_path = std::string(S62GDB_ROOT) + "/src/include";
+#else
+    const char* env_root = std::getenv("S62GDB_ROOT");
+    const char* root_path = env_root ? env_root : "/turbograph-v3";
+    project_include_path = std::string(root_path) + "/src/include";
+#endif
+
     // Initialize JIT
     auto jb = llvm::orc::LLJITBuilder{};
     auto res = jb.create();
@@ -137,6 +146,7 @@ std::vector<std::unique_ptr<llvm::Module>> GpuJitCompiler::CompileToIR(
         "-isystem", "/usr/local/cuda/include",
         "-isystem", "/usr/include",
         "-isystem", "/usr/include/x86_64-linux-gnu",
+        "-I", project_include_path.c_str(),  // Use dynamic include path
         "-emit-llvm", "-c"
     };
 
@@ -321,7 +331,7 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, CUfunctio
 
     std::vector<const char*> drv_argv = {
         "clang++",
-        // "-###", "-v",
+        "-###", "-v",
         "--cuda-path=/usr/local/cuda-11.8",
         "-x", "cuda", "gpu_host.cu",
         "--cuda-gpu-arch=sm_61",
@@ -333,6 +343,7 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, CUfunctio
         "-isystem", "/usr/local/cuda/include",
         "-isystem", "/usr/include",
         "-isystem", "/usr/include/x86_64-linux-gnu",
+        "-I", project_include_path.c_str(),  // Use dynamic include path
         "-emit-llvm", "-c"
     };
 

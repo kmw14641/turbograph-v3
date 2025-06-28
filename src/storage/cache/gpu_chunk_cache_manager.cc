@@ -20,7 +20,7 @@ GpuChunkCacheManager::GpuChunkCacheManager(const char *path,
 
     // initialize gpu arena
     const size_t gpu_arena_size = 1024 * 1024 * 1024;  // 1GB
-    // gpu_arena = new facebook::velox::wave::GpuArena(gpu_arena_size, nullptr);
+    gpu_arena = new facebook::velox::wave::GpuArena(gpu_arena_size, nullptr);
 }
 
 GpuChunkCacheManager::~GpuChunkCacheManager()
@@ -49,7 +49,7 @@ ReturnStatus GpuChunkCacheManager::PinSegment(ChunkID cid,
                                               bool read_data_async,
                                               bool is_initial_loading)
 {
-    if (!CidValidityCheck(cid)) {
+    if (CidValidityCheck(cid)) {
         return ReturnStatus::NOERROR;
     }
 
@@ -70,7 +70,7 @@ ReturnStatus GpuChunkCacheManager::PinSegment(ChunkID cid,
         ReturnStatus status =
             cpu_cache_manager_->PinSegment(cid, file_path, &cpu_ptr, &cpu_size,
                                            read_data_async, is_initial_loading);
-        if (status != ReturnStatus::OK) {
+        if (status != ReturnStatus::NOERROR) {
             return status;
         }
 
@@ -128,7 +128,7 @@ ReturnStatus GpuChunkCacheManager::PinSegment(ChunkID cid,
 
 ReturnStatus GpuChunkCacheManager::UnPinSegment(ChunkID cid)
 {
-    if (!CidValidityCheck(cid)) {
+    if (CidValidityCheck(cid)) {
         return ReturnStatus::NOERROR;
     }
 
@@ -144,7 +144,7 @@ ReturnStatus GpuChunkCacheManager::UnPinSegment(ChunkID cid)
 
 ReturnStatus GpuChunkCacheManager::SetDirty(ChunkID cid)
 {
-    if (!CidValidityCheck(cid)) {
+    if (CidValidityCheck(cid)) {
         return ReturnStatus::NOERROR;
     }
 
@@ -158,7 +158,7 @@ ReturnStatus GpuChunkCacheManager::CreateSegment(ChunkID cid,
                                                  size_t alloc_size,
                                                  bool can_destroy)
 {
-    if (!CidValidityCheck(cid) || !AllocSizeValidityCheck(alloc_size)) {
+    if (CidValidityCheck(cid) || AllocSizeValidityCheck(alloc_size)) {
         return ReturnStatus::NOERROR;
     }
 
@@ -182,7 +182,7 @@ ReturnStatus GpuChunkCacheManager::CreateSegment(ChunkID cid,
 
 ReturnStatus GpuChunkCacheManager::DestroySegment(ChunkID cid)
 {
-    if (!CidValidityCheck(cid)) {
+    if (CidValidityCheck(cid)) {
         return ReturnStatus::NOERROR;
     }
 
@@ -201,7 +201,7 @@ ReturnStatus GpuChunkCacheManager::DestroySegment(ChunkID cid)
 ReturnStatus GpuChunkCacheManager::FinalizeIO(ChunkID cid, bool read,
                                               bool write)
 {
-    if (!CidValidityCheck(cid)) {
+    if (CidValidityCheck(cid)) {
         return ReturnStatus::NOERROR;
     }
 
@@ -263,7 +263,7 @@ ReturnStatus GpuChunkCacheManager::GetRemainingMemoryUsage(
 
 int GpuChunkCacheManager::GetRefCount(ChunkID cid)
 {
-    if (!CidValidityCheck(cid)) {
+    if (CidValidityCheck(cid)) {
         return 0;
     }
     return cpu_cache_manager_->GetRefCount(cid);

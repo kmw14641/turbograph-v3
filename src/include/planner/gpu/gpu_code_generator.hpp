@@ -5,7 +5,9 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
+#include "common/constants.hpp"
 #include "common/types.hpp"
 #include "common/vector.hpp"
 #include "execution/cypher_pipeline.hpp"
@@ -15,6 +17,9 @@
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 
 namespace duckdb {
+
+// Forward declaration
+class GpuCodeGenerator;
 
 // Structure for GPU kernel parameters
 struct KernelParam {
@@ -32,6 +37,30 @@ struct MemoryTransferInfo {
     bool is_host_to_device;
 };
 
+// Structure for pointer mapping
+struct PointerMapping {
+    const char *name;
+    void *address;
+    ChunkDefinitionID cid;  // Chunk ID for GPU chunk cache manager
+};
+
+// Strategy pattern for operator-specific code generation
+class OperatorCodeGenerator {
+   public:
+    virtual ~OperatorCodeGenerator() = default;
+    virtual void GenerateCode(CypherPhysicalOperator *op,
+                              std::stringstream &code,
+                              GpuCodeGenerator *code_gen,
+                              ClientContext &context) = 0;
+};
+
+class NodeScanCodeGenerator : public OperatorCodeGenerator {
+   public:
+    void GenerateCode(CypherPhysicalOperator *op, std::stringstream &code,
+                      GpuCodeGenerator *code_gen,
+                      ClientContext &context) override;
+};
+
 class GpuCodeGenerator {
    public:
     GpuCodeGenerator(ClientContext &context);
@@ -46,7 +75,7 @@ class GpuCodeGenerator {
     void GenerateKernelCode(CypherPipeline &pipeline);
 
     // Generate GPU host code
-    void GenerateHostCode();
+    void GenerateHostCode(CypherPipeline &pipeline);
 
     // Analyze pipeline dependencies
     void AnalyzeDependencies(const CypherPipeline &pipeline);
@@ -73,6 +102,16 @@ class GpuCodeGenerator {
     // Set whether this kernel needs to be repeatable
     void SetRepeatable(bool repeatable) { is_repeatable = repeatable; }
 
+    // Add pointer mapping
+    void AddPointerMapping(const std::string &name, void *address,
+                           ChunkDefinitionID cid);
+
+    // Get pointer mappings
+    const std::vector<PointerMapping> &GetPointerMappings() const
+    {
+        return pointer_mappings;
+    }
+
     // Cleanup resources
     void Cleanup();
 
@@ -87,13 +126,27 @@ class GpuCodeGenerator {
     std::vector<MemoryTransferInfo> memory_transfers;
     std::map<std::string, size_t> device_memory_sizes;
 
-    CUmodule   gpu_module   = nullptr;
+    CUmodule gpu_module = nullptr;
     CUfunction kernel_function = nullptr;
 
     std::unique_ptr<GpuJitCompiler> jit_compiler;
-    
+
     bool is_compiled;
     bool is_repeatable;
+
+    std::vector<PointerMapping> pointer_mappings;
+
+    // Strategy pattern for operator-specific code generation
+    std::unordered_map<PhysicalOperatorType,
+                       std::unique_ptr<OperatorCodeGenerator>>
+        operator_generators;
+
+    // Initialize operator generators
+    void InitializeOperatorGenerators();
+
+    // Generate code for a specific operator
+    void GenerateOperatorCode(CypherPhysicalOperator *op,
+                              std::stringstream &code);
 };
 
 }  // namespace duckdb

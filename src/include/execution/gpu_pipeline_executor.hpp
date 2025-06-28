@@ -4,6 +4,7 @@
 #include <memory>
 #include "execution/base_pipeline_executor.hpp"
 #include "execution/cypher_pipeline.hpp"
+#include "planner/gpu/gpu_code_generator.hpp"
 
 namespace duckdb {
 
@@ -17,6 +18,10 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
                         void *kernel_function);
     GPUPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline,
                         SchemaFlowGraph &sfg, void *kernel_function);
+    GPUPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline,
+                        void *kernel_function, const std::vector<PointerMapping>& pointer_mappings);
+    GPUPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline,
+                        SchemaFlowGraph &sfg, void *kernel_function, const std::vector<PointerMapping>& pointer_mappings);
     ~GPUPipelineExecutor();
 
     //! Fully execute a pipeline with GPU acceleration
@@ -59,9 +64,15 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
     //! Execute pipeline using CPU fallback
     void ExecuteCPUPipeline();
 
+    //! Setup cache manager pointers for GPU execution
+    void SetupCacheManagerPointers();
+
    private:
     std::unique_ptr<SchemaFlowGraph> sfg;
     void *main_function;
+
+    // Pointer mappings for GPU execution
+    std::vector<PointerMapping> pointer_mappings;
 
     // GPU resources
     void *cuda_stream;  // CUstream 대신 void* 사용

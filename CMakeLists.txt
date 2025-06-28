@@ -170,6 +170,10 @@ if(ENABLE_CUDA)
   
   include_directories(${LLVM_INCLUDE_DIRS}  ${CLANG_INCLUDE_DIRS})
   
+  # Set project root path for JIT compiler
+  set(S62GDB_ROOT "${CMAKE_SOURCE_DIR}")
+  set(ENV{S62GDB_ROOT} "${CMAKE_SOURCE_DIR}")
+  
   set(S62_LLVM_LIBS LLVM)
   set(S62_CLANG_LIB clang-cpp)
   set(S62_CUDA_LIB
@@ -225,6 +229,9 @@ endif()
 add_definitions(-DSPDLOG_FMT_EXTERNAL) # Prevent spdlog and velox fmt conflicts
 add_definitions(-DDUCKDB_SOURCE_ID="\""1"\"")
 add_definitions(-DDUCKDB_VERSION="\""1"\"")
+
+# Add project root path definition for JIT compiler
+add_definitions(-DS62GDB_ROOT="${CMAKE_SOURCE_DIR}")
 
 # todo only regenerate ub file if one of the input files changed hack alert
 function(enable_unity_build UB_SUFFIX SOURCE_VARIABLE_NAME)

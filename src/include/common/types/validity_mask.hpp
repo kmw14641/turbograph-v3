@@ -13,8 +13,6 @@
 #include "common/vector_size.hpp"
 #include "common/to_string.hpp"
 
-#include "icecream.hpp"
-
 namespace duckdb {
 struct ValidityMask;
 

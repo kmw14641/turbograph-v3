@@ -84,7 +84,6 @@ void ExtentIterator::Initialize(
                 string file_path = DiskAioParameters::WORKSPACE +
                                    std::string("/chunk_") +
                                    std::to_string(cdf_id);
-                // icecream::ic.enable(); IC(); IC(cdf_id); icecream::ic.disable();
                 ChunkCacheManager::ccm->PinSegment(
                     cdf_id, file_path, &io_requested_buf_ptrs[toggle][i],
                     &io_requested_buf_sizes[toggle][i], true);
@@ -154,18 +153,15 @@ void ExtentIterator::Initialize(
 
             int j = 0;
             for (int i = 0; i < chunk_size; i++) {
-                // icecream::ic.enable(); IC(); IC(i, (int)ext_property_type[i].id()); icecream::ic.disable();
                 if (ext_property_type[i] == LogicalType::ID) {
                     io_requested_cdf_ids[toggle][i] =
                         std::numeric_limits<ChunkDefinitionID>::max();
-                    // icecream::ic.enable(); IC(); IC(i, io_requested_cdf_ids[toggle][i]); icecream::ic.disable();
                     j++;
                     continue;
                 }
                 if (target_idx[j] == std::numeric_limits<uint64_t>::max()) {
                     io_requested_cdf_ids[toggle][i] =
                         std::numeric_limits<ChunkDefinitionID>::max();
-                    // icecream::ic.enable(); IC(); IC(i, io_requested_cdf_ids[toggle][i]); icecream::ic.disable();
                     j++;
                     continue;
                 }
@@ -173,11 +169,9 @@ void ExtentIterator::Initialize(
                     extent_cat_entry->chunks[target_idx[j++] -
                                              target_idxs_offset];  // TODO bug..
                 io_requested_cdf_ids[toggle][i] = cdf_id;
-                // icecream::ic.enable(); IC(); IC(i, io_requested_cdf_ids[toggle][i]); icecream::ic.disable();
                 string file_path = DiskAioParameters::WORKSPACE +
                                    std::string("/chunk_") +
                                    std::to_string(cdf_id);
-                // icecream::ic.enable(); IC(); IC(cdf_id); icecream::ic.disable();
                 ChunkCacheManager::ccm->PinSegment(
                     cdf_id, file_path, &io_requested_buf_ptrs[toggle][i],
                     &io_requested_buf_sizes[toggle][i], true);
@@ -247,7 +241,6 @@ void ExtentIterator::Initialize(ClientContext &context,
                 string file_path = DiskAioParameters::WORKSPACE +
                                    std::string("/chunk_") +
                                    std::to_string(cdf_id);
-                // icecream::ic.enable(); IC(); IC(cdf_id); icecream::ic.disable();
                 ChunkCacheManager::ccm->PinSegment(
                     cdf_id, file_path, &io_requested_buf_ptrs[toggle][i],
                     &io_requested_buf_sizes[toggle][i], true);
@@ -394,7 +387,6 @@ void ExtentIterator::Initialize(ClientContext &context,
                 string file_path = DiskAioParameters::WORKSPACE +
                                    std::string("/chunk_") +
                                    std::to_string(cdf_id);  // TODO wrong path
-                // icecream::ic.enable(); IC(); IC(cdf_id); icecream::ic.disable();
                 ChunkCacheManager::ccm->PinSegment(
                     cdf_id, file_path, &io_requested_buf_ptrs[toggle][i],
                     &io_requested_buf_sizes[toggle][i], true);
