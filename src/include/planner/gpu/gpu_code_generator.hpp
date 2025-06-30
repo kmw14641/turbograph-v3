@@ -9,17 +9,17 @@
 #include <vector>
 #include "common/constants.hpp"
 #include "common/types.hpp"
+#include "common/types/value.hpp"
 #include "common/vector.hpp"
 #include "execution/cypher_pipeline.hpp"
 #include "execution/physical_operator/cypher_physical_operator.hpp"
-#include "planner/gpu/gpu_jit_compiler.hpp"
 #include "planner/expression.hpp"
-#include "planner/expression/bound_reference_expression.hpp"
+#include "planner/expression/bound_comparison_expression.hpp"
 #include "planner/expression/bound_constant_expression.hpp"
 #include "planner/expression/bound_function_expression.hpp"
 #include "planner/expression/bound_operator_expression.hpp"
-#include "planner/expression/bound_comparison_expression.hpp"
-#include "common/types/value.hpp"
+#include "planner/expression/bound_reference_expression.hpp"
+#include "planner/gpu/gpu_jit_compiler.hpp"
 
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <sstream>
@@ -71,16 +71,22 @@ struct LazyMaterializationInfo {
 
 // Helper class for code generation with indentation
 class CodeBuilder {
-public:
-    void Add(int nesting_level, const std::string &line) {
+   public:
+    void Add(int nesting_level, const std::string &line)
+    {
         for (int i = 0; i < nesting_level; ++i) {
-            ss << "    "; // 4 spaces per level
+            ss << "    ";  // 4 spaces per level
         }
         ss << line << "\n";
     }
     std::string str() const { return ss.str(); }
-    void clear() { ss.str(""); ss.clear(); }
-private:
+    void clear()
+    {
+        ss.str("");
+        ss.clear();
+    }
+
+   private:
     std::stringstream ss;
 };
 
@@ -88,11 +94,9 @@ private:
 class OperatorCodeGenerator {
    public:
     virtual ~OperatorCodeGenerator() = default;
-    virtual void GenerateCode(CypherPhysicalOperator *op,
-                              CodeBuilder &code,
+    virtual void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
                               GpuCodeGenerator *code_gen,
-                              ClientContext &context,
-                              int nesting_level = 0,
+                              ClientContext &context, int &nesting_level,
                               bool is_main_loop = false) = 0;
 };
 
@@ -100,60 +104,46 @@ class NodeScanCodeGenerator : public OperatorCodeGenerator {
    public:
     void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
                       GpuCodeGenerator *code_gen, ClientContext &context,
-                      int nesting_level = 0,
-                      bool is_main_loop = false) override;
+                      int &nesting_level, bool is_main_loop = false) override;
 };
 
 class ProjectionCodeGenerator : public OperatorCodeGenerator {
    public:
     void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
                       GpuCodeGenerator *code_gen, ClientContext &context,
-                      int nesting_level = 0,
-                      bool is_main_loop = false) override;
+                      int &nesting_level, bool is_main_loop = false) override;
 
    private:
-    void AnalyzeExpressionForAttributes(Expression *expr, 
-                                       CodeBuilder &code,
-                                       GpuCodeGenerator *code_gen,
-                                       ClientContext &context,
-                                       int nesting_level = 0);
-    void GenerateProjectionExpressionCode(Expression *expr, 
-                                         size_t expr_idx,
-                                         CodeBuilder &code,
-                                         GpuCodeGenerator *code_gen,
-                                         ClientContext &context,
-                                         int nesting_level = 0);
+    void GenerateProjectionExpressionCode(Expression *expr, size_t expr_idx,
+                                          CodeBuilder &code,
+                                          GpuCodeGenerator *code_gen,
+                                          ClientContext &context,
+                                          int &nesting_level);
     std::string ConvertLogicalTypeToCUDAType(LogicalType type);
     std::string ConvertValueToCUDALiteral(const Value &value);
     std::string ExpressionTypeToString(ExpressionType type);
     void GenerateFunctionCallCode(BoundFunctionExpression *func_expr,
-                                 const std::string &output_var,
-                                 CodeBuilder &code,
-                                 GpuCodeGenerator *code_gen,
-                                 ClientContext &context,
-                                 int nesting_level = 0);
+                                  const std::string &output_var,
+                                  CodeBuilder &code, GpuCodeGenerator *code_gen,
+                                  ClientContext &context, int &nesting_level);
     void GenerateOperatorCode(BoundOperatorExpression *op_expr,
-                             const std::string &output_var,
-                             CodeBuilder &code,
-                             GpuCodeGenerator *code_gen,
-                             ClientContext &context,
-                             int nesting_level = 0);
+                              const std::string &output_var, CodeBuilder &code,
+                              GpuCodeGenerator *code_gen,
+                              ClientContext &context, int &nesting_level);
 };
 
 class ProduceResultsCodeGenerator : public OperatorCodeGenerator {
    public:
     void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
                       GpuCodeGenerator *code_gen, ClientContext &context,
-                      int nesting_level = 0,
-                      bool is_main_loop = false) override;
+                      int &nesting_level, bool is_main_loop = false) override;
 };
 
 class FilterCodeGenerator : public OperatorCodeGenerator {
    public:
     void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
                       GpuCodeGenerator *code_gen, ClientContext &context,
-                      int nesting_level = 0,
-                      bool is_main_loop = false) override;
+                      int &nesting_level, bool is_main_loop = false) override;
 };
 
 class GpuCodeGenerator {
@@ -215,29 +205,34 @@ class GpuCodeGenerator {
     }
 
     // Lazy materialization management
-    void AddRequiredAttribute(const std::string &table_name, const std::string &column_name,
-                             idx_t extent_id, idx_t chunk_id, const std::string &param_name);
-    void MarkAttributeAsLoaded(const std::string &table_name, const std::string &column_name);
-    bool IsAttributeLoaded(const std::string &table_name, const std::string &column_name) const;
-    std::string GetAttributeParamName(const std::string &table_name, const std::string &column_name) const;
-    void GenerateLazyLoadCode(const std::string &table_name, const std::string &column_name, 
-                             CodeBuilder &code, GpuCodeGenerator *code_gen, int nesting_level = 0);
+    void AddRequiredAttribute(const std::string &table_name,
+                              const std::string &column_name, idx_t extent_id,
+                              idx_t chunk_id, const std::string &param_name);
+    void MarkAttributeAsLoaded(const std::string &table_name,
+                               const std::string &column_name);
+    bool IsAttributeLoaded(const std::string &table_name,
+                           const std::string &column_name) const;
+    std::string GetAttributeParamName(const std::string &table_name,
+                                      const std::string &column_name) const;
+    void GenerateLazyLoadCode(const std::string &table_name,
+                              const std::string &column_name, CodeBuilder &code,
+                              GpuCodeGenerator *code_gen, int &nesting_level);
     void ClearLazyMaterializationInfo();
 
     // Cleanup resources
     void Cleanup();
 
     // Generate code for a specific operator
-    void GenerateOperatorCode(CypherPhysicalOperator *op,
-                              CodeBuilder &code,
-                              int nesting_level = 0,
-                              bool is_main_loop = false);
+    void GenerateOperatorCode(CypherPhysicalOperator *op, CodeBuilder &code,
+                              int &nesting_level, bool is_main_loop = false);
 
     // Generate main scan loop with nested operators
-    void GenerateMainScanLoop(CypherPipeline &pipeline, CodeBuilder &code, int nesting_level = 0);
+    void GenerateMainScanLoop(CypherPipeline &pipeline, CodeBuilder &code,
+                              int &nesting_level);
 
     // Process remaining operators recursively
-    void ProcessRemainingOperators(CypherPipeline &pipeline, int op_idx, CodeBuilder &code, int nesting_level = 0);
+    void ProcessRemainingOperators(CypherPipeline &pipeline, int op_idx,
+                                   CodeBuilder &code, int &nesting_level);
 
    private:
     ClientContext &context;
