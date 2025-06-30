@@ -64,7 +64,7 @@ class GpuChunkCacheManager {
 
     ChunkCacheManager *cpu_cache_manager_;
 
-    unordered_map<ChunkID, void *> gpu_ptrs_;
+    unordered_map<ChunkID, facebook::velox::wave::Buffer *> gpu_ptrs_;
 };
 
 }  // namespace duckdb

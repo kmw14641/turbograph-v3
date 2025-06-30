@@ -46,9 +46,6 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
     //! Allocate GPU memory
     bool AllocateGPUMemory();
 
-    //! Transfer data to GPU
-    bool TransferDataToGPU();
-
     //! Launch kernel
     bool LaunchKernel();
 
@@ -63,9 +60,6 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
 
     //! Execute pipeline using CPU fallback
     void ExecuteCPUPipeline();
-
-    //! Setup cache manager pointers for GPU execution
-    void SetupCacheManagerPointers();
 
    private:
     std::unique_ptr<SchemaFlowGraph> sfg;

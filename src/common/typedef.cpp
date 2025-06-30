@@ -88,6 +88,11 @@ std::vector<string> Schema::getStoredColumnNames()
     return stored_column_names;
 }
 
+std::vector<string> &Schema::getStoredColumnNamesRef()
+{
+    return stored_column_names;
+}
+
 std::string Schema::printStoredTypes()
 {
     std::string result = "(";

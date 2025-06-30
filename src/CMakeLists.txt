@@ -25,6 +25,7 @@ set(S62GDB_THIRD_PARTY_LIBS_PUBLIC
     s62_simdcsv
     duckdb_utf8proc
     velox_dwio_common
+    velox_wave_common
     duckdb_yyjson
 )
 

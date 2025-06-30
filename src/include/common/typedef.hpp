@@ -74,6 +74,7 @@ class Schema {
     std::vector<duckdb::LogicalType> &getStoredTypesRef();
     void setStoredColumnNames(std::vector<std::string> &names);
     std::vector<std::string> getStoredColumnNames();
+    std::vector<std::string> &getStoredColumnNamesRef();
     void removeColumn(uint64_t col_idx);
 
     std::string printStoredTypes();

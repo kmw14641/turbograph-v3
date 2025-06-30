@@ -39,7 +39,7 @@ struct MemoryTransferInfo {
 
 // Structure for pointer mapping
 struct PointerMapping {
-    const char *name;
+    std::string name;
     void *address;
     ChunkDefinitionID cid;  // Chunk ID for GPU chunk cache manager
 };
@@ -84,8 +84,7 @@ class GpuCodeGenerator {
     void AnalyzeMemoryAccess(const CypherPipeline &pipeline);
 
     // Generate kernel parameters
-    std::vector<KernelParam> GenerateKernelParams(
-        const CypherPipeline &pipeline);
+    void GenerateKernelParams(const CypherPipeline &pipeline);
 
     // Compile generated CUDA code using nvcc
     bool CompileGeneratedCode();
@@ -99,8 +98,16 @@ class GpuCodeGenerator {
         return kernel_params;
     }
 
+    std::string ConvertLogicalTypeToPrimitiveType(LogicalTypeId type_id);
+
     // Set whether this kernel needs to be repeatable
     void SetRepeatable(bool repeatable) { is_repeatable = repeatable; }
+
+    // Set verbose mode for parameter naming
+    void SetVerboseMode(bool verbose) { verbose_mode = verbose; }
+
+    // Get verbose mode
+    bool GetVerboseMode() const { return verbose_mode; }
 
     // Add pointer mapping
     void AddPointerMapping(const std::string &name, void *address,
@@ -133,6 +140,7 @@ class GpuCodeGenerator {
 
     bool is_compiled;
     bool is_repeatable;
+    bool verbose_mode = true;  // Control parameter naming style
 
     std::vector<PointerMapping> pointer_mappings;
 

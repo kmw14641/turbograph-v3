@@ -115,6 +115,8 @@ class CypherPhysicalOperator {
 
     virtual size_t GetLoopCount() const { return 1; }
 
+    virtual Schema &GetSchema() const { return schema; }
+
     // operator metadata
     const PhysicalOperatorType type;
     mutable Schema schema;           // TODO remove mutable

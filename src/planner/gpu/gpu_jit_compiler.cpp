@@ -36,7 +36,7 @@ GpuJitCompiler::GpuJitCompiler()
     cuda_config.cuda_lib_path = "/usr/local/cuda/lib64";
     cuda_config.cuda_compile_flags = {
         "-x", "cuda",
-        "--cuda-gpu-arch=sm_61",  // Set GPU architecture
+        "--cuda-gpu-arch=sm_75",  // Set GPU architecture
         "-O3"                     // Optimization level
     };
 
@@ -137,7 +137,7 @@ std::vector<std::unique_ptr<llvm::Module>> GpuJitCompiler::CompileToIR(
         "-###", "-v",
         "--cuda-path=/usr/local/cuda-11.8",
         "-x", "cuda", "gpu_kernel.cu",
-        "--cuda-gpu-arch=sm_61",
+        "--cuda-gpu-arch=sm_75",
         "--cuda-host-only",
         "-O3",
         "-std=c++17",
@@ -265,7 +265,7 @@ bool GpuJitCompiler::CompileWithNVRTC(const std::string &src,
     if (nvrtcCreateProgram(&prog, src.c_str(), "jit_kernel.cu", 0, nullptr, nullptr) != NVRTC_SUCCESS)
         return false;
 
-    const char *opts[] = {"--gpu-architecture=compute_61", "--std=c++17"};
+    const char *opts[] = {"--gpu-architecture=compute_75", "--std=c++17"};
     nvrtcResult r = nvrtcCompileProgram(prog, 2, opts);
     if (r != NVRTC_SUCCESS) {
         size_t sz; nvrtcGetProgramLogSize(prog, &sz);
@@ -334,7 +334,7 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, CUfunctio
         "-###", "-v",
         "--cuda-path=/usr/local/cuda-11.8",
         "-x", "cuda", "gpu_host.cu",
-        "--cuda-gpu-arch=sm_61",
+        "--cuda-gpu-arch=sm_75",
         "--cuda-host-only",
         "-O3",
         "-std=c++17",

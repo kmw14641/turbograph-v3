@@ -32,7 +32,15 @@ public:
 		return operator_groups.GetIdxOperator(pipelineLength - 1);
 	}
 
+	CypherPhysicalOperator *GetSink() const {
+		return operator_groups.GetIdxOperator(pipelineLength - 1);
+	}
+
 	CypherPhysicalOperator *GetSource() {
+		return operator_groups.GetIdxOperator(0);
+	}
+
+	CypherPhysicalOperator *GetSource() const {
 		return operator_groups.GetIdxOperator(0);
 	}
 
@@ -103,7 +111,7 @@ public:
 		return pipeline_id;
 	}
 
-	int GetPipelineLength() {
+	int GetPipelineLength() const {
 		return pipelineLength;
 	}
 
