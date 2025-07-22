@@ -115,7 +115,7 @@ void Catalog::LoadCatalog(fixed_managed_mapped_file *&catalog_segment_, vector<v
         }
 
         catalog_version = std::stoll(catalog_version_str);
-		std::cout << "catalog_version: " << catalog_version << std::endl;
+		// std::cout << "catalog_version: " << catalog_version << std::endl;
 
 #ifdef ENABLE_SANITIZER_FLAG
 		__lsan_disable(); 

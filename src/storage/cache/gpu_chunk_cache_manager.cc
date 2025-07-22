@@ -32,7 +32,7 @@ GpuChunkCacheManager::~GpuChunkCacheManager()
     // delete gpu memory
     for (auto &pair : gpu_ptrs_) {
         if (pair.second) {
-            gpu_arena->free(pair.second);
+            gpu_arena->free(pair.second.get());
         }
     }
     gpu_ptrs_.clear();
@@ -80,9 +80,13 @@ ReturnStatus GpuChunkCacheManager::PinSegment(ChunkID cid,
         // allocate and copy to GPU memory
         auto gpu_buffer = gpu_arena->allocateBytes(cpu_size);
         if (!gpu_buffer) {
+            std::cerr << "GPU allocation failed for CID " << cid << ", size " << cpu_size << std::endl;
             cpu_cache_manager_->UnPinSegment(cid);
             return ReturnStatus::NOERROR;
         }
+
+        // pin the GPU buffer and get the pointer
+        gpu_buffer->pin();
         void *gpu_mem = gpu_buffer->as<void>();
 
         // copy from CPU to GPU
@@ -92,7 +96,7 @@ ReturnStatus GpuChunkCacheManager::PinSegment(ChunkID cid,
         cpu_cache_manager_->UnPinSegment(cid);
 
         // store GPU pointer
-        gpu_ptrs_[cid] = gpu_buffer.get();
+        gpu_ptrs_[cid] = std::move(gpu_buffer);
         *gpu_ptr = static_cast<uint8_t *>(gpu_mem);
         *size = cpu_size;
     }
@@ -138,7 +142,8 @@ ReturnStatus GpuChunkCacheManager::UnPinSegment(ChunkID cid)
 
     auto it = gpu_ptrs_.find(cid);
     if (it != gpu_ptrs_.end()) {
-        gpu_arena->free(it->second);
+        it->second->unpin();
+        gpu_arena->free(it->second.get());
         gpu_ptrs_.erase(it);
     }
 
@@ -193,7 +198,7 @@ ReturnStatus GpuChunkCacheManager::DestroySegment(ChunkID cid)
     // free GPU memory
     auto it = gpu_ptrs_.find(cid);
     if (it != gpu_ptrs_.end()) {
-        gpu_arena->free(it->second);
+        gpu_arena->free(it->second.get());
         gpu_ptrs_.erase(it);
     }
 
@@ -242,7 +247,7 @@ ReturnStatus GpuChunkCacheManager::FlushDirtySegmentsAndDeleteFromcache(
     if (destroy_segment) {
         // free GPU memory
         for (auto &pair : gpu_ptrs_) {
-            gpu_arena->free(pair.second);
+            gpu_arena->free(pair.second.get());
         }
         gpu_ptrs_.clear();
     }

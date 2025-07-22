@@ -119,8 +119,8 @@ bool GPUPipelineExecutor::AllocateGPUMemory()
     for (const auto &mapping : pointer_mappings) {
         if (mapping.cid >= 0) {
             // This is a chunk that needs GPU memory allocation
-            std::cout << "Allocating GPU memory for chunk " << mapping.cid
-                      << " (name: " << mapping.name << ")" << std::endl;
+            // std::cout << "Allocating GPU memory for chunk " << mapping.cid
+            //           << " (name: " << mapping.name << ")" << std::endl;
 
             uint8_t *gpu_ptr = nullptr;
             size_t size = 0;
@@ -141,6 +141,8 @@ bool GPUPipelineExecutor::AllocateGPUMemory()
 
                 // Update the pointer mapping with the actual GPU address
                 const_cast<PointerMapping &>(mapping).address = gpu_ptr;
+
+                // fprintf(stderr, "GPU memory address = %p\n", gpu_ptr);
             }
             else {
                 std::cerr << "Failed to allocate GPU memory for chunk "
@@ -150,8 +152,8 @@ bool GPUPipelineExecutor::AllocateGPUMemory()
         }
     }
 
-    std::cout << "GPU memory allocation completed for "
-              << gpu_memory_pool.size() << " chunks" << std::endl;
+    // std::cout << "GPU memory allocation completed for "
+    //           << gpu_memory_pool.size() << " chunks" << std::endl;
     return true;
 }
 

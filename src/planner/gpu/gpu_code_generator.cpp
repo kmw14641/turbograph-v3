@@ -3,10 +3,12 @@
 #include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <nvrtc.h>
+#include <fstream>
 #include <sstream>
 #include "catalog/catalog.hpp"
 #include "catalog/catalog_entry/list.hpp"
 #include "common/file_system.hpp"
+#include "common/logger.hpp"
 #include "execution/physical_operator/cypher_physical_operator.hpp"
 #include "execution/physical_operator/physical_filter.hpp"
 #include "execution/physical_operator/physical_node_scan.hpp"
@@ -58,15 +60,31 @@ void GpuCodeGenerator::InitializeOperatorGenerators()
 
 void GpuCodeGenerator::GenerateGPUCode(CypherPipeline &pipeline)
 {
+    SCOPED_TIMER_SIMPLE(GenerateGPUCode, spdlog::level::info,
+                        spdlog::level::debug);
+
     // generate kernel code
+    SUBTIMER_START(GenerateGPUCode, "GenerateKernelCode");
     GenerateKernelCode(pipeline);
+    SUBTIMER_STOP(GenerateGPUCode, "GenerateKernelCode");
 
     // then, generate host code
+    SUBTIMER_START(GenerateGPUCode, "GenerateHostCode");
     GenerateHostCode(pipeline);
+    SUBTIMER_STOP(GenerateGPUCode, "GenerateHostCode");
 
-    // for debug
-    std::cout << generated_gpu_code << std::endl;
-    std::cout << generated_cpu_code << std::endl;
+    // for debug - write to files
+    std::ofstream gpu_code_file("generated_gpu_code.cu");
+    if (gpu_code_file.is_open()) {
+        gpu_code_file << generated_gpu_code << std::endl;
+        gpu_code_file.close();
+    }
+
+    std::ofstream cpu_code_file("generated_cpu_code.cpp");
+    if (cpu_code_file.is_open()) {
+        cpu_code_file << generated_cpu_code << std::endl;
+        cpu_code_file.close();
+    }
 }
 
 void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
@@ -80,9 +98,17 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
 
     // Add kernel parameters
     GenerateKernelParams(pipeline);
-    for (size_t i = 0; i < kernel_params.size(); i++) {
-        code.Add(nesting_level, kernel_params[i].type + kernel_params[i].name +
-                                    (i < kernel_params.size() - 1 ? "," : ""));
+    for (size_t i = 0; i < input_kernel_params.size(); i++) {
+        code.Add(nesting_level, input_kernel_params[i].type +
+                                    input_kernel_params[i].name +
+                                    (i < input_kernel_params.size() - 1 ||
+                                             !output_kernel_params.empty()
+                                         ? ","
+                                         : ""));
+    }
+    for (size_t i = 0; i < output_kernel_params.size(); i++) {
+        code.Add(nesting_level, output_kernel_params[i].type + output_kernel_params[i].name +
+                                    (i < output_kernel_params.size() - 1 ? "," : ""));
     }
     nesting_level--;
     code.Add(nesting_level, ") {");
@@ -119,10 +145,10 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
     // Define structure for pointer mapping
     code.Add(nesting_level, "struct PointerMapping {");
     nesting_level++;
-    code.Add(nesting_level, "const char *name;");
+    code.Add(nesting_level, "std::string name;");
     code.Add(nesting_level, "void *address;");
     code.Add(nesting_level,
-             "int cid;  // Chunk ID for GPU chunk cache manager");
+             "unsigned long long cid;  // Chunk ID for GPU chunk cache manager");
     nesting_level--;
     code.Add(nesting_level, "};\n");
 
@@ -134,7 +160,7 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
 
     // Generate variable declarations for each parameter
     int param_index = 0;
-    for (const auto &p : kernel_params) {
+    for (const auto &p : input_kernel_params) {
         if (p.type.find('*') != std::string::npos) {
             // For pointer types, declare as void* and assign from ptr_mappings
             code.Add(nesting_level, "void *" + p.name + " = ptr_mappings[" +
@@ -148,16 +174,35 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
                      p.type + " " + p.name + " = " + p.value + ";");
         }
     }
+    for (const auto &p : output_kernel_params) {
+        if (p.type.find('*') != std::string::npos) {
+            code.Add(nesting_level, "void *" + p.name + ";");
+            code.Add(nesting_level, "cudaMalloc(&" + p.name + ", 1024);");
+        } else {
+            // For non-pointer types, declare as the actual type
+            code.Add(nesting_level,
+                     p.type + " " + p.name + " = " + p.value + ";");
+        }
+    }
     code.Add(nesting_level, "");
 
     code.Add(nesting_level, "const int blockSize = 128;");
     code.Add(nesting_level, "const int gridSize  = 3280;");
     std::string args_line = "void *args[] = {";
-    for (size_t i = 0; i < kernel_params.size(); ++i) {
-        const auto &p = kernel_params[i];
+    for (size_t i = 0; i < input_kernel_params.size(); ++i) {
+        const auto &p = input_kernel_params[i];
         args_line += "&" + p.name;
-        if (i + 1 < kernel_params.size())
+        if (i + 1 < input_kernel_params.size())
             args_line += ", ";
+    }
+    if (output_kernel_params.size() > 0) {
+        args_line += ", ";
+        for (size_t i = 0; i < output_kernel_params.size(); ++i) {
+            const auto &p = output_kernel_params[i];
+            args_line += "&" + p.name;
+            if (i + 1 < output_kernel_params.size())
+                args_line += ", ";
+        }
     }
     args_line += "};";
     code.Add(nesting_level, args_line + "\n");
@@ -171,8 +216,8 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
     code.Add(nesting_level, "cuGetErrorName(r, &name);");
     code.Add(nesting_level, "cuGetErrorString(r, &str);");
     code.Add(nesting_level,
-             "std::cerr << \"cuLaunchKernel failed: \" << (name?name:"
-             ") << \" – \" << (str?str:"
+             "std::cerr << \"cuLaunchKernel failed: \" << (name?name:\"unknown\""
+             ") << \" – \" << (str?str:\"unknown\""
              ") << std::endl;");
     code.Add(nesting_level,
              "throw std::runtime_error(\"cuLaunchKernel failed\");");
@@ -199,17 +244,30 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
 
 bool GpuCodeGenerator::CompileGeneratedCode()
 {
+    SCOPED_TIMER_SIMPLE(CompileGeneratedCode, spdlog::level::info,
+                        spdlog::level::info);
     if (generated_gpu_code.empty() || generated_cpu_code.empty())
         return false;
 
-    if (!jit_compiler->CompileWithNVRTC(generated_gpu_code, "gpu_kernel",
-                                        gpu_module, kernel_function))
+    // Compile the generated GPU code using nvrtc
+    SUBTIMER_START(CompileGeneratedCode, "CompileWithNVRTC");
+    auto success = jit_compiler->CompileWithNVRTC(
+        generated_gpu_code, "gpu_kernel", gpu_module, kernel_function);
+    SUBTIMER_STOP(CompileGeneratedCode, "CompileWithNVRTC");
+
+    // Check if the GPU code compilation was successful
+    if (!success)
         return false;
 
-    if (!jit_compiler->CompileWithORCLLJIT(generated_cpu_code,
-                                           kernel_function)) {
+    // Compile the generated CPU code using ORC JIT
+    SUBTIMER_START(CompileGeneratedCode, "CompileWithORCLLJIT");
+    auto success_orc =
+        jit_compiler->CompileWithORCLLJIT(generated_cpu_code, kernel_function);
+    SUBTIMER_STOP(CompileGeneratedCode, "CompileWithORCLLJIT");
+
+    // Check if the CPU code compilation was successful
+    if (!success_orc)
         return false;
-    }
 
     is_compiled = true;
     return true;
@@ -245,7 +303,8 @@ void GpuCodeGenerator::AddPointerMapping(const std::string &name, void *address,
 void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
 {
     // Clear existing parameters
-    kernel_params.clear();
+    input_kernel_params.clear();
+    output_kernel_params.clear();
 
     // Only process the first operator (assuming it's a scan)
     if (pipeline.GetPipelineLength() == 0) {
@@ -275,6 +334,8 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
             (PropertySchemaCatalogEntry *)catalog.GetEntry(context,
                                                            DEFAULT_SCHEMA, oid);
 
+        auto *column_names = property_schema_cat_entry->GetKeys();
+
         if (property_schema_cat_entry) {
             // Generate table name (graphletX format)
             std::string table_name = "graphlet" + std::to_string(oid);
@@ -286,7 +347,7 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
             count_param.type = "int ";
             count_param.value = std::to_string(10);  // TODO: tmp
             count_param.is_device_ptr = false;
-            kernel_params.push_back(count_param);
+            input_kernel_params.push_back(count_param);
 
             // Get extent IDs from the property schema
             for (size_t extent_idx = 0;
@@ -328,12 +389,16 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
                         data_param.name = param_name + "_data";
                         data_param.type = "void *";
                         data_param.is_device_ptr = true;
-                        kernel_params.push_back(data_param);
+                        input_kernel_params.push_back(data_param);
 
                         // Add pointer mapping for this chunk (column)
                         std::string chunk_name =
                             "chunk_" + std::to_string(cdf_id);
                         AddPointerMapping(chunk_name, nullptr, cdf_id);
+
+                        pipeline_context
+                            .column_to_param_mapping[column_names->at(
+                                chunk_idx)] = param_name;
                     }
                 }
             }
@@ -353,7 +418,7 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
         output_count_param.type = "int ";
         output_count_param.value = "0";
         output_count_param.is_device_ptr = true;
-        kernel_params.push_back(output_count_param);
+        output_kernel_params.push_back(output_count_param);
 
         // Add output data parameters based on sink schema
         auto &output_schema = sink_op->GetSchema();
@@ -370,7 +435,8 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
                 output_param_name = output_table_name + "_" + col_name;
             }
             else {
-                output_param_name = short_output_name + "_" + std::to_string(col_idx);
+                output_param_name =
+                    short_output_name + "_" + std::to_string(col_idx);
             }
 
             // Add output data buffer parameter
@@ -379,7 +445,7 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
             output_data_param.type =
                 "void *";  // Always void* for CUDA compatibility
             output_data_param.is_device_ptr = true;
-            kernel_params.push_back(output_data_param);
+            output_kernel_params.push_back(output_data_param);
         }
     }
 }
@@ -391,21 +457,22 @@ std::string GpuCodeGenerator::ConvertLogicalTypeToPrimitiveType(
         case LogicalTypeId::BOOLEAN:
             return "bool";
         case LogicalTypeId::TINYINT:
-            return "int8_t";
+            return "char";
         case LogicalTypeId::SMALLINT:
-            return "int16_t";
+            return "short";
         case LogicalTypeId::INTEGER:
-            return "int32_t";
+            return "int";
         case LogicalTypeId::BIGINT:
-            return "int64_t";
+            return "long long";
+        case LogicalTypeId::ID:
         case LogicalTypeId::UBIGINT:
-            return "uint64_t";
+            return "unsigned long long";
         case LogicalTypeId::UTINYINT:
-            return "uint8_t";
+            return "unsigned char";
         case LogicalTypeId::USMALLINT:
-            return "uint16_t";
+            return "unsigned short";
         case LogicalTypeId::UINTEGER:
-            return "uint32_t";
+            return "unsigned int";
         case LogicalTypeId::FLOAT:
             return "float";
         case LogicalTypeId::DOUBLE:
@@ -413,15 +480,15 @@ std::string GpuCodeGenerator::ConvertLogicalTypeToPrimitiveType(
         case LogicalTypeId::VARCHAR:
             return "char*";
         case LogicalTypeId::DATE:
-            return "int32_t";
+            return "int";
         case LogicalTypeId::TIME:
-            return "int32_t";
+            return "int";
         case LogicalTypeId::TIMESTAMP:
-            return "int64_t";
+            return "long long";
         case LogicalTypeId::INTERVAL:
-            return "int64_t";
+            return "long long";
         case LogicalTypeId::UUID:
-            return "int64_t";
+            return "long long";
         default:
             throw std::runtime_error("Unsupported logical type: " +
                                      std::to_string((uint8_t)type_id));
@@ -432,13 +499,20 @@ void GpuCodeGenerator::GenerateMainScanLoop(CypherPipeline &pipeline,
                                             CodeBuilder &code,
                                             int &nesting_level)
 {
+    // Initialize pipeline context once
+    InitializePipelineContext(pipeline);
+
     auto first_op = pipeline.GetSource();
     if (first_op->GetOperatorType() == PhysicalOperatorType::NODE_SCAN) {
-        GenerateOperatorCode(first_op, code, nesting_level,
+        MoveToOperator(0);
+        ExtractOutputSchema(first_op);
+        AnalyzeOperatorDependencies(first_op);
+        GenerateOperatorCode(first_op, code, nesting_level, pipeline_context,
                              /*is_main_loop=*/true);
 
         ProcessRemainingOperators(pipeline, 1, code, nesting_level);
 
+        nesting_level--;
         code.Add(nesting_level, "}");
     }
 }
@@ -453,11 +527,16 @@ void GpuCodeGenerator::ProcessRemainingOperators(CypherPipeline &pipeline,
 
     auto op = pipeline.GetIdxOperator(op_idx);
 
+    // Move to current operator and update schemas
+    MoveToOperator(op_idx);
+    ExtractOutputSchema(op);
+    AnalyzeOperatorDependencies(op);
+
     switch (op->GetOperatorType()) {
         case PhysicalOperatorType::FILTER:
             code.Add(nesting_level, "if (condition) {");
             nesting_level++;
-            GenerateOperatorCode(op, code, nesting_level,
+            GenerateOperatorCode(op, code, nesting_level, pipeline_context,
                                  /*is_main_loop=*/false);
             ProcessRemainingOperators(pipeline, op_idx + 1, code,
                                       nesting_level);
@@ -471,21 +550,21 @@ void GpuCodeGenerator::ProcessRemainingOperators(CypherPipeline &pipeline,
             //     break;
 
         case PhysicalOperatorType::PROJECTION:
-            GenerateOperatorCode(op, code, nesting_level,
+            GenerateOperatorCode(op, code, nesting_level, pipeline_context,
                                  /*is_main_loop=*/false);
             ProcessRemainingOperators(pipeline, op_idx + 1, code,
                                       nesting_level);
             break;
 
         case PhysicalOperatorType::PRODUCE_RESULTS:
-            GenerateOperatorCode(op, code, nesting_level,
+            GenerateOperatorCode(op, code, nesting_level, pipeline_context,
                                  /*is_main_loop=*/false);
             ProcessRemainingOperators(pipeline, op_idx + 1, code,
                                       nesting_level);
             break;
 
         default:
-            GenerateOperatorCode(op, code, nesting_level,
+            GenerateOperatorCode(op, code, nesting_level, pipeline_context,
                                  /*is_main_loop=*/false);
             ProcessRemainingOperators(pipeline, op_idx + 1, code,
                                       nesting_level);
@@ -496,12 +575,13 @@ void GpuCodeGenerator::ProcessRemainingOperators(CypherPipeline &pipeline,
 void GpuCodeGenerator::GenerateOperatorCode(CypherPhysicalOperator *op,
                                             CodeBuilder &code,
                                             int &nesting_level,
+                                            PipelineContext &pipeline_ctx,
                                             bool is_main_loop)
 {
     auto it = operator_generators.find(op->GetOperatorType());
     if (it != operator_generators.end()) {
         it->second->GenerateCode(op, code, this, context, nesting_level,
-                                 is_main_loop);
+                                 pipeline_ctx, is_main_loop);
     }
     else {
         // Default handling for unknown operators
@@ -511,11 +591,10 @@ void GpuCodeGenerator::GenerateOperatorCode(CypherPhysicalOperator *op,
     }
 }
 
-void NodeScanCodeGenerator::GenerateCode(CypherPhysicalOperator *op,
-                                         CodeBuilder &code,
-                                         GpuCodeGenerator *code_gen,
-                                         ClientContext &context,
-                                         int &nesting_level, bool is_main_loop)
+void NodeScanCodeGenerator::GenerateCode(
+    CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
+    ClientContext &context, int &nesting_level, PipelineContext &pipeline_ctx,
+    bool is_main_loop)
 {
     auto scan_op = dynamic_cast<PhysicalNodeScan *>(op);
     if (!scan_op)
@@ -538,6 +617,8 @@ void NodeScanCodeGenerator::GenerateCode(CypherPhysicalOperator *op,
                 // Generate table name (graphletX format)
                 std::string table_name = "graphlet" + std::to_string(oid);
                 std::string short_table_name = "gr" + std::to_string(oid);
+
+                auto *property_types_id = property_schema_cat_entry->GetTypes();
 
                 // Get extent IDs from the property schema
                 for (size_t extent_idx = 0;
@@ -574,6 +655,47 @@ void NodeScanCodeGenerator::GenerateCode(CypherPhysicalOperator *op,
                         code.Add(nesting_level,
                                  "unsigned long long tuple_id = tuple_id_base "
                                  "+ tid;");
+                        // code.Add(nesting_level, "printf(\"tid = %ld, tuple_id = %llu\\n\", tid, tuple_id);");
+
+                        // Declare input column pointers for lazy materialization
+                        code.Add(nesting_level,
+                                 "// Declare input column pointers");
+                        
+                        for (size_t chunk_idx = 0;
+                             chunk_idx < extent_cat_entry->chunks.size();
+                             chunk_idx++) {
+                            // type extract
+                            LogicalTypeId type_id = (LogicalTypeId)property_types_id->at(chunk_idx);
+                            std::string ctype =
+                                code_gen->ConvertLogicalTypeToPrimitiveType(type_id);
+
+                            // Generate column name based on chunk index
+                            std::string col_name =
+                                "col_" + std::to_string(chunk_idx);
+
+                            // Generate parameter names based on verbose mode
+                            std::string param_name;
+                            if (code_gen->GetVerboseMode()) {
+                                param_name = table_name + "_" + col_name;
+                            }
+                            else {
+                                param_name = short_table_name + "_" +
+                                             std::to_string(chunk_idx);
+                            }
+
+                            // Declare the pointer
+                            code.Add(
+                                nesting_level,
+                                ctype + "* " + param_name +
+                                    "_ptr = static_cast<" + ctype + "*>(" +
+                                    param_name + "_data);");
+
+                            // Add to lazy materialization tracking
+                            pipeline_ctx.input_column_names.push_back(
+                                param_name);
+                            pipeline_ctx.column_materialized[param_name] =
+                                false;
+                        }
 
                         // Track all available attributes for lazy materialization
                         for (size_t chunk_idx = 0;
@@ -597,9 +719,10 @@ void NodeScanCodeGenerator::GenerateCode(CypherPhysicalOperator *op,
                             }
 
                             // Add to lazy materialization tracking
-                            code_gen->AddRequiredAttribute(table_name, col_name,
-                                                           extent_id, cdf_id,
-                                                           param_name);
+                            pipeline_ctx.input_column_names.push_back(
+                                param_name);
+                            pipeline_ctx.column_materialized[param_name] =
+                                false;
                         }
 
                         break;
@@ -613,11 +736,10 @@ void NodeScanCodeGenerator::GenerateCode(CypherPhysicalOperator *op,
     }
 }
 
-void ProjectionCodeGenerator::GenerateCode(CypherPhysicalOperator *op,
-                                           CodeBuilder &code,
-                                           GpuCodeGenerator *code_gen,
-                                           ClientContext &context,
-                                           int &nesting_level, bool is_main_loop)
+void ProjectionCodeGenerator::GenerateCode(
+    CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
+    ClientContext &context, int &nesting_level, PipelineContext &pipeline_ctx,
+    bool is_main_loop)
 {
     auto proj_op = dynamic_cast<PhysicalProjection *>(op);
     if (!proj_op) {
@@ -630,15 +752,23 @@ void ProjectionCodeGenerator::GenerateCode(CypherPhysicalOperator *op,
     for (size_t expr_idx = 0; expr_idx < proj_op->expressions.size();
          expr_idx++) {
         auto &expr = proj_op->expressions[expr_idx];
-        // Only generate projection code (no analysis)
+        // Generate projection code with pipeline context
         GenerateProjectionExpressionCode(expr.get(), expr_idx, code, code_gen,
-                                         context, nesting_level);
+                                         context, nesting_level, pipeline_ctx);
+
+        // Mark the output column as materialized
+        if (expr_idx < pipeline_ctx.output_column_names.size()) {
+            std::string output_col_name =
+                pipeline_ctx.output_column_names[expr_idx];
+            pipeline_ctx.column_materialized[output_col_name] = true;
+        }
     }
 }
 
 void ProjectionCodeGenerator::GenerateProjectionExpressionCode(
     Expression *expr, size_t expr_idx, CodeBuilder &code,
-    GpuCodeGenerator *code_gen, ClientContext &context, int &nesting_level)
+    GpuCodeGenerator *code_gen, ClientContext &context, int &nesting_level,
+    PipelineContext &pipeline_ctx)
 {
     if (!expr)
         return;
@@ -647,7 +777,44 @@ void ProjectionCodeGenerator::GenerateProjectionExpressionCode(
 
     switch (expr->expression_class) {
         case ExpressionClass::BOUND_REF: {
-            // Do not generate any code for simple reference
+            // Handle reference expression with pipeline context
+            // auto ref_expr = dynamic_cast<BoundReferenceExpression *>(expr);
+            // if (ref_expr &&
+            //     ref_expr->index < pipeline_ctx.input_column_names.size()) {
+            //     std::string input_col_name =
+            //         pipeline_ctx.input_column_names[ref_expr->index];
+
+            //     // Check if this column is already materialized
+            //     bool is_materialized =
+            //         pipeline_ctx.column_materialized.find(input_col_name) !=
+            //             pipeline_ctx.column_materialized.end() &&
+            //         pipeline_ctx.column_materialized[input_col_name];
+
+            //     if (!is_materialized) {
+            //         // Generate lazy loading code
+            //         code.Add(nesting_level,
+            //                  "// Lazy load input column: " + input_col_name);
+            //         code.Add(nesting_level,
+            //                  "if (!" + input_col_name + "_loaded) {");
+            //         code.Add(nesting_level + 1,
+            //                  input_col_name + "_ptr = static_cast<uint64_t*>(" +
+            //                      input_col_name + "_data);");
+            //         code.Add(nesting_level + 1,
+            //                  input_col_name + "_loaded = true;");
+            //         code.Add(nesting_level, "}");
+
+            //         // Mark as materialized
+            //         pipeline_ctx.column_materialized[input_col_name] = true;
+            //     }
+
+            //     // Create column mapping for output
+            //     if (expr_idx < pipeline_ctx.output_column_names.size()) {
+            //         std::string output_col_name =
+            //             pipeline_ctx.output_column_names[expr_idx];
+            //         pipeline_ctx.column_mapping[output_col_name] =
+            //             input_col_name;
+            //     }
+            // }
             break;
         }
         case ExpressionClass::BOUND_CONSTANT: {
@@ -670,7 +837,7 @@ void ProjectionCodeGenerator::GenerateProjectionExpressionCode(
                 code.Add(nesting_level,
                          "// Function call: " + func_expr->function.name);
                 GenerateFunctionCallCode(func_expr, output_var, code, code_gen,
-                                         context, nesting_level);
+                                         context, nesting_level, pipeline_ctx);
             }
             break;
         }
@@ -682,7 +849,7 @@ void ProjectionCodeGenerator::GenerateProjectionExpressionCode(
                     nesting_level,
                     "// Operator: " + ExpressionTypeToString(op_expr->type));
                 GenerateOperatorCode(op_expr, output_var, code, code_gen,
-                                     context, nesting_level);
+                                     context, nesting_level, pipeline_ctx);
             }
             break;
         }
@@ -698,7 +865,8 @@ void ProjectionCodeGenerator::GenerateProjectionExpressionCode(
     // Store the result in output buffer, except for BOUND_REF
     if (expr->expression_class != ExpressionClass::BOUND_REF) {
         code.Add(nesting_level, "// Store projection result");
-        code.Add(nesting_level, "output_col_" + std::to_string(expr_idx) + "[tid] = " + output_var + ";");
+        code.Add(nesting_level, "output_col_" + std::to_string(expr_idx) +
+                                    "[tid] = " + output_var + ";");
     }
 }
 
@@ -776,7 +944,7 @@ std::string ProjectionCodeGenerator::ExpressionTypeToString(ExpressionType type)
 void ProjectionCodeGenerator::GenerateFunctionCallCode(
     BoundFunctionExpression *func_expr, const std::string &output_var,
     CodeBuilder &code, GpuCodeGenerator *code_gen, ClientContext &context,
-    int &nesting_level)
+    int &nesting_level, PipelineContext &pipeline_ctx)
 {
     // For now, we'll implement a simple approach
     // In the future, this should be expanded to handle different function types
@@ -837,7 +1005,7 @@ void ProjectionCodeGenerator::GenerateFunctionCallCode(
 void ProjectionCodeGenerator::GenerateOperatorCode(
     BoundOperatorExpression *op_expr, const std::string &output_var,
     CodeBuilder &code, GpuCodeGenerator *code_gen, ClientContext &context,
-    int &nesting_level)
+    int &nesting_level, PipelineContext &pipeline_ctx)
 {
     if (op_expr->children.size() == 2) {
         // Binary operator
@@ -908,7 +1076,8 @@ void ProjectionCodeGenerator::GenerateOperatorCode(
 
 void ProduceResultsCodeGenerator::GenerateCode(
     CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
-    ClientContext &context, int &nesting_level, bool is_main_loop)
+    ClientContext &context, int &nesting_level, PipelineContext &pipeline_ctx,
+    bool is_main_loop)
 {
     auto results_op = dynamic_cast<PhysicalProduceResults *>(op);
     if (!results_op) {
@@ -917,47 +1086,137 @@ void ProduceResultsCodeGenerator::GenerateCode(
 
     code.Add(nesting_level, "// Produce results operator");
 
+    // Declare output count pointer
+    code.Add(nesting_level,
+             "int* output_count_ptr = static_cast<int*>(&output_count);");
+
     // Get the output schema to determine what columns to write
     auto &output_schema = results_op->GetSchema();
     auto &output_column_names = output_schema.getStoredColumnNamesRef();
 
     code.Add(nesting_level, "// Write results to output buffers");
     for (size_t col_idx = 0; col_idx < output_column_names.size(); col_idx++) {
-        std::string col_name = output_column_names[col_idx];
+        std::string orig_col_name = output_column_names[col_idx];
+        std::string col_name = orig_col_name;
         // Replace '.' with '_' for valid C/C++ variable names
         std::replace(col_name.begin(), col_name.end(), '.', '_');
+
+        // type extract
+        LogicalTypeId type_id = pipeline_ctx.output_column_types[col_idx].id();
+        std::string ctype =
+            code_gen->ConvertLogicalTypeToPrimitiveType(type_id);
+
+        // Check if this column is materialized in the pipeline context
+        bool is_materialized =
+            pipeline_ctx.column_materialized.find(col_name) !=
+                pipeline_ctx.column_materialized.end() &&
+            pipeline_ctx.column_materialized[col_name];
+
         std::string output_param_name;
         if (code_gen->GetVerboseMode()) {
             output_param_name = "output_" + col_name;
-        } else {
+        }
+        else {
             output_param_name = "out_" + std::to_string(col_idx);
         }
         std::string output_data_name = output_param_name + "_data";
         std::string output_ptr_name = output_param_name + "_ptr";
+
         code.Add(nesting_level, "// Write column " + std::to_string(col_idx) +
                                     " (" + col_name + ") to output");
-        code.Add(nesting_level, "if (" + output_data_name + " != nullptr) {");
-        code.Add(nesting_level + 1,
-                 "uint64_t* " + output_ptr_name + " = static_cast<uint64_t*>(" + output_data_name + ");");
-        code.Add(nesting_level + 1, output_ptr_name + "[tid] = proj_result_" + std::to_string(col_idx) + ";");
-        code.Add(nesting_level, "}");
+
+        if (is_materialized) {
+            // Column is already materialized, use the projection result
+            code.Add(nesting_level, ctype + "* " + output_ptr_name +
+                                        " = static_cast<" + ctype + "*>(" +
+                                        output_data_name + ");");
+            code.Add(nesting_level, output_ptr_name + "[tid] = proj_result_" +
+                                        std::to_string(col_idx) + ";");
+        }
+        else {
+            // Column needs to be materialized from input
+            // Find the corresponding input column
+
+            std::string orig_col_name_wo_varname =
+                orig_col_name.substr(orig_col_name.find_last_of('.') + 1);
+            if (orig_col_name_wo_varname == "_id") {
+                code.Add(nesting_level,
+                         "// Special case for _id column, use tuple_id");
+                code.Add(nesting_level, ctype + "* " + output_ptr_name +
+                                            " = static_cast<" + ctype + "*>(" +
+                                            output_data_name + ");");
+                code.Add(nesting_level,
+                         output_ptr_name + "[tid] = " + "tuple_id;");
+            }
+            else {
+                auto it = pipeline_ctx.column_to_param_mapping.find(
+                    orig_col_name_wo_varname);
+                if (it != pipeline_ctx.column_to_param_mapping.end()) {
+                    std::string input_col_name = it->second;
+                    code.Add(
+                        nesting_level,
+                        "// Materialize column from input: " + input_col_name);
+                    code.Add(nesting_level, ctype + "* " + output_ptr_name +
+                                                " = static_cast<" + ctype +
+                                                "*>(" + output_data_name +
+                                                ");");
+                    // code.Add(nesting_level, ctype + "* " + input_col_name +
+                    //                             "_ptr" + " = static_cast<" +
+                    //                             ctype + "*>(" + input_col_name +
+                    //                             ");");
+                    code.Add(nesting_level, output_ptr_name +
+                                                "[tid] = " + input_col_name +
+                                                "_ptr" + "[i];");
+                }
+                else {
+                    // No mapping found, check if it's a direct input column
+                    auto input_it = std::find(
+                        pipeline_ctx.input_column_names.begin(),
+                        pipeline_ctx.input_column_names.end(), orig_col_name);
+                    if (input_it != pipeline_ctx.input_column_names.end()) {
+                        // Direct input column
+                        code.Add(nesting_level,
+                                 "// Direct input column: " + orig_col_name);
+                        code.Add(nesting_level, ctype + "* " + output_ptr_name +
+                                                    " = static_cast<" + ctype +
+                                                    "*>(" + output_data_name +
+                                                    ");");
+                        code.Add(nesting_level, output_ptr_name + "[tid] = " +
+                                                    col_name + "_ptr[i];");
+                    }
+                    else {
+                        // Fallback: use projection result
+                        code.Add(
+                            nesting_level,
+                            "// No mapping found, using projection result");
+                        code.Add(nesting_level, ctype + "* " + output_ptr_name +
+                                                    " = static_cast<" + ctype +
+                                                    "*>(" + output_data_name +
+                                                    ");");
+                        code.Add(nesting_level,
+                                 output_ptr_name + "[tid] = proj_result_" +
+                                     std::to_string(col_idx) + ";");
+                    }
+                }
+            }
+        }
     }
 
     // Update output count
     code.Add(nesting_level, "// Update output count atomically");
-    code.Add(nesting_level, "atomicAdd(output_count, 1);");
+    // code.Add(nesting_level, "atomicAdd(output_count_ptr, 1);");
 
     code.Add(nesting_level, "// Results produced successfully");
 }
 
-void FilterCodeGenerator::GenerateCode(CypherPhysicalOperator *op,
-                                       CodeBuilder &code,
-                                       GpuCodeGenerator *code_gen,
-                                       ClientContext &context,
-                                       int &nesting_level, bool is_main_loop)
+void FilterCodeGenerator::GenerateCode(
+    CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
+    ClientContext &context, int &nesting_level, PipelineContext &pipeline_ctx,
+    bool is_main_loop)
 {
     // For now, we'll implement a simple filter
     // In the future, this should analyze the filter expression and generate appropriate code
+    // using the pipeline context to understand available columns
 
     code.Add(nesting_level, "// Filter operator - check condition");
     code.Add(
@@ -970,93 +1229,222 @@ void FilterCodeGenerator::GenerateCode(CypherPhysicalOperator *op,
     code.Add(nesting_level, "// Filter condition passed, continue processing");
 }
 
-// Lazy materialization implementation
-void GpuCodeGenerator::AddRequiredAttribute(const std::string &table_name,
-                                            const std::string &column_name,
-                                            idx_t extent_id, idx_t chunk_id,
-                                            const std::string &param_name)
+// Pipeline context management methods
+void GpuCodeGenerator::InitializePipelineContext(const CypherPipeline &pipeline)
 {
-    AttributeAccess attr;
-    attr.table_name = table_name;
-    attr.column_name = column_name;
-    attr.extent_id = extent_id;
-    attr.chunk_id = chunk_id;
-    attr.is_loaded = false;
-    attr.param_name = param_name;
-
-    lazy_materialization_info.required_attributes.push_back(attr);
-    lazy_materialization_info
-        .attribute_to_param_mapping[table_name + "." + column_name] =
-        param_name;
+    pipeline_context.InitializePipeline(pipeline);
 }
 
-void GpuCodeGenerator::MarkAttributeAsLoaded(const std::string &table_name,
-                                             const std::string &column_name)
+void GpuCodeGenerator::MoveToOperator(int op_idx)
 {
-    std::string key = table_name + "." + column_name;
-    for (auto &attr : lazy_materialization_info.required_attributes) {
-        if (attr.table_name == table_name && attr.column_name == column_name) {
-            attr.is_loaded = true;
-            lazy_materialization_info.loaded_attributes.push_back(attr);
+    pipeline_context.MoveToOperator(op_idx);
+}
+
+void GpuCodeGenerator::AnalyzeOperatorDependencies(CypherPhysicalOperator *op)
+{
+    // Analyze expressions to track column usage and update mappings
+    switch (op->GetOperatorType()) {
+        case PhysicalOperatorType::PROJECTION: {
+            auto proj_op = dynamic_cast<PhysicalProjection *>(op);
+            if (proj_op) {
+                // Clear existing column mappings for this operator
+                pipeline_context.column_mapping.clear();
+
+                for (size_t i = 0; i < proj_op->expressions.size(); i++) {
+                    auto &expr = proj_op->expressions[i];
+                    TrackColumnUsage(expr.get());
+
+                    // Update column mapping based on expression type
+                    if (expr->expression_class == ExpressionClass::BOUND_REF) {
+                        auto ref_expr =
+                            dynamic_cast<BoundReferenceExpression *>(
+                                expr.get());
+                        if (ref_expr &&
+                            ref_expr->index <
+                                pipeline_context.input_column_names.size()) {
+                            std::string input_col =
+                                pipeline_context
+                                    .input_column_names[ref_expr->index];
+                            if (i <
+                                pipeline_context.output_column_names.size()) {
+                                std::string output_col =
+                                    pipeline_context.output_column_names[i];
+                                pipeline_context.column_mapping[output_col] =
+                                    input_col;
+                            }
+                        }
+                    }
+                }
+            }
             break;
         }
+        case PhysicalOperatorType::FILTER: {
+            // For filter, maintain existing column mappings (pass-through)
+            // TODO: Analyze filter expressions for column usage
+            break;
+        }
+        default:
+            // For other operators, maintain existing column mappings
+            break;
     }
 }
 
-bool GpuCodeGenerator::IsAttributeLoaded(const std::string &table_name,
-                                         const std::string &column_name) const
+void GpuCodeGenerator::ExtractInputSchema(CypherPhysicalOperator *op)
 {
-    for (const auto &attr : lazy_materialization_info.loaded_attributes) {
-        if (attr.table_name == table_name && attr.column_name == column_name) {
-            return true;
+    // For now, we'll extract from the operator's children
+    // In a more complete implementation, this would analyze the actual input schema
+    if (pipeline_context.current_operator_index > 0) {
+        pipeline_context.input_column_names =
+            *pipeline_context.operator_column_names
+                 [pipeline_context.current_operator_index - 1];
+        pipeline_context.input_column_types =
+            *pipeline_context.operator_column_types
+                 [pipeline_context.current_operator_index - 1];
+    }
+}
+
+void GpuCodeGenerator::ExtractOutputSchema(CypherPhysicalOperator *op)
+{
+    auto &schema = op->GetSchema();
+    auto &column_names = schema.getStoredColumnNamesRef();
+    auto &column_types = schema.getStoredTypesRef();
+
+    pipeline_context.output_column_names.clear();
+    pipeline_context.output_column_types.clear();
+
+    for (size_t i = 0; i < column_names.size(); i++) {
+        pipeline_context.output_column_names.push_back(column_names[i]);
+        pipeline_context.output_column_types.push_back(column_types[i]);
+    }
+}
+
+void GpuCodeGenerator::TrackColumnUsage(Expression *expr)
+{
+    if (!expr)
+        return;
+
+    switch (expr->expression_class) {
+        case ExpressionClass::BOUND_REF: {
+            auto ref_expr = dynamic_cast<BoundReferenceExpression *>(expr);
+            if (ref_expr &&
+                ref_expr->index < pipeline_context.input_column_names.size()) {
+                std::string col_name =
+                    pipeline_context.input_column_names[ref_expr->index];
+                pipeline_context.used_columns.insert(col_name);
+            }
+            break;
+        }
+        case ExpressionClass::BOUND_FUNCTION: {
+            auto func_expr = dynamic_cast<BoundFunctionExpression *>(expr);
+            if (func_expr) {
+                for (auto &child : func_expr->children) {
+                    TrackColumnUsage(child.get());
+                }
+            }
+            break;
+        }
+        case ExpressionClass::BOUND_OPERATOR: {
+            auto op_expr = dynamic_cast<BoundOperatorExpression *>(expr);
+            if (op_expr) {
+                for (auto &child : op_expr->children) {
+                    TrackColumnUsage(child.get());
+                }
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+// PipelineContext method implementations
+void PipelineContext::InitializePipeline(const CypherPipeline &pipeline)
+{
+    total_operators = pipeline.GetPipelineLength();
+    current_operator_index = 0;
+
+    // Clear existing data
+    operator_column_names.clear();
+    operator_column_types.clear();
+    column_materialized.clear();
+    column_mapping.clear();
+    used_columns.clear();
+    gpu_memory_loaded.clear();
+    // column_to_param_mapping.clear();
+    column_to_table_mapping.clear();
+    column_to_extent_mapping.clear();
+    column_to_chunk_mapping.clear();
+
+    // Collect all operator schemas
+    for (int i = 0; i < total_operators; i++) {
+        auto op = pipeline.GetIdxOperator(i);
+        if (op) {
+            auto &schema = op->GetSchema();
+            auto &column_names = schema.getStoredColumnNamesRef();
+            auto &column_types = schema.getStoredTypesRef();
+
+            operator_column_names.push_back(&column_names);
+            operator_column_types.push_back(&column_types);
+        }
+        else {
+            operator_column_names.push_back(nullptr);
+            operator_column_types.push_back(nullptr);
         }
     }
-    return false;
 }
 
-std::string GpuCodeGenerator::GetAttributeParamName(
-    const std::string &table_name, const std::string &column_name) const
+void PipelineContext::MoveToOperator(int op_idx)
 {
-    std::string key = table_name + "." + column_name;
-    auto it = lazy_materialization_info.attribute_to_param_mapping.find(key);
-    if (it != lazy_materialization_info.attribute_to_param_mapping.end()) {
-        return it->second;
+    if (op_idx >= 0 && op_idx < total_operators) {
+        current_operator_index = op_idx;
+
+        // Update input schema from previous operator
+        if (op_idx > 0 && operator_column_names[op_idx - 1] &&
+            operator_column_types[op_idx - 1]) {
+            input_column_names = *operator_column_names[op_idx - 1];
+            input_column_types = *operator_column_types[op_idx - 1];
+        }
+        else {
+            input_column_names.clear();
+            input_column_types.clear();
+        }
+
+        // Update output schema from current operator
+        if (operator_column_names[op_idx] && operator_column_types[op_idx]) {
+            output_column_names = *operator_column_names[op_idx];
+            output_column_types = *operator_column_types[op_idx];
+        }
+        else {
+            output_column_names.clear();
+            output_column_types.clear();
+        }
+
+        // Update column mappings for pass-through columns
+        // If a column exists in both input and output with the same name, maintain the mapping
+        if (op_idx > 0) {
+            std::unordered_map<std::string, std::string> new_column_mapping;
+
+            for (const auto &output_col : output_column_names) {
+                // Check if this output column exists in input (pass-through)
+                auto it = std::find(input_column_names.begin(),
+                                    input_column_names.end(), output_col);
+                if (it != input_column_names.end()) {
+                    // This is a pass-through column, maintain the mapping
+                    auto mapping_it = column_mapping.find(output_col);
+                    if (mapping_it != column_mapping.end()) {
+                        new_column_mapping[output_col] = mapping_it->second;
+                    }
+                    else {
+                        // Direct pass-through
+                        new_column_mapping[output_col] = output_col;
+                    }
+                }
+            }
+
+            // Update column_mapping with new mappings
+            column_mapping = new_column_mapping;
+        }
     }
-    return "";
-}
-
-void GpuCodeGenerator::GenerateLazyLoadCode(const std::string &table_name,
-                                            const std::string &column_name,
-                                            CodeBuilder &code,
-                                            GpuCodeGenerator *code_gen,
-                                            int &nesting_level)
-{
-    if (IsAttributeLoaded(table_name, column_name)) {
-        return;  // Already loaded
-    }
-
-    std::string param_name = GetAttributeParamName(table_name, column_name);
-    if (param_name.empty()) {
-        return;  // No parameter mapping found
-    }
-
-    // Generate lazy load code
-    code.Add(nesting_level,
-             "// Lazy load for " + table_name + "." + column_name);
-    code.Add(nesting_level, "if (!" + param_name + "_loaded) {");
-    code.Add(nesting_level + 1, param_name + "_ptr = static_cast<uint64_t*>(" +
-                                    param_name + "_data);");
-    code.Add(nesting_level + 1, param_name + "_loaded = true;");
-    code.Add(nesting_level, "}");
-
-    MarkAttributeAsLoaded(table_name, column_name);
-}
-
-void GpuCodeGenerator::ClearLazyMaterializationInfo()
-{
-    lazy_materialization_info.required_attributes.clear();
-    lazy_materialization_info.loaded_attributes.clear();
-    lazy_materialization_info.attribute_to_param_mapping.clear();
 }
 
 }  // namespace duckdb

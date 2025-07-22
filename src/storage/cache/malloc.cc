@@ -530,7 +530,7 @@ void MemAllocator::PrintAvalaibleMemory() {
       // std::cout << i << ":" << std::endl;
     }
   }
-  std::cout << "total: " << total_available_memory << std::endl;
+  // std::cout << "total: " << total_available_memory << std::endl;
 }
 
 // todo: 매번 새로 계산하는 게 아니라 변수를 하나 두고 malloc/free 할 때 관리

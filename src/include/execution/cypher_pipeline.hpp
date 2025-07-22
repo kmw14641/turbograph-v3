@@ -48,6 +48,10 @@ public:
 		return operator_groups.GetIdxOperator(idx);
 	}
 
+	CypherPhysicalOperator* GetIdxOperator(int idx) const {
+		return operator_groups.GetIdxOperator(idx);
+	}
+
 	CypherPhysicalOperator *GetReprSink() {
 		return repr_operators[pipelineLength - 1];
 	}

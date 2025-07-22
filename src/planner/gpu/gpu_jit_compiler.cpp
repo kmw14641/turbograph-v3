@@ -331,7 +331,7 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, CUfunctio
 
     std::vector<const char*> drv_argv = {
         "clang++",
-        "-###", "-v",
+        // "-###", "-v",
         "--cuda-path=/usr/local/cuda-11.8",
         "-x", "cuda", "gpu_host.cu",
         "--cuda-gpu-arch=sm_75",
