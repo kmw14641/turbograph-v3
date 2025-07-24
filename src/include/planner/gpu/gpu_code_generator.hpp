@@ -15,11 +15,11 @@
 #include "execution/cypher_pipeline.hpp"
 #include "execution/physical_operator/cypher_physical_operator.hpp"
 #include "planner/expression.hpp"
-#include "planner/expression/bound_comparison_expression.hpp"
 #include "planner/expression/bound_constant_expression.hpp"
 #include "planner/expression/bound_function_expression.hpp"
 #include "planner/expression/bound_operator_expression.hpp"
 #include "planner/expression/bound_reference_expression.hpp"
+#include "planner/gpu/codegen_utils.hpp"
 #include "planner/gpu/gpu_jit_compiler.hpp"
 
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
@@ -53,105 +53,13 @@ struct PointerMapping {
     ChunkDefinitionID cid;  // Chunk ID for GPU chunk cache manager
 };
 
-// Structure to track pipeline state and dependencies
-struct PipelineContext {
-    // Pipeline-wide information
-    int total_operators;
-    int current_operator_index;
-    
-    // Operator schemas (references to original schemas)
-    std::vector<const std::vector<std::string>*> operator_column_names;
-    std::vector<const std::vector<LogicalType>*> operator_column_types;
-    
-    // Current operator's input schema (from previous operator)
-    std::vector<std::string> input_column_names;
-    std::vector<LogicalType> input_column_types;
-    
-    // Current operator's output schema
-    std::vector<std::string> output_column_names;
-    std::vector<LogicalType> output_column_types;
-    
-    // Materialization status for each column (logical level)
-    std::unordered_map<std::string, bool> column_materialized;
-    
-    // Column mapping from input to output
-    std::unordered_map<std::string, std::string> column_mapping;
-    
-    // Track which columns are actually used in expressions
-    std::unordered_set<std::string> used_columns;
-    
-    // GPU memory management (integrated from LazyMaterializationInfo)
-    std::unordered_map<std::string, bool> gpu_memory_loaded;
-    std::unordered_map<std::string, std::string> column_to_param_mapping;
-    std::unordered_map<std::string, std::string> column_to_table_mapping;
-    std::unordered_map<std::string, idx_t> column_to_extent_mapping;
-    std::unordered_map<std::string, idx_t> column_to_chunk_mapping;
-    
-    PipelineContext() : total_operators(0), current_operator_index(0) {}
-    
-    // Initialize pipeline context with all operator schemas
-    void InitializePipeline(const CypherPipeline &pipeline);
-    
-    // Move to next operator and update current schemas
-    void MoveToOperator(int op_idx);
-    
-    // Helper methods for GPU memory management
-    void AddGPUColumn(const std::string& table_name, const std::string& column_name, 
-                     idx_t extent_id, idx_t chunk_id, const std::string& param_name) {
-        std::string key = table_name + "." + column_name;
-        gpu_memory_loaded[key] = false;
-        column_to_param_mapping[key] = param_name;
-        column_to_table_mapping[key] = table_name;
-        column_to_extent_mapping[key] = extent_id;
-        column_to_chunk_mapping[key] = chunk_id;
-    }
-    
-    bool IsGPUColumnLoaded(const std::string& table_name, const std::string& column_name) const {
-        std::string key = table_name + "." + column_name;
-        auto it = gpu_memory_loaded.find(key);
-        return it != gpu_memory_loaded.end() && it->second;
-    }
-    
-    void MarkGPUColumnAsLoaded(const std::string& table_name, const std::string& column_name) {
-        std::string key = table_name + "." + column_name;
-        gpu_memory_loaded[key] = true;
-    }
-    
-    std::string GetColumnParamName(const std::string& table_name, const std::string& column_name) const {
-        std::string key = table_name + "." + column_name;
-        auto it = column_to_param_mapping.find(key);
-        return it != column_to_param_mapping.end() ? it->second : "";
-    }
-};
-
-// Helper class for code generation with indentation
-class CodeBuilder {
-   public:
-    void Add(int nesting_level, const std::string &line)
-    {
-        for (int i = 0; i < nesting_level; ++i) {
-            ss << "    ";  // 4 spaces per level
-        }
-        ss << line << "\n";
-    }
-    std::string str() const { return ss.str(); }
-    void clear()
-    {
-        ss.str("");
-        ss.clear();
-    }
-
-   private:
-    std::stringstream ss;
-};
-
 // Strategy pattern for operator-specific code generation
 class OperatorCodeGenerator {
    public:
     virtual ~OperatorCodeGenerator() = default;
     virtual void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
                               GpuCodeGenerator *code_gen,
-                              ClientContext &context, int &nesting_level,
+                              ClientContext &context,
                               PipelineContext &pipeline_ctx,
                               bool is_main_loop = false) = 0;
 };
@@ -160,7 +68,7 @@ class NodeScanCodeGenerator : public OperatorCodeGenerator {
    public:
     void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
                       GpuCodeGenerator *code_gen, ClientContext &context,
-                      int &nesting_level, PipelineContext &pipeline_ctx,
+                      PipelineContext &pipeline_ctx,
                       bool is_main_loop = false) override;
 };
 
@@ -168,7 +76,7 @@ class ProjectionCodeGenerator : public OperatorCodeGenerator {
    public:
     void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
                       GpuCodeGenerator *code_gen, ClientContext &context,
-                      int &nesting_level, PipelineContext &pipeline_ctx,
+                      PipelineContext &pipeline_ctx,
                       bool is_main_loop = false) override;
 
    private:
@@ -176,7 +84,6 @@ class ProjectionCodeGenerator : public OperatorCodeGenerator {
                                           CodeBuilder &code,
                                           GpuCodeGenerator *code_gen,
                                           ClientContext &context,
-                                          int &nesting_level,
                                           PipelineContext &pipeline_ctx);
     std::string ConvertLogicalTypeToCUDAType(LogicalType type);
     std::string ConvertValueToCUDALiteral(const Value &value);
@@ -184,12 +91,12 @@ class ProjectionCodeGenerator : public OperatorCodeGenerator {
     void GenerateFunctionCallCode(BoundFunctionExpression *func_expr,
                                   const std::string &output_var,
                                   CodeBuilder &code, GpuCodeGenerator *code_gen,
-                                  ClientContext &context, int &nesting_level,
+                                  ClientContext &context,
                                   PipelineContext &pipeline_ctx);
     void GenerateOperatorCode(BoundOperatorExpression *op_expr,
                               const std::string &output_var, CodeBuilder &code,
                               GpuCodeGenerator *code_gen,
-                              ClientContext &context, int &nesting_level,
+                              ClientContext &context,
                               PipelineContext &pipeline_ctx);
 };
 
@@ -197,7 +104,7 @@ class ProduceResultsCodeGenerator : public OperatorCodeGenerator {
    public:
     void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
                       GpuCodeGenerator *code_gen, ClientContext &context,
-                      int &nesting_level, PipelineContext &pipeline_ctx,
+                      PipelineContext &pipeline_ctx,
                       bool is_main_loop = false) override;
 };
 
@@ -205,7 +112,7 @@ class FilterCodeGenerator : public OperatorCodeGenerator {
    public:
     void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
                       GpuCodeGenerator *code_gen, ClientContext &context,
-                      int &nesting_level, PipelineContext &pipeline_ctx,
+                      PipelineContext &pipeline_ctx,
                       bool is_main_loop = false) override;
 };
 
@@ -272,22 +179,20 @@ class GpuCodeGenerator {
 
     // Generate code for a specific operator
     void GenerateOperatorCode(CypherPhysicalOperator *op, CodeBuilder &code,
-                              int &nesting_level, PipelineContext &pipeline_ctx,
-                              bool is_main_loop);
+                              PipelineContext &pipeline_ctx, bool is_main_loop);
 
     // Generate main scan loop with nested operators
-    void GenerateMainScanLoop(CypherPipeline &pipeline, CodeBuilder &code,
-                              int &nesting_level);
+    void GenerateMainScanLoop(CypherPipeline &pipeline, CodeBuilder &code);
 
     // Process remaining operators recursively
     void ProcessRemainingOperators(CypherPipeline &pipeline, int op_idx,
-                                   CodeBuilder &code, int &nesting_level);
+                                   CodeBuilder &code);
 
     // Pipeline context management
     void InitializePipelineContext(const CypherPipeline &pipeline);
     void MoveToOperator(int op_idx);
     void AnalyzeOperatorDependencies(CypherPhysicalOperator *op);
-    
+
     // Schema analysis
     void ExtractInputSchema(CypherPhysicalOperator *op);
     void ExtractOutputSchema(CypherPhysicalOperator *op);
@@ -328,10 +233,13 @@ class GpuCodeGenerator {
     void InitializeOperatorGenerators();
 
     // Pipeline context management
-    PipelineContext CreatePipelineContext(const CypherPipeline &pipeline, int op_idx);
-    void UpdatePipelineContext(PipelineContext &ctx, CypherPhysicalOperator *op);
-    void AnalyzeOperatorDependencies(CypherPhysicalOperator *op, PipelineContext &ctx);
-    
+    PipelineContext CreatePipelineContext(const CypherPipeline &pipeline,
+                                          int op_idx);
+    void UpdatePipelineContext(PipelineContext &ctx,
+                               CypherPhysicalOperator *op);
+    void AnalyzeOperatorDependencies(CypherPhysicalOperator *op,
+                                     PipelineContext &ctx);
+
     // Schema analysis
     void ExtractInputSchema(CypherPhysicalOperator *op, PipelineContext &ctx);
     void ExtractOutputSchema(CypherPhysicalOperator *op, PipelineContext &ctx);
