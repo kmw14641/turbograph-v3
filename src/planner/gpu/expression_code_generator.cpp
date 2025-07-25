@@ -78,15 +78,17 @@ std::string ExpressionCodeGenerator::GenerateExpressionCode(
 std::string ExpressionCodeGenerator::GenerateConditionCode(
     Expression *expr, CodeBuilder &code, PipelineContext &pipeline_ctx)
 {
-    // code.Add("// Generate condition from expression");
     std::string condition_var =
         GenerateExpressionCode(expr, code, pipeline_ctx, "condition");
 
     // If the result is not boolean, convert it
     if (expr && expr->return_type.id() != LogicalTypeId::BOOLEAN) {
-        std::string bool_condition = GetUniqueVariableName("bool_condition");
-        code.Add("bool " + bool_condition + " = (" + condition_var + " != 0);");
-        return bool_condition;
+        // std::string bool_condition = GetUniqueVariableName("bool_condition");
+        // code.Add("bool " + bool_condition + " = (" + condition_var + " != 0);");
+        // return bool_condition;
+        throw NotImplementedException(
+            "Condition expressions must return boolean type, but got: " +
+            expr->return_type.ToString());
     }
 
     return condition_var;
@@ -97,16 +99,10 @@ std::string ExpressionCodeGenerator::GenerateReferenceExpression(
     PipelineContext &pipeline_ctx)
 {
     if (!ref_expr) {
-        std::string result_var = GetUniqueVariableName("ref_result");
-        code.Add("int " + result_var + " = 0; // Invalid reference");
-        return result_var;
+        throw InvalidInputException(
+            "Reference expression cannot be null");
     }
 
-    // code.Add("// Reference expression (index: " +
-    //          std::to_string(ref_expr->index) + ")");
-
-    // TODO: Implement proper column resolution based on index
-    // For now, create a placeholder
     if (ref_expr->index < pipeline_ctx.input_column_names.size()) {
         std::string column_name =
             pipeline_ctx.input_column_names[ref_expr->index];
@@ -114,18 +110,11 @@ std::string ExpressionCodeGenerator::GenerateReferenceExpression(
         // Ensure column is materialized
         EnsureColumnMaterialized(column_name, code, pipeline_ctx);
 
-        std::string result_var = GetUniqueVariableName("ref_result");
-        std::string cuda_type =
-            ConvertLogicalTypeToCUDAType(ref_expr->return_type);
-
-        code.Add(cuda_type + " " + result_var + " = " + column_name +
-                 "_ptr[i];");
-        return result_var;
+        std::string result_code = column_name + "_ptr[i]";
+        return result_code;
     }
     else {
-        std::string result_var = GetUniqueVariableName("ref_result");
-        code.Add("int " + result_var + " = 0; // Invalid column index");
-        return result_var;
+        throw InvalidInputException("Invalid column index");
     }
 }
 
@@ -134,19 +123,12 @@ std::string ExpressionCodeGenerator::GenerateConstantExpression(
     PipelineContext &pipeline_ctx)
 {
     if (!const_expr) {
-        std::string result_var = GetUniqueVariableName("const_result");
-        code.Add("int " + result_var + " = 0; // Invalid constant");
-        return result_var;
+        throw InvalidInputException("Constant expression cannot be null");
     }
 
-    code.Add("// Constant expression");
-    std::string result_var = GetUniqueVariableName("const_result");
-    std::string cuda_type =
-        ConvertLogicalTypeToCUDAType(const_expr->return_type);
     std::string value_literal = ConvertValueToCUDALiteral(const_expr->value);
 
-    code.Add(cuda_type + " " + result_var + " = " + value_literal + ";");
-    return result_var;
+    return value_literal;
 }
 
 std::string ExpressionCodeGenerator::GenerateComparisonExpression(
@@ -169,12 +151,10 @@ std::string ExpressionCodeGenerator::GenerateComparisonExpression(
         comp_expr->right.get(), code, pipeline_ctx, "right_operand");
 
     // Generate comparison
-    std::string result_var = GetUniqueVariableName("comp_result");
     std::string operator_str = GetComparisonOperator(comp_expr->type);
+    std::string result_code = (left_var + " " + operator_str + " " + right_var);
 
-    code.Add("bool " + result_var + " = (" + left_var + " " + operator_str +
-             " " + right_var + ");");
-    return result_var;
+    return result_code;
 }
 
 std::string ExpressionCodeGenerator::GenerateFunctionExpression(
@@ -182,45 +162,14 @@ std::string ExpressionCodeGenerator::GenerateFunctionExpression(
     PipelineContext &pipeline_ctx)
 {
     if (!func_expr) {
-        std::string result_var = GetUniqueVariableName("func_result");
-        code.Add("int " + result_var + " = 0; // Invalid function");
-        return result_var;
+        throw InvalidInputException("Function expression cannot be null");
     }
 
-    code.Add("// Function expression: " + func_expr->function.name);
+    throw NotImplementedException(
+        "Function expressions are not yet implemented in GPU code generation");
 
-    // TODO: Implement specific function handling
-    std::string result_var = GetUniqueVariableName("func_result");
-    std::string cuda_type =
-        ConvertLogicalTypeToCUDAType(func_expr->return_type);
-
-    if (func_expr->function.name == "abs" && func_expr->children.size() == 1) {
-        std::string arg_var = GenerateExpressionCode(
-            func_expr->children[0].get(), code, pipeline_ctx, "func_arg");
-        code.Add(cuda_type + " " + result_var + " = abs(" + arg_var + ");");
-    }
-    else if (func_expr->function.name == "sqrt" &&
-             func_expr->children.size() == 1) {
-        std::string arg_var = GenerateExpressionCode(
-            func_expr->children[0].get(), code, pipeline_ctx, "func_arg");
-        code.Add(cuda_type + " " + result_var + " = sqrt(" + arg_var + ");");
-    }
-    else {
-        // Generate arguments
-        std::vector<std::string> arg_vars;
-        for (size_t i = 0; i < func_expr->children.size(); i++) {
-            std::string arg_var = GenerateExpressionCode(
-                func_expr->children[i].get(), code, pipeline_ctx,
-                "func_arg" + std::to_string(i));
-            arg_vars.push_back(arg_var);
-        }
-
-        code.Add(cuda_type + " " + result_var +
-                 " = 0; // TODO: implement function " +
-                 func_expr->function.name);
-    }
-
-    return result_var;
+    std::string result_code;
+    return result_code;
 }
 
 std::string ExpressionCodeGenerator::GenerateOperatorExpression(

@@ -600,130 +600,151 @@ void NodeScanCodeGenerator::GenerateCode(
             PropertySchemaCatalogEntry *property_schema_cat_entry =
                 (PropertySchemaCatalogEntry *)catalog.GetEntry(
                     context, DEFAULT_SCHEMA, oid);
+            D_ASSERT(property_schema_cat_entry != nullptr);
 
-            if (property_schema_cat_entry) {
-                auto *property_types_id = property_schema_cat_entry->GetTypes();
+            auto *property_types_id = property_schema_cat_entry->GetTypes();
 
-                // Get extent IDs from the property schema
-                for (size_t extent_idx = 0;
-                     extent_idx < property_schema_cat_entry->extent_ids.size();
-                     extent_idx++) {
-                    idx_t extent_id =
-                        property_schema_cat_entry->extent_ids[extent_idx];
+            // Get extent IDs from the property schema
+            for (size_t extent_idx = 0;
+                 extent_idx < property_schema_cat_entry->extent_ids.size();
+                 extent_idx++) {
+                idx_t extent_id =
+                    property_schema_cat_entry->extent_ids[extent_idx];
 
-                    // Generate table name
-                    std::string table_name = "gr" + std::to_string(oid) +
-                                             "_ext" + std::to_string(extent_id);
+                // Generate table name
+                std::string table_name = "gr" + std::to_string(oid) + "_ext" +
+                                         std::to_string(extent_id);
 
-                    // Get extent catalog entry to access chunks (columns)
-                    ExtentCatalogEntry *extent_cat_entry =
-                        (ExtentCatalogEntry *)catalog.GetEntry(
-                            context, CatalogType::EXTENT_ENTRY, DEFAULT_SCHEMA,
-                            DEFAULT_EXTENT_PREFIX + std::to_string(extent_id));
+                // Get extent catalog entry to access chunks (columns)
+                ExtentCatalogEntry *extent_cat_entry =
+                    (ExtentCatalogEntry *)catalog.GetEntry(
+                        context, CatalogType::EXTENT_ENTRY, DEFAULT_SCHEMA,
+                        DEFAULT_EXTENT_PREFIX + std::to_string(extent_id));
+                D_ASSERT(extent_cat_entry != nullptr);
 
-                    uint64_t tuple_id_base = extent_id;
-                    tuple_id_base <<= 32;
-                    if (extent_cat_entry) {
-                        // Generate scan loop for this extent
-                        std::string count_param_name = table_name + "_count";
-                        code.Add("// Process extent " +
-                                 std::to_string(extent_id) + " (property " +
-                                 std::to_string(oid) + ")");
-                        code.Add("for (int i = tid; i < " + count_param_name +
-                                 "; i += stride) {");
-                        code.IncreaseNesting();
+                uint64_t tuple_id_base = extent_id;
+                tuple_id_base <<= 32;
+                // Generate scan loop for this extent
+                std::string count_param_name = table_name + "_count";
+                code.Add("// Process extent " + std::to_string(extent_id) +
+                         " (property " + std::to_string(oid) + ")");
+                code.Add("for (int i = tid; i < " + count_param_name +
+                         "; i += stride) {");
+                code.IncreaseNesting();
 
-                        // lazy materialization
-                        code.Add("// lazy materialization");
-                        code.Add("unsigned long long tuple_id_base = " +
-                                 std::to_string(tuple_id_base) + ";");
-                        code.Add(
-                            "unsigned long long tuple_id = tuple_id_base "
-                            "+ tid;");
-                        // code.Add("printf(\"tid = %ld, tuple_id = %llu\\n\", tid, tuple_id);");
+                // lazy materialization
+                code.Add("// lazy materialization");
+                code.Add("unsigned long long tuple_id_base = " +
+                         std::to_string(tuple_id_base) + ";");
+                code.Add(
+                    "unsigned long long tuple_id = tuple_id_base "
+                    "+ tid;");
+                // code.Add("printf(\"tid = %ld, tuple_id = %llu\\n\", tid, tuple_id);");
 
-                        // Declare input column pointers for lazy materialization
-                        code.Add("// Declare input column pointers");
+                // Declare input column pointers for lazy materialization
+                code.Add("// Declare input column pointers");
 
-                        for (size_t chunk_idx = 0;
-                             chunk_idx <
-                             scan_op->scan_projection_mapping[oid_idx].size();
-                             chunk_idx++) {
+                for (size_t chunk_idx = 0;
+                     chunk_idx <
+                     scan_op->scan_projection_mapping[oid_idx].size();
+                     chunk_idx++) {
 
-                            auto column_idx =
-                                scan_op->scan_projection_mapping[oid_idx]
-                                                                [chunk_idx];
-                            if (column_idx == 0)
-                                continue;  // _id column
-                            // type extract
-                            LogicalTypeId type_id =
-                                (LogicalTypeId)property_types_id->at(
-                                    column_idx - 1);
-                            std::string ctype =
-                                code_gen->ConvertLogicalTypeToPrimitiveType(
-                                    type_id);
+                    auto column_idx =
+                        scan_op->scan_projection_mapping[oid_idx][chunk_idx];
+                    if (column_idx == 0)
+                        continue;  // _id column
+                    // type extract
+                    LogicalTypeId type_id =
+                        (LogicalTypeId)property_types_id->at(column_idx - 1);
+                    std::string ctype =
+                        code_gen->ConvertLogicalTypeToPrimitiveType(type_id);
 
-                            // Generate column name based on chunk index
-                            std::string col_name =
-                                "col_" + std::to_string(column_idx - 1);
+                    // Generate column name based on chunk index
+                    std::string col_name =
+                        "col_" + std::to_string(column_idx - 1);
 
-                            // Generate parameter names based on verbose mode
-                            std::string param_name;
-                            param_name = table_name + "_" + col_name;
+                    // Generate parameter names based on verbose mode
+                    std::string param_name;
+                    param_name = table_name + "_" + col_name;
 
-                            // Declare the pointer
-                            code.Add(ctype + "* " + param_name +
-                                     "_ptr = static_cast<" + ctype + "*>(" +
-                                     param_name + "_data);");
+                    // Declare the pointer
+                    code.Add(ctype + "* " + param_name + "_ptr = static_cast<" +
+                             ctype + "*>(" + param_name + "_data);");
 
-                            // Add to lazy materialization tracking
-                            pipeline_ctx.input_column_names.push_back(
-                                param_name);
-                            pipeline_ctx.column_materialized[param_name] =
-                                false;
-                        }
+                    // Add to lazy materialization tracking
+                    pipeline_ctx.input_column_names.push_back(param_name);
+                    pipeline_ctx.column_materialized[param_name] = false;
+                }
 
-                        if (scan_op->is_filter_pushdowned) {
-                            std::string predicate_string = "";
-                            // Generate predicate string for filter pushdown
-                            if (scan_op->filter_pushdown_type ==
-                                FilterPushdownType::FP_EQ) {
-                                for (auto i = 0;
-                                     i <
-                                     scan_op->filter_pushdown_key_idxs.size();
-                                     i++) {
-                                    if (i > 0) {
-                                        predicate_string += " && ";
-                                    }
-                                    auto key_idx =
-                                        scan_op->filter_pushdown_key_idxs[i];
-                                    std::string attr_name =
-                                        table_name + "_col_" +
-                                        std::to_string(key_idx - 1) + "_ptr";
-                                    if (key_idx >= 0) {
-                                        auto value_str =
-                                            scan_op
-                                                ->eq_filter_pushdown_values[i]
-                                                .ToString();
-                                        predicate_string +=
-                                            (attr_name +
-                                             "[tid] == " + value_str);
-                                    }
-                                }
+                if (scan_op->is_filter_pushdowned) {
+                    std::string predicate_string = "";
+                    // Generate predicate string for filter pushdown
+                    if (scan_op->filter_pushdown_type ==
+                        FilterPushdownType::FP_EQ) {
+                        for (auto i = 0;
+                             i < scan_op->filter_pushdown_key_idxs.size();
+                             i++) {
+                            if (i > 0) {
+                                predicate_string += " && ";
                             }
-                            else if (scan_op->filter_pushdown_type ==
-                                     FilterPushdownType::FP_RANGE) {}
-                            else {  // FP_COMPLEX
-                                ExpressionCodeGenerator expr_gen(context);
-                                predicate_string =
-                                    expr_gen.GenerateConditionCode(
-                                        scan_op->filter_expression.get(), code,
-                                        pipeline_ctx);
+                            auto key_idx = scan_op->filter_pushdown_key_idxs[i];
+                            std::string attr_name =
+                                table_name + "_col_" +
+                                std::to_string(key_idx - 1) + "_ptr";
+                            if (key_idx >= 0) {
+                                auto value_str =
+                                    scan_op->eq_filter_pushdown_values[i]
+                                        .ToString();
+                                predicate_string +=
+                                    (attr_name + "[tid] == " + value_str);
                             }
-
-                            code.Add("active = (" + predicate_string + ");");
                         }
                     }
+                    else if (scan_op->filter_pushdown_type ==
+                             FilterPushdownType::FP_RANGE) {
+                        for (auto i = 0;
+                             i < scan_op->filter_pushdown_key_idxs.size();
+                             i++) {
+                            if (i > 0) {
+                                predicate_string += " && ";
+                            }
+                            auto key_idx = scan_op->filter_pushdown_key_idxs[i];
+                            std::string attr_name =
+                                table_name + "_col_" +
+                                std::to_string(key_idx - 1) + "_ptr";
+                            if (key_idx >= 0) {
+                                auto left_value_str =
+                                    scan_op->range_filter_pushdown_values[i]
+                                        .l_value.ToString();
+                                auto right_value_str =
+                                    scan_op->range_filter_pushdown_values[i]
+                                        .r_value.ToString();
+                                predicate_string +=
+                                    scan_op->range_filter_pushdown_values[i]
+                                            .l_inclusive
+                                        ? (attr_name +
+                                           "[tid] >= " + left_value_str)
+                                        : (attr_name + "[tid] > " +
+                                           left_value_str);
+                                predicate_string += " && ";
+                                predicate_string +=
+                                    scan_op->range_filter_pushdown_values[i]
+                                            .r_inclusive
+                                        ? (attr_name +
+                                           "[tid] <= " + right_value_str)
+                                        : (attr_name + "[tid] < " +
+                                           right_value_str);
+                            }
+                        }
+                    }
+                    else {  // FP_COMPLEX
+                        ExpressionCodeGenerator expr_gen(context);
+                        predicate_string = expr_gen.GenerateConditionCode(
+                            scan_op->filter_expression.get(), code,
+                            pipeline_ctx);
+                    }
+
+                    code.Add("active = (" + predicate_string + ");");
                 }
             }
         }
