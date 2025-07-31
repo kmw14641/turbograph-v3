@@ -1,8 +1,8 @@
 #ifndef __TWOLVLBITMAPS_CUH__
 #define __TWOLVLBITMAPS_CUH__
 
-#include <assert.h>
-#include <stdio.h>
+// #include <assert.h>
+// #include <stdio.h>
 #include "warp_status.cuh"
 
 namespace Themis {

@@ -265,8 +265,23 @@ bool GpuJitCompiler::CompileWithNVRTC(const std::string &src,
     if (nvrtcCreateProgram(&prog, src.c_str(), "jit_kernel.cu", 0, nullptr, nullptr) != NVRTC_SUCCESS)
         return false;
 
-    const char *opts[] = {"--gpu-architecture=compute_75", "--std=c++17"};
-    nvrtcResult r = nvrtcCompileProgram(prog, 2, opts);
+    // TODO: get themis include path from config or something
+    // const char *opts[] = {
+    //     "--gpu-architecture=compute_75",
+    //     "--std=c++17",
+    //     "--include-path=/usr/local/cuda/targets/x86_64-linux/include",
+    //     "--include-path=/turbograph-v3/src/include/planner/gpu/themis/",
+    //     "--include-path=/usr/include/",
+    //     "--include-path=/usr/include/x86_64-linux-gnu/",
+    //     "-D__x86_64__=1",
+    //     "-D__LP64__=1"};
+    const char *opts[] = {
+        "--gpu-architecture=compute_75",
+        "--std=c++17",
+        "--include-path=/usr/include/",
+        "--include-path=/usr/include/x86_64-linux-gnu/",
+        "--include-path=/turbograph-v3/src/include/planner/gpu/themis/"};
+    nvrtcResult r = nvrtcCompileProgram(prog, 5, opts);
     if (r != NVRTC_SUCCESS) {
         size_t sz; nvrtcGetProgramLogSize(prog, &sz);
         std::string log(sz, '\0'); nvrtcGetProgramLog(prog, log.data());

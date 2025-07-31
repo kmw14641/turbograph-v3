@@ -9,13 +9,13 @@ __device__ __forceinline__ int CalculateOrder(int cnt)
     return cnt <= 0 ? -1 : 32 - __clz(cnt >> 5);
 }
 
-int CalculateOrderInHost(int cnt)
-{
-    // if cnt is zero --> order is -1
-    // if cnt < 32 --> order is 0
-    // if cnt < 64 --> order is 1
-    return cnt <= 0 ? -1 : 32 - clz(cnt >> 5);
-}
+// int CalculateOrderInHost(int cnt)
+// {
+//     // if cnt is zero --> order is -1
+//     // if cnt < 32 --> order is 0
+//     // if cnt < 64 --> order is 1
+//     return cnt <= 0 ? -1 : 32 - clz(cnt >> 5);
+// }
 
 //order: 0 --> 1 <= cnt < 32
 //order: 1 --> cnt >= 32 & cnt < 64
@@ -188,6 +188,7 @@ __global__ void krnl_InitStatisticsPerLvl(
     //printf("stats[0].max_order: %d, num_warps: %d, num_inodex_at_zero: %d\n", stats[0].max_order, stats[0].num_warps, num_inodes_at_zero);
 }
 
+#ifndef __CUDACC_RTC__
 void InitStatisticsPerLvl(StatisticsPerLvl *stats, unsigned int num_warps,
                           int num_inodes_at_zero, int depth)
 {
@@ -236,6 +237,7 @@ void PrintStatisticsPerLvl(StatisticsPerLvl *device_stats,
     //cudaMemset(device_stats, 0, sizeof(StatisticsPerLvl) * depth);
     //krnl_InitStatisticsPerLvl<<<1,64>>>(device_stats, num_warps);
 }
+#endif
 
 struct LocalLevelAndOrderInfo {
     int8_t locally_lowest_lvl;
@@ -259,7 +261,7 @@ __device__ __forceinline__ void FetchLvlAndOrder(
     StatisticsPerLvl *global_stats_per_lvl)
 {
     int8_t locally_lowest_lvl = local_info.locally_lowest_lvl;
-    int8_t locally_max_order = local_info.locally_max_order;
+    // int8_t locally_max_order = local_info.locally_max_order;
     int8_t &globally_lowest_lvl = local_info.globally_lowest_lvl;
     int8_t &globally_max_order = local_info.globally_max_order;
     if (thread_id == 0) {
@@ -364,8 +366,8 @@ __device__ __forceinline__ void chooseNextIntervalAfterPush(
 {
 
     interval = (interval >= 32 || interval == 0) ? 1 : 2 * interval;
-    unsigned int num_busy_warps =
-        num_warps - num_idle_warps;  //local_info.num_warps_which_can_push;
+    // unsigned int num_busy_warps =
+    //     num_warps - num_idle_warps;  //local_info.num_warps_which_can_push;
     interval = (32 - __clz(num_warps / num_idle_warps));
 }
 

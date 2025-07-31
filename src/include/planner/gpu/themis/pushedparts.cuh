@@ -124,6 +124,7 @@ __global__ void Krnl_InitPushedPartsStack(PushedPartsStack *stack,
     stack->start = 0;
 }
 
+#ifndef __CUDACC_RTC__
 void InitPushedPartsStack(PushedPartsStack *&stack, size_t &size_per_warp,
                           int64_t size, int num_warps)
 {
@@ -132,12 +133,13 @@ void InitPushedPartsStack(PushedPartsStack *&stack, size_t &size_per_warp,
     size_per_warp = 1024 * 32;
     char *result = NULL;
     //num_warps = 82 * 64;
-    std::cout << "Init pushed parts stack " << size_per_warp << std::endl;
+    // std::cout << "Init pushed parts stack " << size_per_warp << std::endl;
     cudaMalloc((void **)&result, size_per_warp * (num_warps));
     stack = (PushedPartsStack *)(result + size_per_warp - 128);
     Krnl_InitPushedPartsStack<<<1024, 128>>>(stack, size_per_warp,
                                              (size_t)num_warps);
 }
+#endif
 
 }  // namespace PushedParts
 }  // namespace Themis

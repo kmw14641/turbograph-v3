@@ -7,7 +7,7 @@
 #include "relation.cuh"
 #include "warp_status.cuh"
 
-#include <iostream>
+// #include <iostream>
 
 #define TS_WIDTH 64
 
@@ -63,12 +63,12 @@ __global__ void SetFlag(unsigned long long *keys, int *flags, int n)
 }
 }  // namespace Trie
 
-int clz(int x)
-{
-    if (x == 0)
-        return 32;
-    return __builtin_clz(x);
-}
+// int clz(int x)
+// {
+//     if (x == 0)
+//         return 32;
+//     return __builtin_clz(x);
+// }
 
 __device__ __forceinline__ unsigned int nth_bit_set(uint32_t value,
                                                     unsigned int n)

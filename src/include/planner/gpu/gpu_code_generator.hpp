@@ -27,6 +27,48 @@
 
 namespace duckdb {
 
+// GPU Kernel Configuration Constants
+struct KernelConstants {
+    // Block and Grid Configuration
+    static constexpr int DEFAULT_BLOCK_SIZE = 128;
+    static constexpr int DEFAULT_GRID_SIZE = 3280;
+};
+
+// GPU Kernel Configuration Arguments (equivalent to KernelCall.args)
+struct GpuKernelArgs {
+    // Database and experiment settings
+    std::string sqlite3_path = "";
+    std::string exp_id = "test";
+    std::string mode = "timecheck";  // timecheck / profile / debug / sample / stats / fake
+    int timeout = 10800;
+    
+    // Path settings
+    std::string dbpath = "";
+    std::string qpath = "";
+    std::string system = "";
+    std::string resultpath = "";
+    
+    // GPU configuration
+    int gridsize = 3280;
+    int blocksize = 128;
+    int device = 0;
+    int min_num_warps = 3936;
+    int sm_num = 82;
+    bool local_aggregation = false;
+    bool lazy_materialization = false;
+    
+    // Inter-warp load balancing
+    bool inter_warp_lb = false;
+    std::string inter_warp_lb_method = "aws";  // aws / ws
+    int inter_warp_lb_interval = 32;
+    std::string inter_warp_lb_detection_method = "twolvlbitmaps";  // twolvlbitmaps / idqueue
+    int inter_warp_lb_ws_threshold = 1024;
+    
+    // Additional settings
+    int pyper_grid_threshold = 24;
+    int max_interval = 16;  // TODO: get actual value
+};
+
 // Forward declaration
 class GpuCodeGenerator;
 
@@ -187,6 +229,18 @@ class GpuCodeGenerator {
     // Process remaining operators recursively
     void ProcessRemainingOperators(CypherPipeline &pipeline, int op_idx,
                                    CodeBuilder &code);
+    
+    // Generate code for adaptive work sharing
+    void GenerateCodeForAdaptiveWorkSharing(
+        CypherPipeline &pipeline, CodeBuilder &code);
+    void GenerateCodeForAdaptiveWorkSharingPull(
+        CypherPipeline &pipeline, CodeBuilder &code);
+    void GenerateCopyCodeForAdaptiveWorkSharingPull(
+        CypherPipeline &pipeline, CodeBuilder &code);
+    void GenerateCodeForAdaptiveWorkSharingPush(
+        CypherPipeline &pipeline, CodeBuilder &code);
+    void GenerateCopyCodeForAdaptiveWorkSharingPush(
+        CypherPipeline &pipeline, CodeBuilder &code);
 
     // Pipeline context management
     void InitializePipelineContext(const CypherPipeline &pipeline);
@@ -200,6 +254,7 @@ class GpuCodeGenerator {
 
    private:
     ClientContext &context;
+    GpuKernelArgs kernel_args;  // GPU kernel configuration
 
     std::string generated_gpu_code;
     std::string generated_cpu_code;
@@ -215,9 +270,13 @@ class GpuCodeGenerator {
 
     std::unique_ptr<GpuJitCompiler> jit_compiler;
 
+    bool do_inter_warp_lb = true;
     bool is_compiled;
     bool is_repeatable;
     bool verbose_mode = true;  // Control parameter naming style
+    bool doWorkoadSizeTracking = false;
+    int tsWidth = 32;
+    std::string idleWarpDetectionType = "twolvlbitmaps";  // twolvlbitmaps / idqueue
 
     std::vector<PointerMapping> pointer_mappings;
 

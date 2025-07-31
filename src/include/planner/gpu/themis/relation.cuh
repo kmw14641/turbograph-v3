@@ -1,15 +1,26 @@
 #ifndef _RELATION_CUH__
 #define _RELATION_CUH__
 
-#include <stdint.h>
-#include <stdio.h>
-#include <cassert>
+// #include <stdint.h>
+// #include <stdio.h>
+// #include <cassert>
 
-#define ERROR(msg)                                                             \
-    fprintf(stderr, "ERROR: %s\n", msg);                                       \
-    fprintf(stderr, "Line %i of function %s in file %s\n", __LINE__, __func__, \
-            __FILE__);                                                         \
-    exit(EXIT_FAILURE);
+// #define ERROR(msg)                                                             \
+//     fprintf(stderr, "ERROR: %s\n", msg);                                       \
+//     fprintf(stderr, "Line %i of function %s in file %s\n", __LINE__, __func__, \
+//             __FILE__);                                                         \
+//     exit(EXIT_FAILURE);
+
+#ifndef __CUDACC_RTC__
+#include <stdint.h>
+#else
+typedef signed char int8_t;
+typedef unsigned char uint8_t;
+typedef int int32_t;
+typedef unsigned uint32_t;
+typedef long long int64_t;
+typedef unsigned long long uint64_t;
+#endif
 
 #define ALL_LANES 0xffffffff
 
@@ -20,6 +31,7 @@ __device__ unsigned int get_smid()
     return ret;
 }
 
+#ifndef __CUDACC_RTC__
 template <typename T>
 struct GpuPrimitiveType {
 
@@ -52,7 +64,9 @@ struct GpuPrimitiveType {
 
     T *ptrAtDevice() { return val_at_device; }
 };
+#endif
 
+#ifndef __CUDACC_RTC__
 template <typename T>
 struct GpuArrayType {
 
@@ -109,6 +123,7 @@ struct GpuArrayType {
                    cudaMemcpyDeviceToHost);
     }
 };
+#endif
 
 __device__ int dummyLoop(int a, int num)
 {
@@ -123,48 +138,49 @@ struct str_t {
     char *start;
     char *end;
 
-    bool operator==(const str_t &b)
-    {
-        str_t &a = *this;
-        int lena = end - start;
-        int lenb = b.end - b.start;
-        if (lena != lenb)
-            return false;
-        char *c = a.start;
-        char *d = b.start;
-        for (; c < a.end; c++, d++) {
-            if (*c != *d)
-                return false;
-        }
-        return true;
-    }
+    // bool operator==(const str_t &b)
+    // {
+    //     str_t &a = *this;
+    //     int lena = end - start;
+    //     int lenb = b.end - b.start;
+    //     if (lena != lenb)
+    //         return false;
+    //     char *c = a.start;
+    //     char *d = b.start;
+    //     for (; c < a.end; c++, d++) {
+    //         if (*c != *d)
+    //             return false;
+    //     }
+    //     return true;
+    // }
 };
 
-void stringPrint(str_t str, FILE *fout = stdout, int nchars = 10)
-{
-    while (str.start < str.end) {
-        fputc(*str.start, fout);
-        str.start++;
-    }
-}
+// void stringPrint(str_t str, FILE *fout = stdout, int nchars = 10)
+// {
+//     while (str.start < str.end) {
+//         fputc(*str.start, fout);
+//         str.start++;
+//     }
+// }
 
 struct str_offs {
     size_t start;
     size_t end;
 };
 
-void stringPrint(char *chrs, str_offs s, FILE *fout = stdout, int nchars = 10)
-{
-    int n = s.end - s.start;
-    int i = 0;
-    int p = 0;
+// tslee disabled
+// void stringPrint(char *chrs, str_offs s, FILE *fout = stdout, int nchars = 10)
+// {
+//     int n = s.end - s.start;
+//     int i = 0;
+//     int p = 0;
 
-    for (p = 0; p < nchars - n; p++)
-        fputc(' ', fout);
+//     for (p = 0; p < nchars - n; p++)
+//         fputc(' ', fout);
 
-    for (; p < nchars; p++, i++)
-        fputc(chrs[s.start + i], fout);
-}
+//     for (; p < nchars; p++, i++)
+//         fputc(chrs[s.start + i], fout);
+// }
 
 // intialize an array as used e.g. for join hash tables
 template <typename T>
@@ -911,7 +927,7 @@ __device__ bool hashProbeUniqueCrystal ( unique_ht<T>* hash_table, int ht_size, 
         unique_ht<T>& elem = hash_table[location];
         numLookups++;
         if ( elem.hash == hash ) {
-            //*payload = &elem.payload;
+            // *payload = &elem.payload;
             return true;
         } else if ( elem.hash == HASH_EMPTY ) {
             return false;
@@ -1067,7 +1083,7 @@ __forceinline__ __device__ void sample(int gpart_id, int thread_id,
 {
     if (thread_id == 0) {
         ++samples[0];
-        assert(samples[0] < (1 << 17));
+        // assert(samples[0] < (1 << 17));
         /*
         if (samples[0] > (1 << 17)) {
             printf("%lld\n", samples[0]);

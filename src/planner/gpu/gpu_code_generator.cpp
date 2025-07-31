@@ -92,6 +92,12 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
 {
     CodeBuilder code;
 
+    code.Add("#include \"range.cuh\"");
+    code.Add("#include \"themis.cuh\"");
+    code.Add("#include \"work_sharing.cuh\"");
+    code.Add("#include \"adaptive_work_sharing.cuh\"");
+    code.Add("\n");
+
     // Generate kernel function
     code.Add("extern \"C\" __global__ void gpu_kernel(");
     code.IncreaseNesting();
@@ -113,13 +119,98 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     code.Add(") {");
     code.IncreaseNesting();
 
+    // 1. Generate pipeline initilization
+    code.Add("__shared__ int active_thread_ids[" +
+             std::to_string(KernelConstants::DEFAULT_BLOCK_SIZE) + "];");
+
+    if (do_inter_warp_lb) {
+        std::string max_num_warps =
+            std::to_string((1024 / KernelConstants::DEFAULT_BLOCK_SIZE) * 82);
+        std::string total_warp_num =
+            std::to_string((KernelConstants::DEFAULT_BLOCK_SIZE / 32));
+        code.Add("if (blockIdx.x > " + max_num_warps +
+                 ") return; // Maximum number of warps a GPU can execute "
+                 "concurrently");
+        code.Add("int gpart_id = -1;");
+        code.Add(
+            "Themis::WarpsStatus* warp_status = (Themis::WarpsStatus*) "
+            "global_num_idle_warps;");
+        code.Add("if (threadIdx.x == 0) {");
+        code.IncreaseNesting();
+        code.Add("if (warp_status->isTerminated()) active_thread_ids[0] = -1;");
+        code.Add("else active_thread_ids[0] = warp_status->addTotalWarpNum(" +
+                 total_warp_num + ");");
+        code.DecreaseNesting();
+        code.Add("}");
+        code.Add("__syncthreads();");
+        code.Add("gpart_id = active_thread_ids[0];");
+        code.Add("__syncthreads();");
+        code.Add("if (gpart_id == -1) return;");
+        code.Add("gpart_id = gpart_id + threadIdx.x / 32;");
+    }
+
     // Get thread and block indices
-    code.Add("int tid = blockIdx.x * blockDim.x + threadIdx.x;");
-    code.Add("int stride = blockDim.x * gridDim.x;");
+    code.Add("int tid = threadIdx.x % 32;");
+    code.Add("int warp_id = (blockIdx.x * blockDim.x + threadIdx.x) / 32;");
+    code.Add("unsigned prefixlanes = (0xffffffffu >> (32 - tid));");
     code.Add("int active = 0;\n");
+    code.Add("int stride = blockDim.x * gridDim.x;");  // TODO: remove
+
+    // TODO: refer to pipes2themis.py line 174 ~ 189
+
+    // 2. Generate initial distribution
+    code.Add("int inodes_cnts = 0; // the number of nodes per level");
+    code.Add("Range ts_0_range_cached;");
+    // code.Add("ts_0_range_cached.end = {scan.genTableSize()};')
+
+    if (do_inter_warp_lb) {
+        std::string num_warps =
+            std::to_string(int(KernelConstants::DEFAULT_BLOCK_SIZE / 32) *
+                           KernelConstants::DEFAULT_GRID_SIZE);
+        code.Add("int local_scan_offset = 0;");
+        code.Add("int global_scan_end = ts_0_range_cached.end;");
+        code.Add("Themis::PullINodesAtZeroLvlDynamically<" + num_warps +
+                 ">(thread_id, global_scan_offset, global_scan_end, "
+                 "local_scan_offset, ts_0_range_cached, inodes_cnts);");
+        // if self.interWarpLbMethod == 'aws':
+        code.Add("Themis::LocalLevelAndOrderInfo local_info;");
+        // if self.doWorkoadSizeTracking:
+        code.Add(
+            "Themis::WorkloadTracking::InitLocalWorkloadSizeAtZeroLvl(inodes_"
+            "cnts, local_info, global_stats_per_lvl);");
+        code.Add("unsigned interval = 1;");
+        code.Add("unsigned loop = {self.maxInterval} - 1;");
+    }
+    else {
+        code.Add(
+            "Themis::PullINodesAtZeroLvlStatically(tid, ts_0_range_cached, "
+            "inodes_cnts);");
+    }
+
+    code.Add(
+        "unsigned mask_32 = 0; // a bit mask to indicate levels where more "
+        "than 32 INodes exist");
+    code.Add(
+        "unsigned mask_1 = 0; // a bit mask to indicate levels where INodes "
+        "exist");
+    code.Add("int lvl = -1;");
+    code.Add(
+        "Themis::UpdateMaskAtZeroLvl(0, tid, ts_0_range_cached, mask_32, "
+        "mask_1);");
+    code.Add("Themis::ChooseLvl(tid, mask_32, mask_1, lvl);");
 
     // Generate the main scan loop that will contain all operators
-    GenerateMainScanLoop(pipeline, code);
+    if (do_inter_warp_lb) {
+        code.Add("do {");
+        code.IncreaseNesting();
+        GenerateMainScanLoop(pipeline, code);
+        GenerateCodeForAdaptiveWorkSharing(pipeline, code);
+        code.DecreaseNesting();
+        code.Add("} while (true); // while loop");
+    }
+    else {
+        GenerateMainScanLoop(pipeline, code);
+    }
 
     code.DecreaseNesting();
     code.Add("}");
@@ -1234,6 +1325,391 @@ void FilterCodeGenerator::GenerateCode(
     code.DecreaseNesting();
     code.Add("}");
     code.Add("// Filter condition passed, continue processing");
+}
+
+void GpuCodeGenerator::GenerateCodeForAdaptiveWorkSharing(
+    CypherPipeline &pipeline, CodeBuilder &code)
+{
+    code.Add("loop = 0;");
+    code.Add("if (lvl == -1) {");
+    GenerateCodeForAdaptiveWorkSharingPull(pipeline, code);
+    code.Add("} else { // if (lvl == -1)");
+    GenerateCodeForAdaptiveWorkSharingPush(pipeline, code);
+    code.Add("} // end of adaptive work sharing ");
+}
+
+void GpuCodeGenerator::GenerateCodeForAdaptiveWorkSharingPull(
+    CypherPipeline &pipeline, CodeBuilder &code)
+{
+    int num_warps = int(KernelConstants::DEFAULT_BLOCK_SIZE / 32) *
+                    KernelConstants::DEFAULT_GRID_SIZE;
+    int min_num_warps = std::min(num_warps, kernel_args.min_num_warps);
+
+    if (kernel_args.mode == "stats") {
+        code.Add("unsigned long long current_tp = clock64();");
+        code.Add(
+            "if (current_status != -1) stat_counters[current_status] += "
+            "current_tp - tp;");
+        code.Add("tp = current_tp;");
+        code.Add("current_status = TYPE_STATS_WAITING;");
+        code.Add("stat_counters[TYPE_STATS_NUM_IDLE] += 1;");
+    }
+
+    code.Add(
+        "if (thread_id == 0 && local_info.locally_lowest_lvl != -1) "
+        "atomicSub(&global_stats_per_lvl[local_info.locally_lowest_lvl].num_"
+        "warps, 1);");
+    code.Add("inodes_cnts = 0;");
+    code.Add("mask_32 = mask_1 = 0;");
+    code.Add("unsigned int num_idle_warps = 0;");
+    code.Add("int src_warp_id = -1;");
+    code.Add("int lowest_lvl = -1;");
+    code.Add("bool is_successful = Themis::PullINodesAtZeroLvlDynamically<" +
+             std::to_string(num_warps) +
+             ">(thread_id, global_scan_offset, global_scan_end, "
+             "local_scan_offset, ts_0_range_cached, inodes_cnts);");
+    code.Add("if (is_successful) {");
+    code.IncreaseNesting();
+    code.Add("loop = 0;");
+    code.Add("lowest_lvl = 0;");
+    code.DecreaseNesting();
+    code.Add("} else { // adaptive work-sharing for all levels");
+    code.IncreaseNesting();
+    code.Add("Themis::Wait<" + std::to_string(num_warps) + ", " +
+             std::to_string(min_num_warps) + ">(");
+    code.IncreaseNesting();
+    code.Add(
+        "gpart_id, src_warp_id, warp_id, thread_id, lowest_lvl, warp_status, "
+        "num_idle_warps, global_stats_per_lvl, gts, size_of_stack_per_warp");
+    if (idleWarpDetectionType == "twolvlbitmaps") {
+        code.Add(", global_bit1, global_bit2");
+    }
+    else if (idleWarpDetectionType == "idqueue") {
+        code.Add(", global_id_stack");
+    }
+    code.DecreaseNesting();
+    code.Add(");");
+
+    // Termination code
+    code.Add("if (src_warp_id == -2) {");
+    code.IncreaseNesting();
+    if (kernel_args.mode == "stats") {
+        code.Add("stat_counters[TYPE_STATS_WAITING] += (clock64() - tp);");
+    }
+    code.Add(
+        "if (blockIdx.x == 0 && threadIdx.x == 0) warp_status->terminate();");
+    code.Add("break;");
+    code.DecreaseNesting();
+    code.Add("}");
+
+    code.Add(
+        "Themis::PushedParts::PushedPartsStack* stack = "
+        "Themis::PushedParts::GetIthStack(gts, size_of_stack_per_warp, "
+        "(size_t) src_warp_id);");
+
+    GenerateCopyCodeForAdaptiveWorkSharingPull(pipeline, code);
+    code.Add("if (thread_id == 0) {");
+    code.IncreaseNesting();
+    code.Add("__threadfence();");
+    code.Add("stack->FreeLock();");
+    code.DecreaseNesting();
+    code.Add("}");
+    code.Add("loop = " + std::to_string(kernel_args.inter_warp_lb_interval) +
+             " - 1;");
+    code.DecreaseNesting();
+    code.Add("} // ~ adaptive work-sharing for all levels");
+
+    if (doWorkoadSizeTracking) {
+        code.Add(
+            "Themis::WorkloadTracking::InitLocalWorkloadSize(lowest_lvl, "
+            "inodes_cnts, local_info, global_stats_per_lvl);");
+    }
+    code.Add("lvl = lowest_lvl;");
+    code.Add(
+        "if (thread_id == lvl) mask_32 = inodes_cnts >= 32 ? 0x1 << lvl : 0;");
+    code.Add("mask_1 = 0x1 << lvl;");
+    code.Add("mask_32 = __shfl_sync(ALL_LANES, mask_32, lvl);");
+}
+
+void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPull(
+    CypherPipeline &pipeline, CodeBuilder &code)
+{
+    code.Add("switch (lowest_lvl) {");
+    // for spSeqId, spSeq in enumerate(pipe.subpipeSeqs):
+    //     code.Add('case {spSeqId}: ' + '{');
+    //     if spSeq.inputType == 0:
+    //         code.Add('Themis::PushedParts::PushedPartsAtZeroLvl* src_pparts = (Themis::PushedParts::PushedPartsAtZeroLvl*) stack->Top();')
+    //         code.Add('Themis::PullINodesFromPPartAtZeroLvl(thread_id, src_pparts, ts_0_range_cached, inodes_cnts);')
+    //         code.Add('if (thread_id == 0) stack->PopPartsAtZeroLvl();')
+    //     elif spSeq.inputType == 1:
+    //         code.Add('Themis::PushedParts::PushedPartsAtLoopLvl* src_pparts = (Themis::PushedParts::PushedPartsAtLoopLvl*) stack->Top();')
+    //         code.Add(f'Themis::PullINodesFromPPartAtLoopLvl(thread_id, {spSeqId}, src_pparts, ts_{spSeqId}_range_cached, ts_{spSeqId}_range, inodes_cnts);')
+
+    //         attrs = {}
+    //         tid = spSeq.getTid()
+    //         lastOp = spSeq.pipe.subpipeSeqs[spSeq.id-1].subpipes[-1].operators[-1]
+    //         for attrId, attr in spSeq.inBoundaryAttrs.items():
+    //             if attrId == tid.id: continue
+    //             if attrId in lastOp.generatingAttrs: continue
+    //             attrs[attrId] = attr
+
+    //         speculated_size = 0
+    //         if len(attrs) > 0:
+    //             code.Add('volatile char* src_pparts_attrs = src_pparts->GetAttrsPtr();')
+
+    //             for attrId, attr in attrs.items():
+    //                 if attr.dataType == Type.STRING:
+    //                     code.Add(f'Themis::PullStrAttributesAtLoopLvl(thread_id, ts_{spSeqId}_{attr.id_name}_cached, ts_{spSeqId}_{attr.id_name}, (volatile str_t*) (src_pparts_attrs + {speculated_size}));')
+    //                 elif attr.dataType == Type.PTR_INT:
+    //                     code.Add(f'Themis::PullPtrIntAttributesAtLoopLvl(thread_id, ts_{spSeqId}_{attr.id_name}_cached, ts_{spSeqId}_{attr.id_name}, (volatile int**) (src_pparts_attrs + {speculated_size}));')
+    //                 else:
+    //                     code.Add(f'Themis::PullAttributesAtLoopLvl<{langType(attr.dataType)}>(thread_id, ts_{spSeqId}_{attr.id_name}_cached, ts_{spSeqId}_{attr.id_name}, ({langType(attr.dataType)}*) (src_pparts_attrs + {speculated_size}));')
+    //                 speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
+    //         code.Add(f'if (thread_id == 0) stack->PopPartsAtLoopLvl({speculated_size});')
+    //     elif spSeq.inputType == 2:
+    //         code.Add('Themis::PushedParts::PushedPartsAtIfLvl* src_pparts = (Themis::PushedParts::PushedPartsAtIfLvl*) stack->Top();')
+    //         code.Add(f'Themis::PullINodesFromPPartAtIfLvl(thread_id, {spSeqId}, src_pparts, inodes_cnts);')
+    //         if len(spSeq.inBoundaryAttrs) > 0:
+    //             code.Add('volatile char* src_pparts_attrs = src_pparts->GetAttrsPtr();')
+    //             speculated_size = 0
+    //             for attrId, attr in spSeq.inBoundaryAttrs.items():
+    //                 if attr.dataType == Type.STRING:
+    //                     code.Add(f'Themis::PullStrAttributesAtIfLvl(thread_id, ts_{spSeqId}_{attr.id_name}_flushed, (volatile str_t*) (src_pparts_attrs + {speculated_size}));')
+    //                 elif attr.dataType == Type.PTR_INT:
+    //                     code.Add(f'Themis::PullPtrIntAttributesAtIfLvl(thread_id, ts_{spSeqId}_{attr.id_name}_flushed, (int**) (src_pparts_attrs + {speculated_size}));')
+    //                 else:
+    //                     code.Add(f'Themis::PullAttributesAtIfLvl<{langType(attr.dataType)}>(thread_id, ts_{spSeqId}_{attr.id_name}_flushed, ({langType(attr.dataType)}*) (src_pparts_attrs + {speculated_size}));')
+    //                 speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
+    //             code.Add(f'if (thread_id == 0) stack->PopPartsAtIfLvl({speculated_size});')
+    //     code.Add('} break;')
+    code.Add("} // switch");
+}
+
+void GpuCodeGenerator::GenerateCodeForAdaptiveWorkSharingPush(
+    CypherPipeline &pipeline, CodeBuilder &code)
+{
+    int num_warps = int(KernelConstants::DEFAULT_BLOCK_SIZE / 32) *
+                    KernelConstants::DEFAULT_GRID_SIZE;
+    int min_num_warps = std::min(num_warps, kernel_args.min_num_warps);
+
+    if (kernel_args.mode == "stats") {
+        code.Add("unsigned long long current_tp = clock64();");
+        code.Add(
+            "if (current_status != -1) stat_counters[current_status] "
+            "+= current_tp - tp;");
+        code.Add("tp = current_tp;");
+        code.Add("current_status = TYPE_STATS_PUSHING;");
+    }
+
+    code.Add("int target_warp_id = -1;");
+    code.Add("unsigned int num_idle_warps = 0;");
+    code.Add("unsigned int num_warps = 0;");
+
+    if (doWorkoadSizeTracking) {
+        code.Add(
+            "bool is_allowed = Themis::isPushingAllowed(thread_id, "
+            "warp_status, num_idle_warps, num_warps, local_info, "
+            "global_stats_per_lvl);");
+    }
+    else {
+        code.Add("bool is_allowed = false;");
+    }
+    code.Add("if (is_allowed) {");
+    code.IncreaseNesting();
+
+    // code.Add(
+    //          "Themis::FindIdleWarp<{len(pipe.subpipeSeqs)},{num_warps},{min_"
+    //          "num_warps}>(");  // TODO: what is subpipeSeqs?
+    code.IncreaseNesting();
+    code.Add(
+        "target_warp_id, warp_id, thread_id, warp_status, num_idle_warps, "
+        "num_warps,gts, size_of_stack_per_warp");
+    if (idleWarpDetectionType == "twolvlbitmaps") {
+        code.Add(", global_bit1, global_bit2");
+    }
+    else if (idleWarpDetectionType == "idqueue") {
+        code.Add(", global_id_stack");
+    }
+    code.DecreaseNesting();
+    code.Add(");");
+    code.DecreaseNesting();
+    code.Add("}");
+
+    if (kernel_args.mode == "sample") {
+        code.Add(
+            "if (tried) sample(locally_lowest_lvl, thread_id, samples, "
+            "sampling_start, TYPE_SAMPLE_TRY_PUSHING);");
+        code.Add(
+            "sample(locally_lowest_lvl, thread_id, samples, sampling_start, "
+            "TYPE_SAMPLE_DETECTING);");
+    }
+
+    code.Add("if (target_warp_id >= 0) {");
+    code.IncreaseNesting();
+    if (kernel_args.mode == "sample") {
+        code.Add(
+            "sample(locally_lowest_lvl, thread_id, samples, sampling_start, "
+            "TYPE_SAMPLE_PUSHING);");
+    }
+
+    code.Add(
+        "Themis::PushedParts::PushedPartsStack* stack = "
+        "Themis::PushedParts::GetIthStack(gts, size_of_stack_per_warp, "
+        "target_warp_id);");
+    code.Add("int lvl_to_push = local_info.locally_lowest_lvl;");
+    code.Add("int num_to_push = 0;");
+    code.Add("int num_remaining = 0;");
+    code.Add(
+        "int num_nodes = local_info.num_nodes_at_locally_lowest_lvl > 0 ? "
+        "local_info.num_nodes_at_locally_lowest_lvl : 0;");
+    code.Add("unsigned m = 0x1u << lvl_to_push;");
+    GenerateCopyCodeForAdaptiveWorkSharingPush(pipeline, code);
+    code.Add(
+        "Themis::WorkloadTracking::UpdateWorkloadSizeOfIdleWarpAfterPush("
+        "thread_id, lvl_to_push, num_to_push, global_stats_per_lvl);");
+    code.Add("if (thread_id == 0) stack->FreeLock();");
+
+    // Recalculate current workload size of this busy warp
+    code.Add("// Calculate the workload size of this busy warp");
+    code.Add("int new_num_nodes_at_locally_lowest_lvl = num_remaining;");
+    code.Add(
+        "int8_t new_local_max_order = "
+        "Themis::CalculateOrder(new_num_nodes_at_locally_lowest_lvl);");
+    code.Add(
+        "int new_local_lowest_lvl = new_num_nodes_at_locally_lowest_lvl > 0 ? "
+        "lvl_to_push : -1;");
+
+    // Find the new lowet level
+    code.Add("if (new_num_nodes_at_locally_lowest_lvl == 0 && mask_1 != 0) {");
+    code.Add("new_local_lowest_lvl = __ffs(mask_1) - 1;");
+    // if len(pipe.subpipeSeqs) > 1:
+    //     code.Add("switch (new_local_lowest_lvl) {")
+    //     for spSeqId, spSeq in enumerate(pipe.subpipeSeqs):
+    //         if spSeqId == 0: continue
+    //         code.Add(f"case {spSeqId}:" + "{")
+    //         if spSeq.inputType == 1:
+    //             code.Add(f"Themis::CountINodesAtLoopLvl(thread_id, {spSeqId}, ts_{spSeqId}_range_cached, ts_{spSeqId}_range, inodes_cnts);")
+    //             code.Add(f"new_num_nodes_at_locally_lowest_lvl = __shfl_sync(ALL_LANES, inodes_cnts, {spSeqId});")
+    //             code.Add(f"new_local_max_order = Themis::CalculateOrder(new_num_nodes_at_locally_lowest_lvl);")
+    //         else:
+    //             code.Add(f"new_num_nodes_at_locally_lowest_lvl = __shfl_sync(ALL_LANES, inodes_cnts, {spSeqId});")
+    //             code.Add(f"new_local_max_order = 0;")
+    //         code.Add("} break;")
+    //     code.Add("}")
+    code.Add("}");
+    code.Add(
+        "Themis::WorkloadTracking::UpdateWorkloadSizeOfBusyWarpAfterPush("
+        "thread_id, mask_1, new_num_nodes_at_locally_lowest_lvl, "
+        "new_local_lowest_lvl, new_local_max_order, local_info, "
+        "global_stats_per_lvl);");
+    code.Add("interval = 0;");
+    code.Add("Themis::ChooseLvl(thread_id, mask_32, mask_1, lvl);");
+    code.DecreaseNesting();
+    code.Add("} else {");
+    code.IncreaseNesting();
+    code.Add(
+        "Themis::chooseNextIntervalAfterPush(interval, local_info, "
+        "num_warps, num_idle_warps, is_allowed, " +
+        std::to_string(kernel_args.inter_warp_lb_interval) + ");");
+    code.DecreaseNesting();
+    code.Add("} // else");
+    code.Add("loop = " + std::to_string(kernel_args.inter_warp_lb_interval) +
+             " - interval;");
+}
+
+void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPush(
+    CypherPipeline &pipeline, CodeBuilder &code)
+{
+    int stepSize = KernelConstants::DEFAULT_BLOCK_SIZE *
+                   KernelConstants::DEFAULT_GRID_SIZE;
+
+    code.Add("switch(lvl_to_push) {");
+
+    // for spSeqId, spSeq in enumerate(pipe.subpipeSeqs):
+    //     code.Add(f'case {spSeqId}: ' + '{')
+    //     if spSeq.inputType == 0:
+    //         code.Add(f'if (thread_id == 0) stack->PushPartsAtZeroLvl();')
+    //         code.Add('Themis::PushedParts::PushedPartsAtZeroLvl* target_pparts = (Themis::PushedParts::PushedPartsAtZeroLvl*) stack->Top();')
+    //         code.Add(f'num_to_push = Themis::PushINodesToPPartAtZeroLvl(thread_id, target_pparts, ts_0_range_cached, {stepSize});')
+    //         code.Add(f'num_remaining = num_nodes - num_to_push;')
+    //         code.Add(f'mask_32 = num_remaining >= 32 ? (m | mask_32) : ((~m) & mask_32);')
+    //         code.Add(f'mask_1 = num_remaining > 0 ?  (m | mask_1) : ((~m) & mask_1);')
+
+    //     elif spSeq.inputType == 1:
+
+    //         attrs = {}
+    //         tid = spSeq.getTid()
+    //         lastOp = spSeq.pipe.subpipeSeqs[spSeq.id-1].subpipes[-1].operators[-1]
+    //         for attrId, attr in spSeq.inBoundaryAttrs.items():
+    //             if attrId == tid.id: continue
+    //             if attrId in lastOp.generatingAttrs: continue
+    //             attrs[attrId] = attr
+
+    //         speculated_size = 0
+    //         for attrId, attr in attrs.items():
+    //             speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
+    //         code.Add(f'if (thread_id == 0) stack->PushPartsAtLoopLvl({spSeqId}, {speculated_size});')
+    //         code.Add('Themis::PushedParts::PushedPartsAtLoopLvl* target_pparts = (Themis::PushedParts::PushedPartsAtLoopLvl*) stack->Top();')
+    //         code.Add(f'num_to_push = Themis::PushINodesToPPartAtLoopLvl(thread_id, {spSeqId}, target_pparts, ts_{spSeqId}_range_cached, ts_{spSeqId}_range);')
+    //         code.Add(f'num_remaining = num_nodes - num_to_push;')
+    //         code.Add(f'mask_32 = num_remaining >= 32 ? (m | mask_32) : ((~m) & mask_32);')
+    //         code.Add(f'mask_1 = num_remaining > 0 ?  (m | mask_1) : ((~m) & mask_1);')
+    //         code.Add(f'int ts_src = 32;')
+    //         code.Add(f'Themis::DistributeFromPartToDPart(thread_id, {spSeqId}, ts_src, ts_{spSeqId}_range, ts_{spSeqId}_range_cached, mask_32, mask_1);')
+    //         if len(attrs) > 0:
+    //             speculated_size = 0
+    //             code.Add('volatile char* target_pparts_attrs = target_pparts->GetAttrsPtr();')
+    //             for attrId, attr in attrs.items():
+    //                 name = f'ts_{spSeqId}_{attr.id_name}'
+    //                 code.Add('{')
+    //                 if attr.dataType == Type.STRING:
+    //                     code.Add(f'Themis::PushStrAttributesAtLoopLvl(thread_id, (volatile str_t*) (target_pparts_attrs + {speculated_size}), {name}_cached, {name});')
+    //                     code.Add(f'char* start = (char*) __shfl_sync(ALL_LANES, (uint64_t) {name}.start, ts_src);')
+    //                     code.Add(f'char* end = (char*) __shfl_sync(ALL_LANES, (uint64_t) {name}.end, ts_src);')
+    //                     code.Add(f'if (ts_src < 32) {name}_cached.start = start;')
+    //                     code.Add(f'if (ts_src < 32) {name}_cached.end = end;')
+    //                 elif attr.dataType == Type.PTR_INT:
+    //                     code.Add(f'Themis::PushPtrIntAttributesAtLoopLvl(thread_id, (volatile int**) (target_pparts_attrs + {speculated_size}), {name}_cached, {name});')
+    //                     code.Add(f'uint64_t cache = __shfl_sync(ALL_LANES, (uint64_t){name}, ts_src);')
+    //                     code.Add(f'if (ts_src < 32) {name}_cached = (int*) cache;')
+    //                 else:
+    //                     dtype = langType(attr.dataType)
+    //                     code.Add(f'Themis::PushAttributesAtLoopLvl<{dtype}>(thread_id, (volatile {dtype}*) (target_pparts_attrs + {speculated_size}), {name}_cached, {name});')
+    //                     code.Add(f'{dtype} cache = __shfl_sync(ALL_LANES, {name}, ts_src);')
+    //                     code.Add(f'if (ts_src < 32) {name}_cached = cache;')
+    //                 code.Add('}')
+    //                 speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
+    //     else:
+    //         speculated_size = 0
+    //         for attrId, attr in spSeq.inBoundaryAttrs.items():
+    //             speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
+    //         code.Add(f'if (thread_id == 0) stack->PushPartsAtIfLvl({spSeqId}, {speculated_size});')
+    //         code.Add('Themis::PushedParts::PushedPartsAtIfLvl* target_pparts = (Themis::PushedParts::PushedPartsAtIfLvl*) stack->Top();')
+    //         code.Add(f'num_to_push = Themis::PushINodesToPPartAtIfLvl(thread_id, {spSeqId}, target_pparts, inodes_cnts);')
+    //         code.Add(f'mask_32 = ((~m) & mask_32);')
+    //         code.Add(f'mask_1 = ((~m) & mask_1);')
+    //         if len(spSeq.inBoundaryAttrs) > 0:
+    //             code.Add('volatile char* target_pparts_attrs = target_pparts->GetAttrsPtr();')
+    //             speculated_size = 0
+    //             for attrId, attr in spSeq.inBoundaryAttrs.items():
+    //                 name = f'ts_{spSeqId}_{attr.id_name}'
+    //                 code.Add('{')
+    //                 if attr.dataType == Type.STRING:
+    //                     code.Add(f'Themis::PushStrAttributesAtIfLvl(thread_id, (volatile str_t*) (target_pparts_attrs + {speculated_size}), {name}_flushed);')
+    //                 elif attr.dataType == Type.PTR_INT:
+    //                     code.Add(f'Themis::PushPtrIntAttributesAtIfLvl(thread_id, (volatile int**) (target_pparts_attrs + {speculated_size}), {name}_flushed);')
+    //                 else:
+    //                     dtype = langType(attr.dataType)
+    //                     code.Add(f'Themis::PushAttributesAtIfLvl<{dtype}>(thread_id, (volatile {dtype}*) (target_pparts_attrs + {speculated_size}), {name}_flushed);')
+    //                 code.Add('}')
+    //                 speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
+    //     code.Add('} break;')
+    code.Add("}");
+    int num_warps_per_block = int(KernelConstants::DEFAULT_BLOCK_SIZE / 32);
+    code.Add("if ((target_warp_id / " + std::to_string(num_warps_per_block) +
+             ") == (gpart_id / " + std::to_string(num_warps_per_block) +
+             ")) __threadfence_block();");
+    code.Add("else __threadfence();");
 }
 
 // Pipeline context management methods
