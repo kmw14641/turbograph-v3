@@ -62,7 +62,12 @@ void GpuCodeGenerator::InitializeOperatorGenerators()
 void GpuCodeGenerator::GenerateGPUCode(CypherPipeline &pipeline)
 {
     SCOPED_TIMER_SIMPLE(GenerateGPUCode, spdlog::level::info,
-                        spdlog::level::debug);
+                        spdlog::level::info);
+    
+    // Split pipeline into sub-pipelines based on filter operators
+    SUBTIMER_START(GenerateGPUCode, "SplitPipeline");
+    SplitPipelineIntoSubPipelines(pipeline);
+    SUBTIMER_STOP(GenerateGPUCode, "SplitPipeline");
 
     // generate kernel code
     SUBTIMER_START(GenerateGPUCode, "GenerateKernelCode");
@@ -86,6 +91,28 @@ void GpuCodeGenerator::GenerateGPUCode(CypherPipeline &pipeline)
         cpu_code_file << generated_cpu_code << std::endl;
         cpu_code_file.close();
     }
+}
+
+void GpuCodeGenerator::SplitPipelineIntoSubPipelines(CypherPipeline &pipeline)
+{
+    CypherPhysicalOperatorGroups groups;
+    CypherPhysicalOperatorGroups &pipeline_groups = pipeline.GetOperatorGroups();
+    
+    for (int op_idx = 0; op_idx < pipeline.GetPipelineLength(); op_idx++) {
+        auto op = pipeline.GetIdxOperator(op_idx);
+        if (!op) continue;
+        
+        groups.GetGroups().push_back(pipeline_groups.GetGroups()[op_idx]);
+        
+        // TODO: implement other cases
+        if (op->GetOperatorType() == PhysicalOperatorType::FILTER) {
+            pipeline_context.sub_pipelines.emplace_back(groups);
+            groups.GetGroups().clear();
+            groups.GetGroups().push_back(pipeline_groups.GetGroups()[op_idx]);
+        }
+    }
+    
+    pipeline_context.sub_pipelines.emplace_back(groups);
 }
 
 void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
@@ -719,8 +746,9 @@ void NodeScanCodeGenerator::GenerateCode(
                 std::string count_param_name = table_name + "_count";
                 code.Add("// Process extent " + std::to_string(extent_id) +
                          " (property " + std::to_string(oid) + ")");
-                code.Add("for (int i = tid; i < " + count_param_name +
-                         "; i += stride) {");
+                // code.Add("for (int i = tid; i < " + count_param_name +
+                //          "; i += stride) {");
+
                 code.IncreaseNesting();
 
                 // lazy materialization
@@ -1332,9 +1360,13 @@ void GpuCodeGenerator::GenerateCodeForAdaptiveWorkSharing(
 {
     code.Add("loop = 0;");
     code.Add("if (lvl == -1) {");
+    code.IncreaseNesting();
     GenerateCodeForAdaptiveWorkSharingPull(pipeline, code);
+    code.DecreaseNesting();
     code.Add("} else { // if (lvl == -1)");
+    code.IncreaseNesting();
     GenerateCodeForAdaptiveWorkSharingPush(pipeline, code);
+    code.DecreaseNesting();
     code.Add("} // end of adaptive work sharing ");
 }
 
@@ -1581,6 +1613,7 @@ void GpuCodeGenerator::GenerateCodeForAdaptiveWorkSharingPush(
 
     // Find the new lowet level
     code.Add("if (new_num_nodes_at_locally_lowest_lvl == 0 && mask_1 != 0) {");
+    code.IncreaseNesting();
     code.Add("new_local_lowest_lvl = __ffs(mask_1) - 1;");
     // if len(pipe.subpipeSeqs) > 1:
     //     code.Add("switch (new_local_lowest_lvl) {")
@@ -1596,6 +1629,7 @@ void GpuCodeGenerator::GenerateCodeForAdaptiveWorkSharingPush(
     //             code.Add(f"new_local_max_order = 0;")
     //         code.Add("} break;")
     //     code.Add("}")
+    code.DecreaseNesting();
     code.Add("}");
     code.Add(
         "Themis::WorkloadTracking::UpdateWorkloadSizeOfBusyWarpAfterPush("

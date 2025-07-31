@@ -75,9 +75,6 @@ public:
 	}
 
 	std::string toString() {
-		if (is_gpu_pipeline) {
-			return "";
-		}
 		std::string result;
 		// sink
 		result += "#" + std::to_string(GetSink()->GetOperatorId()) + " " + GetSink()->ToString() + "(" + GetSink()->ParamsToString() + ")\n";
@@ -119,12 +116,8 @@ public:
 		return pipelineLength;
 	}
 
-	void SetIsGpuPipeline(bool is_gpu_pipeline) {
-		this->is_gpu_pipeline = is_gpu_pipeline;
-	}
-
-	bool IsGpuPipeline() {
-		return is_gpu_pipeline;
+	CypherPhysicalOperatorGroups &GetOperatorGroups() {
+		return operator_groups;
 	}
 
 	// members
@@ -135,8 +128,6 @@ public:
 	CypherPhysicalOperatorGroups operator_groups;
 	//! Representative pipeline
 	vector<CypherPhysicalOperator *> repr_operators;
-	//! Whether the pipeline is a GPU pipeline
-	bool is_gpu_pipeline;
 };
 
 }

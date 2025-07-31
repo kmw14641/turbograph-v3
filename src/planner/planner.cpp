@@ -611,7 +611,6 @@ vector<duckdb::BasePipelineExecutor *> Planner::genPipelineExecutors(bool enable
 
         // GPU specific processing
         void *main_function = nullptr;
-        vector<duckdb::KernelParam> kernel_params;
         if (enable_gpu_processing) {
             // Generate GPU kernel code for this pipeline
             code_gen->GenerateGPUCode(*pipe);
@@ -626,11 +625,6 @@ vector<duckdb::BasePipelineExecutor *> Planner::genPipelineExecutors(bool enable
             if (!main_function) {
                 throw std::runtime_error("Failed to get compiled kernel function");
             }
-
-            // Get kernel parameters that were generated during code generation
-            kernel_params = code_gen->GetKernelParams();
-
-            pipe->SetIsGpuPipeline(true);
         }
 
         // Create pipeline executor

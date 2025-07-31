@@ -299,6 +299,9 @@ class GpuCodeGenerator {
     void AnalyzeOperatorDependencies(CypherPhysicalOperator *op,
                                      PipelineContext &ctx);
 
+    // Split pipeline into sub-pipelines
+    void SplitPipelineIntoSubPipelines(CypherPipeline &pipeline);
+
     // Schema analysis
     void ExtractInputSchema(CypherPhysicalOperator *op, PipelineContext &ctx);
     void ExtractOutputSchema(CypherPhysicalOperator *op, PipelineContext &ctx);
