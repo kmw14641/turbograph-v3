@@ -95,6 +95,12 @@ struct PointerMapping {
     ChunkDefinitionID cid;  // Chunk ID for GPU chunk cache manager
 };
 
+enum class PipeInputType : uint8_t {
+    TYPE_0, // scan
+    TYPE_1, // multi
+    TYPE_2 // filter
+};
+
 // Strategy pattern for operator-specific code generation
 class OperatorCodeGenerator {
    public:
@@ -195,6 +201,11 @@ class GpuCodeGenerator {
         return input_kernel_params;
     }
 
+    GpuKernelArgs &GetKernelArgs()
+    {
+        return kernel_args;
+    }
+
     std::string ConvertLogicalTypeToPrimitiveType(LogicalTypeId type_id);
 
     // Set whether this kernel needs to be repeatable
@@ -229,7 +240,21 @@ class GpuCodeGenerator {
     // Process remaining operators recursively
     void ProcessRemainingOperators(CypherPipeline &pipeline, int op_idx,
                                    CodeBuilder &code);
-    
+
+    // Generate input code for a specific type
+    void GenerateInputCode(CypherPhysicalOperator *op, CodeBuilder &code,
+                           PipelineContext &pipeline_ctx,
+                           PipeInputType input_type);
+    void GenerateInputCodeForType0(CypherPhysicalOperator *op,
+                                   CodeBuilder &code,
+                                   PipelineContext &pipeline_ctx);
+    void GenerateInputCodeForType1(CypherPhysicalOperator *op,
+                                   CodeBuilder &code,
+                                   PipelineContext &pipeline_ctx);
+    void GenerateInputCodeForType2(CypherPhysicalOperator *op,
+                                   CodeBuilder &code,
+                                   PipelineContext &pipeline_ctx);
+
     // Generate code for adaptive work sharing
     void GenerateCodeForAdaptiveWorkSharing(
         CypherPipeline &pipeline, CodeBuilder &code);

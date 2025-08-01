@@ -123,7 +123,7 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     code.Add("#include \"themis.cuh\"");
     code.Add("#include \"work_sharing.cuh\"");
     code.Add("#include \"adaptive_work_sharing.cuh\"");
-    code.Add("\n");
+    code.Add(""); // new line
 
     // Generate kernel function
     code.Add("extern \"C\" __global__ void gpu_kernel(");
@@ -610,6 +610,147 @@ std::string GpuCodeGenerator::ConvertLogicalTypeToPrimitiveType(
     }
 }
 
+void GpuCodeGenerator::GenerateInputCode(CypherPhysicalOperator *op,
+                                         CodeBuilder &code,
+                                         PipelineContext &pipeline_ctx,
+                                         PipeInputType input_type)
+{
+    switch (input_type) {
+        case PipeInputType::TYPE_0:
+            GenerateInputCodeForType0(op, code, pipeline_ctx);
+            break;
+        case PipeInputType::TYPE_1:
+            GenerateInputCodeForType1(op, code, pipeline_ctx);
+            break;
+        case PipeInputType::TYPE_2:
+            GenerateInputCodeForType2(op, code, pipeline_ctx);
+            break;
+        default:
+            throw std::runtime_error("Unsupported input type");
+    }
+}
+
+void GpuCodeGenerator::GenerateInputCodeForType0(CypherPhysicalOperator *op,
+                                                 CodeBuilder &code,
+                                                 PipelineContext &pipeline_ctx)
+{
+    int stepSize = KernelConstants::DEFAULT_BLOCK_SIZE *
+                   KernelConstants::DEFAULT_GRID_SIZE;
+    // tid = spSeq.getTid()
+    std::string tid_name =
+        "tid_" + std::to_string(pipeline_ctx.sub_pipelines[0].GetPipelineId());
+
+    code.Add("while (lvl >= 0 && loop < " +
+             std::to_string(kernel_args.inter_warp_lb_interval) +
+             ") {");
+
+    code.IncreaseNesting();
+
+    code.Add("__syncwarp();");
+    code.Add("if (lvl == 0) {");
+    code.IncreaseNesting();
+    code.Add("int " + tid_name + ";");
+    code.Add("Themis::FillIPartAtZeroLvl(lvl, thread_id, active, " + tid_name +
+             ", ts_0_range_cached, mask_32, mask_1, " +
+             std::to_string(stepSize) + ");");
+
+    // if self.doInterWarpLB and self.interWarpLbMethod == 'aws' and self.doWorkoadSizeTracking:
+    code.Add(
+        "Themis::WorkloadTracking::UpdateWorkloadSizeAtZeroLvl(thread_id, "
+        "++loop, local_info, global_stats_per_lvl);");
+}
+void GpuCodeGenerator::GenerateInputCodeForType1(CypherPhysicalOperator *op,
+                                                 CodeBuilder &code,
+                                                 PipelineContext &pipeline_ctx)
+{
+    // tid = spSeq.getTid()
+    // lastOp = spSeq.pipe.subpipeSeqs[spSeq.id-1].subpipes[-1].operators[-1]
+    // c = Code()
+    // if self.doInterWarpLB and self.interWarpLbMethod == 'aws':
+    //     c.add(f'while (lvl >= {spSeq.id} && loop < {self.maxInterval}) ' + '{')
+    // else:
+    //     c.add(f'while (lvl >= {spSeq.id}) ' + '{')
+    // c.add('__syncwarp();')
+    // c.add(f'if (lvl == {spSeq.id}) ' + '{')
+    // c.add(f'int loopvar{spSeq.id};')
+    // c.add(f'Themis::FillIPartAtLoopLvl({spSeq.id}, thread_id, active, loopvar{spSeq.id}, ts_{spSeq.id}_range_cached, mask_32, mask_1);')
+    
+    // # Declare in-boundary attrs
+    // c.add(f'//{list(attrsToDeclareAndMaterialize)}')
+    // c.add(f'int {tid.id_name};')
+    // for attrId, attr in spSeq.inBoundaryAttrs.items():
+    //     if attrId == tid.id: continue
+    //     c.add(f'{langType(attr.dataType)} {attr.id_name};')
+        
+    
+    // _, attrsToLoadBeforeExec, _, _ = attrsToDeclareAndMaterialize[0]
+    // c.add(self.genAttrDeclaration(spSeq.pipe, attrsToLoadBeforeExec))
+    
+    // c.add('if (active) {')
+
+    // # Load in-boundary attrs
+    // c.add(f'// last op generating Attrs: {lastOp.generatingAttrs}')
+    // var = f'loopvar{spSeq.id}'
+    // c.add(f'{tid.id_name} = {spSeq.convertTid(var)};')
+    // for attrId, attr in spSeq.inBoundaryAttrs.items():
+    //     if attrId == tid.id: continue
+    //     if attrId in lastOp.generatingAttrs:
+    //         c.add(f'{attr.id_name} = {spSeq.pipe.originExpr[attrId]};')
+    //     else:
+    //         c.add(f'{attr.id_name} = ts_{spSeq.id}_{attr.id_name}_cached;')
+        
+    // c.add(self.genAttrLoad(spSeq.pipe, attrsToLoadBeforeExec))
+
+    // c.add('}')
+    // c.add('int ts_src = 32;')
+    // c.add(f'bool is_updated = Themis::DistributeFromPartToDPart(thread_id, {spSeq.id}, ts_src, ts_{spSeq.id}_range, ts_{spSeq.id}_range_cached, mask_32, mask_1);')
+    // if self.doInterWarpLB and self.interWarpLbMethod == 'aws' and self.doWorkoadSizeTracking:
+    //     c.add(f'Themis::WorkloadTracking::UpdateWorkloadSizeAtLoopLvl(thread_id, {spSeq.id}, ++loop, ts_{spSeq.id}_range, ts_{spSeq.id}_range_cached, mask_1, local_info, global_stats_per_lvl);')
+    // c.add('if (is_updated) {')
+    // for attrId, attr in spSeq.inBoundaryAttrs.items():
+    //     if attrId == tid.id: continue
+    //     if attrId in lastOp.generatingAttrs: continue
+    //     c.add('{')
+    //     name = f'ts_{spSeq.id}_{attr.id_name}'
+    //     if attr.dataType == Type.STRING:
+    //         c.add(f'char* start = (char*) __shfl_sync(ALL_LANES, (uint64_t) {name}.start, ts_src);')
+    //         c.add(f'char* end = (char*) __shfl_sync(ALL_LANES, (uint64_t) {name}.end, ts_src);')
+    //         c.add('if (ts_src < 32) {')
+    //         c.add(f'{name}_cached.start = start;')
+    //         c.add(f'{name}_cached.end = end;')
+    //         c.add('}')
+    //     elif attr.dataType == Type.PTR_INT:
+    //         c.add(f'uint64_t cache = __shfl_sync(ALL_LANES, (uint64_t){name}, ts_src);')
+    //         c.add(f'if (ts_src < 32) {name}_cached = (int*) cache;')
+    //     else:
+    //         c.add(f'{langType(attr.dataType)} cache = __shfl_sync(ALL_LANES, {name}, ts_src);')
+    //         c.add(f'if (ts_src < 32) {name}_cached = cache;')
+    //     c.add('}')
+    // c.add('}')
+    // return c
+}
+void GpuCodeGenerator::GenerateInputCodeForType2(CypherPhysicalOperator *op,
+                                                 CodeBuilder &code,
+                                                 PipelineContext &pipeline_ctx)
+{
+    // c.add(f'if (lvl == {spSeq.id}) ' + '{')
+    // if len(spSeq.inBoundaryAttrs) > 0:
+    //     c.add(f'if (!(mask_32 & (0x1u << {spSeq.id}))) ' + '{')
+    //     for attrId, attr in spSeq.inBoundaryAttrs.items():
+    //         c.add(f'ts_{spSeq.id}_{attr.id_name} = ts_{spSeq.id}_{attr.id_name}_flushed;')    
+    //     c.add('}')
+    // c.add(f'Themis::FillIPartAtIfLvl({spSeq.id}, thread_id, inodes_cnts, active, mask_32, mask_1);')
+    // if self.doInterWarpLB and self.interWarpLbMethod == 'aws' and self.doWorkoadSizeTracking:
+    //     c.add(f'Themis::WorkloadTracking::UpdateWorkloadSizeAtIfLvl(thread_id, {spSeq.id}, loop, inodes_cnts, mask_1, local_info, global_stats_per_lvl);')
+    
+    // for attrId, attr in spSeq.inBoundaryAttrs.items():
+    //     c.add(f'{langType(attr.dataType)} {attr.id_name};')
+    // c.add('if (active) {')
+    // for attrId, attr in spSeq.inBoundaryAttrs.items():
+    //     c.add(f'{attr.id_name} = ts_{spSeq.id}_{attr.id_name};')
+    // c.add('}')
+}
+
 void GpuCodeGenerator::GenerateMainScanLoop(CypherPipeline &pipeline,
                                             CodeBuilder &code)
 {
@@ -746,10 +887,10 @@ void NodeScanCodeGenerator::GenerateCode(
                 std::string count_param_name = table_name + "_count";
                 code.Add("// Process extent " + std::to_string(extent_id) +
                          " (property " + std::to_string(oid) + ")");
-                // code.Add("for (int i = tid; i < " + count_param_name +
-                //          "; i += stride) {");
 
-                code.IncreaseNesting();
+                code_gen->GenerateInputCode(
+                    op, code, pipeline_ctx,
+                    PipeInputType::TYPE_0);  // TYPE_0 for node scan
 
                 // lazy materialization
                 code.Add("// lazy materialization");
@@ -758,7 +899,6 @@ void NodeScanCodeGenerator::GenerateCode(
                 code.Add(
                     "unsigned long long tuple_id = tuple_id_base "
                     "+ tid;");
-                // code.Add("printf(\"tid = %ld, tuple_id = %llu\\n\", tid, tuple_id);");
 
                 // Declare input column pointers for lazy materialization
                 code.Add("// Declare input column pointers");

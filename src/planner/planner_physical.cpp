@@ -5023,6 +5023,9 @@ duckdb::JoinType Planner::pTranslateJoinType(COperator *op)
         case COperator::EOperatorId::EopPhysicalCorrelatedLeftSemiNLJoin: {
             return duckdb::JoinType::SEMI;
         }
+        default: {
+            GPOS_ASSERT(false);
+        }
             // TODO where is FULL OUTER??????
     }
     D_ASSERT(false);
