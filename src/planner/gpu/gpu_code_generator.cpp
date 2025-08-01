@@ -125,26 +125,33 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     code.Add("#include \"adaptive_work_sharing.cuh\"");
     code.Add(""); // new line
 
-    // Generate kernel function
-    code.Add("extern \"C\" __global__ void gpu_kernel(");
+    GenerateKernelParams(pipeline);
+
+    code.Add("extern \"C\" __global__ void gpu_kernel("
+             "void **input_data, void **output_data, int *output_count) {");
     code.IncreaseNesting();
 
-    // Add kernel parameters
-    GenerateKernelParams(pipeline);
-    for (size_t i = 0; i < input_kernel_params.size(); i++) {
-        code.Add(
-            input_kernel_params[i].type + input_kernel_params[i].name +
-            (i < input_kernel_params.size() - 1 || !output_kernel_params.empty()
-                 ? ","
-                 : ""));
+    int in_idx  = 0;
+    int out_idx = 0;
+    for (const auto &p : input_kernel_params) {
+        if (p.type.find('*') != std::string::npos) {
+            code.Add(p.type + " " + p.name + " = (" + p.type +
+                     ") input_data[" + std::to_string(in_idx) + "];");
+            ++in_idx;
+        } else {
+            code.Add("const " + p.type + " " + p.name + " = " + p.value + ";");
+        }
     }
-    for (size_t i = 0; i < output_kernel_params.size(); i++) {
-        code.Add(output_kernel_params[i].type + output_kernel_params[i].name +
-                 (i < output_kernel_params.size() - 1 ? "," : ""));
+    for (const auto &p : output_kernel_params) {
+        if (p.type.find('*') != std::string::npos) {
+            code.Add(p.type + " " + p.name + " = (" + p.type +
+                     ") output_data[" + std::to_string(out_idx) + "];");
+            ++out_idx;
+        } else {
+            // code.Add(p.type + " " + p.name + " = " + p.value + ";");
+        }
     }
-    code.DecreaseNesting();
-    code.Add(") {");
-    code.IncreaseNesting();
+    code.Add("");
 
     // 1. Generate pipeline initilization
     code.Add("__shared__ int active_thread_ids[" +
@@ -275,52 +282,50 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
     code.IncreaseNesting();
     code.Add("cudaError_t err;\n");
 
-    // Generate variable declarations for each parameter
-    int param_index = 0;
+    int input_ptr_count  = 0;
+    for (const auto &p : input_kernel_params)
+        if (p.type.find('*') != std::string::npos) ++input_ptr_count;
+
+    int output_ptr_count = 0;
+    for (const auto &p : output_kernel_params)
+        if (p.type.find('*') != std::string::npos) ++output_ptr_count;
+
+    code.Add("void *input_data[" + std::to_string(input_ptr_count)  + "];");
+    code.Add("void *output_data[" + std::to_string(output_ptr_count) + "];");
+    code.Add("int  output_count = 0;");
+    code.Add("");
+
+    int ptr_map_idx = 0;
+    int in_idx      = 0;
+
     for (const auto &p : input_kernel_params) {
         if (p.type.find('*') != std::string::npos) {
-            // For pointer types, declare as void* and assign from ptr_mappings
-            code.Add("void *" + p.name + " = ptr_mappings[" +
-                     std::to_string(param_index) + "].address;");
-            param_index++;
-        }
-        else {
-            // For non-pointer types, declare as the actual type
-            code.Add(p.type + " " + p.name + " = " + p.value + ";");
+            code.Add("input_data[" + std::to_string(in_idx) + "] = "
+                    "ptr_mappings[" + std::to_string(ptr_map_idx) + "].address;");
+            ++in_idx;
+            ++ptr_map_idx;
+        } else {
+            // skip
+            // code.Add(p.type + " " + p.name + " = " + p.value + ";");
         }
     }
+
+    int out_idx = 0;
     for (const auto &p : output_kernel_params) {
         if (p.type.find('*') != std::string::npos) {
-            code.Add("void *" + p.name + ";");
-            code.Add("cudaMalloc(&" + p.name + ", 1024);");
-        }
-        else {
-            // For non-pointer types, declare as the actual type
-            code.Add(p.type + " " + p.name + " = " + p.value + ";");
+            code.Add("cudaMalloc(&output_data[" + std::to_string(out_idx) + "], 1024);");
+            ++out_idx;
+        } else {
+            // skip
+            // code.Add(p.type + " " + p.name + " = " + p.value + ";");
         }
     }
     code.Add("");
 
     code.Add("const int blockSize = 128;");
     code.Add("const int gridSize  = 3280;");
-    std::string args_line = "void *args[] = {";
-    for (size_t i = 0; i < input_kernel_params.size(); ++i) {
-        const auto &p = input_kernel_params[i];
-        args_line += "&" + p.name;
-        if (i + 1 < input_kernel_params.size())
-            args_line += ", ";
-    }
-    if (output_kernel_params.size() > 0) {
-        args_line += ", ";
-        for (size_t i = 0; i < output_kernel_params.size(); ++i) {
-            const auto &p = output_kernel_params[i];
-            args_line += "&" + p.name;
-            if (i + 1 < output_kernel_params.size())
-                args_line += ", ";
-        }
-    }
-    args_line += "};";
-    code.Add(args_line + "\n");
+    code.Add("void *args[] = { input_data, output_data, &output_count };");
+    code.Add("");
 
     code.Add(
         "CUresult r = cuLaunchKernel(gpu_kernel, gridSize,1,1, "
@@ -332,7 +337,7 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
     code.Add("cuGetErrorString(r, &str);");
     code.Add(
         "std::cerr << \"cuLaunchKernel failed: \" << (name?name:\"unknown\""
-        ") << \" – \" << (str?str:\"unknown\""
+        ") << \" - \" << (str?str:\"unknown\""
         ") << std::endl;");
     code.Add("throw std::runtime_error(\"cuLaunchKernel failed\");");
     code.DecreaseNesting();
