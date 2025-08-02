@@ -206,7 +206,9 @@ class GpuCodeGenerator {
         return kernel_args;
     }
 
-    std::string ConvertLogicalTypeToPrimitiveType(LogicalTypeId type_id);
+    std::string ConvertLogicalTypeToPrimitiveType(LogicalType &type);
+    std::string ConvertLogicalTypeIdToPrimitiveType(LogicalTypeId type_id,
+                                                    uint16_t extra_info);
 
     // Set whether this kernel needs to be repeatable
     void SetRepeatable(bool repeatable) { is_repeatable = repeatable; }
