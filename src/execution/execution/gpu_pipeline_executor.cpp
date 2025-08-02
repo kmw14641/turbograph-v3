@@ -44,10 +44,12 @@ GPUPipelineExecutor::GPUPipelineExecutor(ExecutionContext *context,
 
 GPUPipelineExecutor::GPUPipelineExecutor(
     ExecutionContext *context, CypherPipeline *pipeline, void *main_function,
-    const std::vector<PointerMapping> &pointer_mappings)
+    const std::vector<PointerMapping> &pointer_mappings,
+    const std::vector<ScanColumnInfo> &scan_column_infos)
     : BasePipelineExecutor(),
       main_function(main_function),
       pointer_mappings(pointer_mappings),
+      scan_column_infos(scan_column_infos),
       cuda_stream(nullptr),
       is_initialized(false)
 {
@@ -62,10 +64,12 @@ GPUPipelineExecutor::GPUPipelineExecutor(
 
 GPUPipelineExecutor::GPUPipelineExecutor(
     ExecutionContext *context, CypherPipeline *pipeline, SchemaFlowGraph &sfg,
-    void *main_function, const std::vector<PointerMapping> &pointer_mappings)
+    void *main_function, const std::vector<PointerMapping> &pointer_mappings,
+    const std::vector<ScanColumnInfo> &scan_column_infos)
     : BasePipelineExecutor(),
       main_function(main_function),
       pointer_mappings(pointer_mappings),
+      scan_column_infos(scan_column_infos),
       cuda_stream(nullptr),
       is_initialized(false)
 {

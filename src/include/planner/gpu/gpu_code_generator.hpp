@@ -95,6 +95,17 @@ struct PointerMapping {
     ChunkDefinitionID cid;  // Chunk ID for GPU chunk cache manager
 };
 
+struct ScanColumnInfo {
+    ScanColumnInfo() : get_physical_id_column(false), graphlet_id(0) {}
+    bool get_physical_id_column = false;
+    uint64_t graphlet_id;
+    std::vector<ExtentID> extent_ids;
+    std::vector<uint64_t> num_tuples_per_extent;
+    std::vector<uint64_t> col_position;
+    std::vector<std::string> col_name;
+    std::vector<std::vector<ChunkDefinitionID>> chunk_ids;
+};
+
 enum class PipeInputType : uint8_t {
     TYPE_0, // scan
     TYPE_1, // multi
@@ -229,6 +240,12 @@ class GpuCodeGenerator {
         return pointer_mappings;
     }
 
+    // Get scan column information
+    const std::vector<ScanColumnInfo> &GetScanColumnInfos() const
+    {
+        return scan_column_infos;
+    }
+
     // Cleanup resources
     void Cleanup();
 
@@ -300,15 +317,17 @@ class GpuCodeGenerator {
 
     std::unique_ptr<GpuJitCompiler> jit_compiler;
 
-    bool do_inter_warp_lb = true;
     bool is_compiled;
     bool is_repeatable;
     bool verbose_mode = true;  // Control parameter naming style
+    bool do_inter_warp_lb = true;
     bool doWorkoadSizeTracking = false;
+    bool generateInputPtrMapping = true;
     int tsWidth = 32;
     std::string idleWarpDetectionType = "twolvlbitmaps";  // twolvlbitmaps / idqueue
 
     std::vector<PointerMapping> pointer_mappings;
+    std::vector<ScanColumnInfo> scan_column_infos;
 
     // Strategy pattern for operator-specific code generation
     std::unordered_map<PhysicalOperatorType,

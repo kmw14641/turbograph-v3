@@ -139,7 +139,6 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     //     }
     // }
     // Add kernel parameters
-    GenerateKernelParams(pipeline);
     for (size_t i = 0; i < input_kernel_params.size(); i++) {
         code.Add(
             input_kernel_params[i].type + input_kernel_params[i].name +
@@ -454,12 +453,7 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
     if (first_op->GetOperatorType() != PhysicalOperatorType::NODE_SCAN) {
         throw std::runtime_error("Only scan operators are supported for now");
     }
-
-    // Handle scan operator
     auto scan_op = dynamic_cast<PhysicalNodeScan *>(first_op);
-    if (!scan_op) {
-        throw std::runtime_error("Only scan operators are supported for now");
-    }
 
     // Process oids to get table/column information
     for (size_t oid_idx = 0; oid_idx < scan_op->oids.size(); oid_idx++) {
@@ -470,78 +464,98 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
         PropertySchemaCatalogEntry *property_schema_cat_entry =
             (PropertySchemaCatalogEntry *)catalog.GetEntry(context,
                                                            DEFAULT_SCHEMA, oid);
+        D_ASSERT(property_schema_cat_entry != nullptr);
 
         auto *column_names = property_schema_cat_entry->GetKeys();
+        scan_column_infos.push_back(ScanColumnInfo());
+        ScanColumnInfo &scan_column_info = scan_column_infos.back();
+        uint64_t num_extents = property_schema_cat_entry->extent_ids.size();
+        bool is_first_time_to_get_column_info = true;
 
-        if (property_schema_cat_entry) {
-            // Get extent IDs from the property schema
-            for (size_t extent_idx = 0;
-                 extent_idx < property_schema_cat_entry->extent_ids.size();
-                 extent_idx++) {
-                idx_t extent_id =
-                    property_schema_cat_entry->extent_ids[extent_idx];
+        scan_column_info.graphlet_id = oid;
+        scan_column_info.extent_ids.reserve(num_extents);
+        scan_column_info.num_tuples_per_extent.reserve(num_extents);
 
-                // Generate table name
-                std::string table_name = "gr" + std::to_string(oid) + "_ext" +
-                                         std::to_string(extent_id);
+        // Get extent IDs from the property schema
+        for (size_t extent_idx = 0; extent_idx < num_extents; extent_idx++) {
+            idx_t extent_id = property_schema_cat_entry->extent_ids[extent_idx];
+            scan_column_info.extent_ids.push_back((ExtentID)extent_id);
 
-                // Get extent catalog entry to access chunks (columns)
-                ExtentCatalogEntry *extent_cat_entry =
-                    (ExtentCatalogEntry *)catalog.GetEntry(
-                        context, CatalogType::EXTENT_ENTRY, DEFAULT_SCHEMA,
-                        DEFAULT_EXTENT_PREFIX + std::to_string(extent_id));
+            // Generate table name
+            std::string table_name =
+                "gr" + std::to_string(oid) + "_ext" + std::to_string(extent_id);
 
-                if (extent_cat_entry) {
-                    uint64_t num_tuples_in_extent =
-                        extent_cat_entry->GetNumTuplesInExtent();
+            // Get extent catalog entry to access chunks (columns)
+            ExtentCatalogEntry *extent_cat_entry =
+                (ExtentCatalogEntry *)catalog.GetEntry(
+                    context, CatalogType::EXTENT_ENTRY, DEFAULT_SCHEMA,
+                    DEFAULT_EXTENT_PREFIX + std::to_string(extent_id));
+            D_ASSERT(extent_cat_entry != nullptr);
 
-                    // Each chunk in the extent represents a column
-                    for (size_t chunk_idx = 0;
-                         chunk_idx <
-                         scan_op->scan_projection_mapping[oid_idx].size();
-                         chunk_idx++) {
-                        auto column_idx =
-                            scan_op
-                                ->scan_projection_mapping[oid_idx][chunk_idx];
-                        if (column_idx == 0)
-                            continue;  // _id column
-                        ChunkDefinitionID cdf_id =
-                            extent_cat_entry->chunks[column_idx - 1];
+            uint64_t num_tuples_in_extent =
+                extent_cat_entry->GetNumTuplesInExtent();
+            scan_column_info.num_tuples_per_extent.push_back(
+                num_tuples_in_extent);
 
-                        // Generate column name based on chunk index
-                        std::string col_name =
-                            "col_" + std::to_string(column_idx - 1);
+            if (is_first_time_to_get_column_info) {
+                scan_column_info.chunk_ids.resize(
+                    scan_op->scan_projection_mapping[oid_idx].size());
+            }
 
-                        // Generate parameter names based on verbose mode
-                        std::string param_name;
-                        param_name = table_name + "_" + col_name;
+            // Each chunk in the extent represents a column
+            for (size_t chunk_idx = 0;
+                 chunk_idx < scan_op->scan_projection_mapping[oid_idx].size();
+                 chunk_idx++) {
+                auto column_idx =
+                    scan_op->scan_projection_mapping[oid_idx][chunk_idx];
+                std::string col_name;
+                if (column_idx == 0) {  // _id column
+                    col_name = "col__id";
+                    scan_column_info.get_physical_id_column = true;
+                }
+                else {
+                    ChunkDefinitionID cdf_id =
+                        extent_cat_entry->chunks[column_idx - 1];
+                    // Generate column name based on chunk index
+                    col_name = "col_" + std::to_string(column_idx - 1);
 
-                        // Add data buffer parameter for this column (chunk)
-                        KernelParam data_param;
-                        data_param.name = param_name + "_data";
-                        data_param.type = "void *";
-                        data_param.is_device_ptr = true;
-                        input_kernel_params.push_back(data_param);
+                    // Generate parameter names based on verbose mode
+                    std::string param_name;
+                    param_name = table_name + "_" + col_name;
 
-                        // Add pointer mapping for this chunk (column)
-                        std::string chunk_name =
-                            "chunk_" + std::to_string(cdf_id);
-                        AddPointerMapping(chunk_name, nullptr, cdf_id);
+                    // Add data buffer parameter for this column (chunk)
+                    KernelParam data_param;
+                    data_param.name = param_name + "_data";
+                    data_param.type = "void *";
+                    data_param.is_device_ptr = true;
+                    input_kernel_params.push_back(data_param);
 
-                        pipeline_context
-                            .column_to_param_mapping[column_names->at(
-                                column_idx - 1)] = param_name;
-                    }
+                    // Add pointer mapping for this chunk (column)
+                    std::string chunk_name = "chunk_" + std::to_string(cdf_id);
+                    AddPointerMapping(chunk_name, nullptr, cdf_id);
 
-                    // Add count parameter for this table
-                    KernelParam count_param;
-                    count_param.name = table_name + "_count";
-                    count_param.type = "unsigned long long ";
-                    count_param.value = std::to_string(num_tuples_in_extent);
-                    count_param.is_device_ptr = false;
-                    input_kernel_params.push_back(count_param);
+                    pipeline_context.column_to_param_mapping[column_names->at(
+                        column_idx - 1)] = param_name;
+
+                    scan_column_info.chunk_ids[chunk_idx].push_back(cdf_id);
+                }
+
+                if (is_first_time_to_get_column_info) {
+                    // Store column information for the first time
+                    scan_column_info.col_position.push_back(column_idx);
+                    scan_column_info.col_name.push_back(col_name);
                 }
             }
+
+            is_first_time_to_get_column_info = false;
+
+            // Add count parameter for this table
+            KernelParam count_param;
+            count_param.name = table_name + "_count";
+            count_param.type = "unsigned long long ";
+            count_param.value = std::to_string(num_tuples_in_extent);
+            count_param.is_device_ptr = false;
+            input_kernel_params.push_back(count_param);
         }
     }
 

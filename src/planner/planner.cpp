@@ -632,16 +632,24 @@ vector<duckdb::BasePipelineExecutor *> Planner::genPipelineExecutors(bool enable
         if (generate_sfg) {
             if (enable_gpu_processing) {
                 pipe_exec = new duckdb::GPUPipelineExecutor(
-                    new_ctxt, pipe, *sfg, main_function, code_gen->GetPointerMappings());
-            } else {
-                pipe_exec = new duckdb::CypherPipelineExecutor(
-                    new_ctxt, pipe, *sfg, move(child_executors), move(dep_executors));
+                    new_ctxt, pipe, *sfg, main_function,
+                    code_gen->GetPointerMappings(),
+                    code_gen->GetScanColumnInfos());
             }
-        } else {
+            else {
+                pipe_exec = new duckdb::CypherPipelineExecutor(
+                    new_ctxt, pipe, *sfg, move(child_executors),
+                    move(dep_executors));
+            }
+        }
+        else {
             if (enable_gpu_processing) {
                 pipe_exec = new duckdb::GPUPipelineExecutor(
-                    new_ctxt, pipe, main_function, code_gen->GetPointerMappings());
-            } else {
+                    new_ctxt, pipe, main_function,
+                    code_gen->GetPointerMappings(),
+                    code_gen->GetScanColumnInfos());
+            }
+            else {
                 pipe_exec = new duckdb::CypherPipelineExecutor(
                     new_ctxt, pipe, move(child_executors), move(dep_executors));
             }

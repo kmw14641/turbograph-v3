@@ -19,9 +19,13 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
     GPUPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline,
                         SchemaFlowGraph &sfg, void *kernel_function);
     GPUPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline,
-                        void *kernel_function, const std::vector<PointerMapping>& pointer_mappings);
+                        void *kernel_function,
+                        const std::vector<PointerMapping> &pointer_mappings,
+                        const std::vector<ScanColumnInfo> &scan_column_infos);
     GPUPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline,
-                        SchemaFlowGraph &sfg, void *kernel_function, const std::vector<PointerMapping>& pointer_mappings);
+                        SchemaFlowGraph &sfg, void *kernel_function,
+                        const std::vector<PointerMapping> &pointer_mappings,
+                        const std::vector<ScanColumnInfo> &scan_column_infos);
     ~GPUPipelineExecutor();
 
     //! Fully execute a pipeline with GPU acceleration
@@ -67,6 +71,9 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
 
     // Pointer mappings for GPU execution
     std::vector<PointerMapping> pointer_mappings;
+
+    // Scan column information for GPU execution
+    std::vector<ScanColumnInfo> scan_column_infos;
 
     // GPU resources
     void *cuda_stream;  // CUstream 대신 void* 사용
