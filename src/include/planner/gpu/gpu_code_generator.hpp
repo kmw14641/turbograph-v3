@@ -234,8 +234,11 @@ class GpuCodeGenerator {
     void GenerateOperatorCode(CypherPhysicalOperator *op, CodeBuilder &code,
                               PipelineContext &pipeline_ctx, bool is_main_loop);
 
-    // Generate main scan loop with nested operators
-    void GenerateMainScanLoop(CypherPipeline &pipeline, CodeBuilder &code);
+    // Generate pipeline code
+    void GeneratePipelineCode(CypherPipeline &pipeline, CodeBuilder &code);
+
+    // Generate sub-pipeline code
+    void GenerateSubPipelineCode(CypherPipeline &pipeline, CodeBuilder &code);
 
     // Process remaining operators recursively
     void ProcessRemainingOperators(CypherPipeline &pipeline, int op_idx,

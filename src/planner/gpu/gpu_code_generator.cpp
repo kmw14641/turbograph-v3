@@ -63,11 +63,6 @@ void GpuCodeGenerator::GenerateGPUCode(CypherPipeline &pipeline)
 {
     SCOPED_TIMER_SIMPLE(GenerateGPUCode, spdlog::level::info,
                         spdlog::level::info);
-    
-    // Split pipeline into sub-pipelines based on filter operators
-    SUBTIMER_START(GenerateGPUCode, "SplitPipeline");
-    SplitPipelineIntoSubPipelines(pipeline);
-    SUBTIMER_STOP(GenerateGPUCode, "SplitPipeline");
 
     // generate kernel code
     SUBTIMER_START(GenerateGPUCode, "GenerateKernelCode");
@@ -140,8 +135,15 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     }
     for (size_t i = 0; i < output_kernel_params.size(); i++) {
         code.Add(output_kernel_params[i].type + output_kernel_params[i].name +
-                 (i < output_kernel_params.size() - 1 ? "," : ""));
+                 ",");
     }
+
+    code.Add("unsigned int *global_num_idle_warps, int *global_scan_offset,");
+    //if self.interWarpLbMethod == 'aws':
+    code.Add("Themis::PushedParts::PushedPartsStack* gts, size_t size_of_stack_per_warp,");
+    code.Add("Themis::StatisticsPerLvl *global_stats_per_lvl,");
+    //if self.idleWarpDetectionType == 'twolvlbitmaps':
+    code.Add("unsigned long long *global_bit1, unsigned long long *global_bit2");
     code.DecreaseNesting();
     code.Add(") {");
     code.IncreaseNesting();
@@ -177,11 +179,10 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     }
 
     // Get thread and block indices
-    code.Add("int tid = threadIdx.x % 32;");
+    code.Add("int thread_id = threadIdx.x % 32;");
     code.Add("int warp_id = (blockIdx.x * blockDim.x + threadIdx.x) / 32;");
-    code.Add("unsigned prefixlanes = (0xffffffffu >> (32 - tid));");
+    code.Add("unsigned prefixlanes = (0xffffffffu >> (32 - thread_id));");
     code.Add("int active = 0;\n");
-    code.Add("int stride = blockDim.x * gridDim.x;");  // TODO: remove
 
     // TODO: refer to pipes2themis.py line 174 ~ 189
 
@@ -206,7 +207,8 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
             "Themis::WorkloadTracking::InitLocalWorkloadSizeAtZeroLvl(inodes_"
             "cnts, local_info, global_stats_per_lvl);");
         code.Add("unsigned interval = 1;");
-        code.Add("unsigned loop = {self.maxInterval} - 1;");
+        code.Add("unsigned loop = " +
+                 std::to_string(kernel_args.inter_warp_lb_interval) + " - 1;");
     }
     else {
         code.Add(
@@ -222,21 +224,23 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
         "exist");
     code.Add("int lvl = -1;");
     code.Add(
-        "Themis::UpdateMaskAtZeroLvl(0, tid, ts_0_range_cached, mask_32, "
+        "Themis::UpdateMaskAtZeroLvl(0, thread_id, ts_0_range_cached, mask_32, "
         "mask_1);");
-    code.Add("Themis::ChooseLvl(tid, mask_32, mask_1, lvl);");
+    code.Add("Themis::ChooseLvl(thread_id, mask_32, mask_1, lvl);");
 
     // Generate the main scan loop that will contain all operators
     if (do_inter_warp_lb) {
         code.Add("do {");
         code.IncreaseNesting();
-        GenerateMainScanLoop(pipeline, code);
+        GeneratePipelineCode(pipeline, code);
         GenerateCodeForAdaptiveWorkSharing(pipeline, code);
+        code.DecreaseNesting();
+        code.Add("}");
         code.DecreaseNesting();
         code.Add("} while (true); // while loop");
     }
     else {
-        GenerateMainScanLoop(pipeline, code);
+        GeneratePipelineCode(pipeline, code);
     }
 
     code.DecreaseNesting();
@@ -751,13 +755,27 @@ void GpuCodeGenerator::GenerateInputCodeForType2(CypherPhysicalOperator *op,
     // c.add('}')
 }
 
-void GpuCodeGenerator::GenerateMainScanLoop(CypherPipeline &pipeline,
+void GpuCodeGenerator::GeneratePipelineCode(CypherPipeline &pipeline,
                                             CodeBuilder &code)
 {
     // Initialize pipeline context once
     InitializePipelineContext(pipeline);
 
-    auto first_op = pipeline.GetSource();
+    // Split pipeline into sub-pipelines based on filter operators
+    SplitPipelineIntoSubPipelines(pipeline);
+
+    for (size_t i = 0; i < pipeline_context.sub_pipelines.size(); i++) {
+        auto &sub_pipeline = pipeline_context.sub_pipelines[i];
+
+        // Generate code for each sub-pipeline
+        GenerateSubPipelineCode(sub_pipeline, code);
+    }
+}
+
+void GpuCodeGenerator::GenerateSubPipelineCode(CypherPipeline &sub_pipeline,
+                                               CodeBuilder &code)
+{
+    auto first_op = sub_pipeline.GetSource();
     if (first_op->GetOperatorType() == PhysicalOperatorType::NODE_SCAN) {
         MoveToOperator(0);
         ExtractOutputSchema(first_op);
@@ -765,7 +783,7 @@ void GpuCodeGenerator::GenerateMainScanLoop(CypherPipeline &pipeline,
         GenerateOperatorCode(first_op, code, pipeline_context,
                              /*is_main_loop=*/true);
 
-        ProcessRemainingOperators(pipeline, 1, code);
+        ProcessRemainingOperators(sub_pipeline, 1, code);
 
         code.DecreaseNesting();
         code.Add("}");
@@ -1689,21 +1707,22 @@ void GpuCodeGenerator::GenerateCodeForAdaptiveWorkSharingPush(
     code.Add("if (is_allowed) {");
     code.IncreaseNesting();
 
-    // code.Add(
-    //          "Themis::FindIdleWarp<{len(pipe.subpipeSeqs)},{num_warps},{min_"
-    //          "num_warps}>(");  // TODO: what is subpipeSeqs?
+    code.Add("Themis::FindIdleWarp<" +
+             std::to_string(pipeline_context.sub_pipelines.size()) + ", " +
+             std::to_string(num_warps) + ", " + std::to_string(min_num_warps) +
+             ">(");
     code.IncreaseNesting();
     code.Add(
-        "target_warp_id, warp_id, thread_id, warp_status, num_idle_warps, "
-        "num_warps,gts, size_of_stack_per_warp");
+        "target_warp_id, warp_id, thread_id, warp_status,");
+    code.Add("num_idle_warps, "
+        "num_warps,gts, size_of_stack_per_warp,");
     if (idleWarpDetectionType == "twolvlbitmaps") {
-        code.Add(", global_bit1, global_bit2");
+        code.Add("global_bit1, global_bit2);");
     }
     else if (idleWarpDetectionType == "idqueue") {
-        code.Add(", global_id_stack");
+        code.Add("global_id_stack);");
     }
     code.DecreaseNesting();
-    code.Add(");");
     code.DecreaseNesting();
     code.Add("}");
 
