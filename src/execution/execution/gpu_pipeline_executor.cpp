@@ -1,9 +1,11 @@
 #include "execution/gpu_pipeline_executor.hpp"
-#include <iostream>
 #include "execution/execution_context.hpp"
 #include "execution/schema_flow_graph.hpp"
 #include "main/client_context.hpp"
 #include "storage/cache/gpu_chunk_cache_manager.h"
+
+#include <iostream>
+#include <cuda_runtime.h>
 
 namespace duckdb {
 
@@ -156,8 +158,61 @@ bool GPUPipelineExecutor::AllocateGPUMemory()
         }
     }
 
-    // std::cout << "GPU memory allocation completed for "
-    //           << gpu_memory_pool.size() << " chunks" << std::endl;
+    if (use_scan_column_infos) {
+        for (const auto &scan_info : scan_column_infos) {
+            uint64_t num_tuples_total = 0;
+            for (const auto &num_tuples : scan_info.num_tuples_per_extent) {
+                num_tuples_total += num_tuples;
+            }
+            if (scan_info.get_physical_id_column) {
+                // generate physical id column
+                uint64_t *d_physical_id = nullptr;
+                size_t total_bytes = num_tuples_total * sizeof(uint64_t);
+                cudaMalloc(reinterpret_cast<void **>(&d_physical_id),
+                           total_bytes);
+                // Store the physical ID values
+                // TODO: currently, we generate data in host and copy to device.
+                // This can be optimized by generating data directly on device.
+                std::vector<uint64_t> h_physical_id(num_tuples_total);
+                uint64_t current_idx = 0;
+                for (uint64_t i = 0; i < scan_info.extent_ids.size(); i++) {
+                    uint64_t eid_base =
+                        (uint64_t(scan_info.extent_ids[i]) << 32);
+                    for (uint64_t j = 0; j < scan_info.num_tuples_per_extent[i];
+                         ++j)
+                        h_physical_id[current_idx++] = eid_base + j;
+                }
+                cudaMemcpy(d_physical_id, h_physical_id.data(), total_bytes,
+                           cudaMemcpyHostToDevice);
+            }
+            for (auto i = 0; i < scan_info.col_name.size(); i++) {
+                const auto &col_name = scan_info.col_name[i];
+                const auto &col_pos = scan_info.col_position[i];
+
+                // generate column pointer
+                uint64_t *d_col_ptr = nullptr;
+                size_t total_bytes = num_tuples_total * sizeof(uint64_t);
+                cudaMalloc(reinterpret_cast<void **>(&d_col_ptr), total_bytes);
+
+                // Store the column value ptrs
+                std::vector<uint64_t> h_col_ptr(num_tuples_total);
+                uint64_t current_idx = 0;
+                for (uint64_t i = 0; i < scan_info.extent_ids.size(); i++) {
+                    const auto &extent_id = scan_info.extent_ids[i];
+                    const auto &num_tuples = scan_info.num_tuples_per_extent[i];
+
+                    // For each tuple in this extent, store the ptrs to column value
+                    for (uint64_t j = 0; j < num_tuples; j++) {
+                        uint64_t value_address; // TODO get address
+                        h_col_ptr[current_idx++] = value_address;
+                    }
+                }
+
+                cudaMemcpy(d_col_ptr, h_col_ptr.data(), total_bytes,
+                           cudaMemcpyHostToDevice);
+            }
+        }
+    }
     return true;
 }
 

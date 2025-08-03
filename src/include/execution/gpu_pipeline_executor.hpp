@@ -75,6 +75,8 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
     // Scan column information for GPU execution
     std::vector<ScanColumnInfo> scan_column_infos;
 
+    bool use_scan_column_infos = true;
+
     // GPU resources
     void *cuda_stream;  // CUstream 대신 void* 사용
     std::vector<void *> device_ptrs;
