@@ -467,6 +467,8 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
         D_ASSERT(property_schema_cat_entry != nullptr);
 
         auto *column_names = property_schema_cat_entry->GetKeys();
+        auto *property_types_id = property_schema_cat_entry->GetTypes();
+        auto *extra_infos = property_schema_cat_entry->GetExtraTypeInfos();
         scan_column_infos.push_back(ScanColumnInfo());
         ScanColumnInfo &scan_column_info = scan_column_infos.back();
         uint64_t num_extents = property_schema_cat_entry->extent_ids.size();
@@ -544,6 +546,13 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
                     // Store column information for the first time
                     scan_column_info.col_position.push_back(column_idx);
                     scan_column_info.col_name.push_back(col_name);
+
+                    LogicalTypeId type_id =
+                        (LogicalTypeId)property_types_id->at(column_idx - 1);
+                    uint16_t extra_info = extra_infos->at(column_idx - 1);
+                    LogicalType type = GetLogicalTypeFromId(type_id, extra_info);
+                    uint64_t type_size = GetTypeIdSize(type.InternalType());
+                    scan_column_info.col_type_size.push_back(type_size);
                 }
             }
 
@@ -604,18 +613,21 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
     }
 }
 
-std::string GpuCodeGenerator::ConvertLogicalTypeIdToPrimitiveType(
-    LogicalTypeId type_id, uint16_t extra_info)
+LogicalType GpuCodeGenerator::GetLogicalTypeFromId(LogicalTypeId type_id,
+                                                   uint16_t extra_info)
 {
-    LogicalType type;
     if (type_id == LogicalTypeId::DECIMAL) {
         uint8_t width = (uint8_t)(extra_info >> 8);
         uint8_t scale = (uint8_t)(extra_info & 0xFF);
-        type = LogicalType::DECIMAL(width, scale);
+        return LogicalType::DECIMAL(width, scale);
     }
-    else {
-        type = LogicalType(type_id);
-    }
+    return LogicalType(type_id);
+}
+
+std::string GpuCodeGenerator::ConvertLogicalTypeIdToPrimitiveType(
+    LogicalTypeId type_id, uint16_t extra_info)
+{
+    LogicalType type = GetLogicalTypeFromId(type_id, extra_info);
     return ConvertLogicalTypeToPrimitiveType(type);
 }
 

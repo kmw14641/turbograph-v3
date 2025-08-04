@@ -122,41 +122,39 @@ bool GPUPipelineExecutor::AllocateGPUMemory()
 
     auto *gpu_cache_manager = GpuChunkCacheManager::g_ccm;
 
-    for (const auto &mapping : pointer_mappings) {
-        if (mapping.cid >= 0) {
-            // This is a chunk that needs GPU memory allocation
-            // std::cout << "Allocating GPU memory for chunk " << mapping.cid
-            //           << " (name: " << mapping.name << ")" << std::endl;
+    // for (const auto &mapping : pointer_mappings) {
+    //     if (mapping.cid >= 0) {
+    //         // This is a chunk that needs GPU memory allocation
+    //         // std::cout << "Allocating GPU memory for chunk " << mapping.cid
+    //         //           << " (name: " << mapping.name << ")" << std::endl;
 
-            uint8_t *gpu_ptr = nullptr;
-            size_t size = 0;
-            std::string file_path = DiskAioParameters::WORKSPACE +
-                                    std::string("/chunk_") +
-                                    std::to_string(mapping.cid);
+    //         uint8_t *gpu_ptr = nullptr;
+    //         size_t size = 0;
+    //         std::string file_path = DiskAioParameters::WORKSPACE +
+    //                                 std::string("/chunk_") +
+    //                                 std::to_string(mapping.cid);
 
-            ReturnStatus status = gpu_cache_manager->PinSegment(
-                mapping.cid, file_path, &gpu_ptr, &size, false, false);
+    //         ReturnStatus status = gpu_cache_manager->PinSegment(
+    //             mapping.cid, file_path, &gpu_ptr, &size, false, false);
 
-            if (status == ReturnStatus::OK) {
-                // Store the allocated GPU memory info
-                GPUMemory gpu_mem;
-                gpu_mem.data_ptr = gpu_ptr;
-                gpu_mem.size = size;
-                gpu_mem.is_allocated = true;
-                gpu_memory_pool.push_back(gpu_mem);
+    //         if (status == ReturnStatus::OK) {
+    //             // Store the allocated GPU memory info
+    //             GPUMemory gpu_mem;
+    //             gpu_mem.data_ptr = gpu_ptr;
+    //             gpu_mem.size = size;
+    //             gpu_mem.is_allocated = true;
+    //             gpu_memory_pool.push_back(gpu_mem);
 
-                // Update the pointer mapping with the actual GPU address
-                const_cast<PointerMapping &>(mapping).address = gpu_ptr;
-
-                // fprintf(stderr, "GPU memory address = %p\n", gpu_ptr);
-            }
-            else {
-                std::cerr << "Failed to allocate GPU memory for chunk "
-                          << mapping.cid << std::endl;
-                return false;
-            }
-        }
-    }
+    //             // Update the pointer mapping with the actual GPU address
+    //             const_cast<PointerMapping &>(mapping).address = gpu_ptr;
+    //         }
+    //         else {
+    //             std::cerr << "Failed to allocate GPU memory for chunk "
+    //                       << mapping.cid << std::endl;
+    //             return false;
+    //         }
+    //     }
+    // }
 
     if (use_scan_column_infos) {
         for (const auto &scan_info : scan_column_infos) {
@@ -187,7 +185,8 @@ bool GPUPipelineExecutor::AllocateGPUMemory()
             }
             for (auto i = 0; i < scan_info.col_name.size(); i++) {
                 const auto &col_name = scan_info.col_name[i];
-                const auto &col_pos = scan_info.col_position[i];
+                auto col_pos = scan_info.col_position[i];
+                auto col_type_size = scan_info.col_type_size[i];
 
                 // generate column pointer
                 uint64_t *d_col_ptr = nullptr;
@@ -197,16 +196,54 @@ bool GPUPipelineExecutor::AllocateGPUMemory()
                 // Store the column value ptrs
                 std::vector<uint64_t> h_col_ptr(num_tuples_total);
                 uint64_t current_idx = 0;
-                for (uint64_t i = 0; i < scan_info.extent_ids.size(); i++) {
-                    const auto &extent_id = scan_info.extent_ids[i];
-                    const auto &num_tuples = scan_info.num_tuples_per_extent[i];
+                for (uint64_t j = 0; i < scan_info.extent_ids.size(); j++) {
+                    auto extent_id = scan_info.extent_ids[j];
+                    auto num_tuples = scan_info.num_tuples_per_extent[j];
+                    auto cid_in_extent = scan_info.chunk_ids[i][j];
+
+                    PointerMapping *target_mapping;
+                    // TODO: below code is super inefficient
+                    for (auto &mapping : pointer_mappings) {
+                        if (mapping.cid == cid_in_extent) {
+                            target_mapping = &mapping;
+                            break;
+                        }
+                    }
+
+                    uint8_t *gpu_ptr = nullptr;
+                    size_t size = 0;
+                    std::string file_path = DiskAioParameters::WORKSPACE +
+                                            std::string("/chunk_") +
+                                            std::to_string(cid_in_extent);
+
+                    ReturnStatus status = gpu_cache_manager->PinSegment(
+                        cid_in_extent, file_path, &gpu_ptr, &size, false, false);
+
+                    if (status == ReturnStatus::OK) {
+                        // Store the allocated GPU memory info
+                        GPUMemory gpu_mem;
+                        gpu_mem.data_ptr = gpu_ptr;
+                        gpu_mem.size = size;
+                        gpu_mem.is_allocated = true;
+                        gpu_memory_pool.push_back(gpu_mem);
+
+                        // Update the pointer mapping with the actual GPU address
+                        target_mapping->address = gpu_ptr;
+                    }
+                    else {
+                        std::cerr << "Failed to allocate GPU memory for chunk "
+                                  << cid_in_extent << std::endl;
+                        return false;
+                    }
 
                     // For each tuple in this extent, store the ptrs to column value
-                    for (uint64_t j = 0; j < num_tuples; j++) {
-                        uint64_t value_address; // TODO get address
+                    for (uint64_t k = 0; k < num_tuples; k++) {
+                        uint64_t value_address = reinterpret_cast<uint64_t>(
+                            gpu_ptr + k * col_type_size);
                         h_col_ptr[current_idx++] = value_address;
                     }
                 }
+                D_ASSERT(current_idx == num_tuples_total);
 
                 cudaMemcpy(d_col_ptr, h_col_ptr.data(), total_bytes,
                            cudaMemcpyHostToDevice);

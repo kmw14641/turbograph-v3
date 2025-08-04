@@ -102,6 +102,7 @@ struct ScanColumnInfo {
     std::vector<ExtentID> extent_ids;
     std::vector<uint64_t> num_tuples_per_extent;
     std::vector<uint64_t> col_position;
+    std::vector<uint64_t> col_type_size;
     std::vector<std::string> col_name;
     std::vector<std::vector<ChunkDefinitionID>> chunk_ids;
 };
@@ -217,6 +218,8 @@ class GpuCodeGenerator {
         return kernel_args;
     }
 
+    LogicalType GetLogicalTypeFromId(LogicalTypeId type_id,
+                                     uint16_t extra_info = 0);
     std::string ConvertLogicalTypeToPrimitiveType(LogicalType &type);
     std::string ConvertLogicalTypeIdToPrimitiveType(LogicalTypeId type_id,
                                                     uint16_t extra_info);
