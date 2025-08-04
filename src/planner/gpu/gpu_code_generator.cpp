@@ -17,6 +17,22 @@
 #include "llvm/Support/TargetSelect.h"
 #include "main/database.hpp"
 #include "planner/gpu/expression_code_generator.hpp"
+#include <regex>
+
+std::string sanitize_variable_name(const std::string& name) {
+    std::string sanitized = name;
+
+    for (char& c : sanitized) {
+        if (!std::isalnum(c)) c = '_';
+    }
+
+    sanitized = std::regex_replace(sanitized, std::regex("_+"), "_");
+
+    sanitized = std::regex_replace(sanitized, std::regex("^_+|_+$"), "");
+
+    return "s_" + sanitized;
+}
+
 
 namespace duckdb {
 
@@ -122,8 +138,17 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
 
     GenerateKernelParams(pipeline);
 
-    code.Add("extern \"C\" __global__ void gpu_kernel("
-             "void **input_data, void **output_data, int *output_count) {");
+    code.Add("extern \"C\" __global__ void gpu_kernel(");
+    code.IncreaseNesting();
+    code.Add("void **input_data, void **output_data, int *output_count,");
+    code.Add("unsigned int *global_num_idle_warps, int *global_scan_offset,");
+    //if self.interWarpLbMethod == 'aws':
+    code.Add("Themis::PushedParts::PushedPartsStack* gts, size_t size_of_stack_per_warp,");
+    code.Add("Themis::StatisticsPerLvl *global_stats_per_lvl,");
+    //if self.idleWarpDetectionType == 'twolvlbitmaps':
+    code.Add("unsigned long long *global_bit1, unsigned long long *global_bit2");
+    code.DecreaseNesting();
+    code.Add(") {");
     code.IncreaseNesting();
 
     int in_idx  = 0;
@@ -137,20 +162,6 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
             code.Add("const " + p.type + " " + p.name + " = " + p.value + ";");
         }
     }
-    for (size_t i = 0; i < output_kernel_params.size(); i++) {
-        code.Add(output_kernel_params[i].type + output_kernel_params[i].name +
-                 ",");
-    }
-
-    code.Add("unsigned int *global_num_idle_warps, int *global_scan_offset,");
-    //if self.interWarpLbMethod == 'aws':
-    code.Add("Themis::PushedParts::PushedPartsStack* gts, size_t size_of_stack_per_warp,");
-    code.Add("Themis::StatisticsPerLvl *global_stats_per_lvl,");
-    //if self.idleWarpDetectionType == 'twolvlbitmaps':
-    code.Add("unsigned long long *global_bit1, unsigned long long *global_bit2");
-    code.DecreaseNesting();
-    code.Add(") {");
-    code.IncreaseNesting();
     for (const auto &p : output_kernel_params) {
         if (p.type.find('*') != std::string::npos) {
             code.Add(p.type + " " + p.name + " = (" + p.type +
@@ -570,6 +581,8 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
                     short_output_name + "_" + std::to_string(col_idx);
             }
 
+            output_param_name = sanitize_variable_name(output_param_name);
+
             // Add output data buffer parameter
             KernelParam output_data_param;
             output_data_param.name = output_param_name + "_data";
@@ -653,8 +666,9 @@ void GpuCodeGenerator::GenerateInputCodeForType0(CypherPhysicalOperator *op,
     int stepSize = KernelConstants::DEFAULT_BLOCK_SIZE *
                    KernelConstants::DEFAULT_GRID_SIZE;
     // tid = spSeq.getTid()
-    std::string tid_name =
-        "tid_" + std::to_string(pipeline_ctx.sub_pipelines[0].GetPipelineId());
+    // std::string tid_name =
+    //     "tid_" + std::to_string(pipeline_ctx.sub_pipelines[0].GetPipelineId());
+    std::string tid_name = "tid";
 
     code.Add("while (lvl >= 0 && loop < " +
              std::to_string(kernel_args.inter_warp_lb_interval) +
@@ -1380,7 +1394,7 @@ void ProduceResultsCodeGenerator::GenerateCode(
     code.Add("// Produce results operator");
 
     // Declare output count pointer
-    code.Add("int* output_count_ptr = static_cast<int*>(&output_count);");
+    // code.Add("int* output_count_ptr = static_cast<int*>(&output_count);");
 
     // Get the output schema to determine what columns to write
     auto &output_schema = results_op->GetSchema();
@@ -1411,6 +1425,7 @@ void ProduceResultsCodeGenerator::GenerateCode(
         else {
             output_param_name = "out_" + std::to_string(col_idx);
         }
+        output_param_name = sanitize_variable_name(output_param_name);
         std::string output_data_name = output_param_name + "_data";
         std::string output_ptr_name = output_param_name + "_ptr";
 
@@ -1450,6 +1465,7 @@ void ProduceResultsCodeGenerator::GenerateCode(
                     //                             "_ptr" + " = static_cast<" +
                     //                             ctype + "*>(" + input_col_name +
                     //                             ");");
+                    input_col_name = sanitize_variable_name(input_col_name);
                     code.Add(output_ptr_name + "[tid] = " + input_col_name +
                              "_ptr" + "[i];");
                 }
@@ -1464,6 +1480,7 @@ void ProduceResultsCodeGenerator::GenerateCode(
                         code.Add(ctype + "* " + output_ptr_name +
                                  " = static_cast<" + ctype + "*>(" +
                                  output_data_name + ");");
+                        col_name = sanitize_variable_name(col_name);
                         code.Add(output_ptr_name + "[tid] = " + col_name +
                                  "_ptr[i];");
                     }
