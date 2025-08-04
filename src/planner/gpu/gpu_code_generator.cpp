@@ -126,30 +126,20 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     // code.Add("extern \"C\" __global__ void gpu_kernel("
     //          "void **input_data, void **output_data, int *output_count) {");
     code.IncreaseNesting();
+    code.Add("void **input_data, void **output_data, int *output_count,");
 
-    // int in_idx  = 0;
-    // int out_idx = 0;
-    // for (const auto &p : input_kernel_params) {
-    //     if (p.type.find('*') != std::string::npos) {
-    //         code.Add(p.type + " " + p.name + " = (" + p.type +
-    //                  ") input_data[" + std::to_string(in_idx) + "];");
-    //         ++in_idx;
-    //     } else {
-    //         code.Add("const " + p.type + " " + p.name + " = " + p.value + ";");
-    //     }
+    // // Add kernel parameters
+    // for (size_t i = 0; i < input_kernel_params.size(); i++) {
+    //     code.Add(
+    //         input_kernel_params[i].type + input_kernel_params[i].name +
+    //         (i < input_kernel_params.size() - 1 || !output_kernel_params.empty()
+    //              ? ","
+    //              : ""));
     // }
-    // Add kernel parameters
-    for (size_t i = 0; i < input_kernel_params.size(); i++) {
-        code.Add(
-            input_kernel_params[i].type + input_kernel_params[i].name +
-            (i < input_kernel_params.size() - 1 || !output_kernel_params.empty()
-                 ? ","
-                 : ""));
-    }
-    for (size_t i = 0; i < output_kernel_params.size(); i++) {
-        code.Add(output_kernel_params[i].type + output_kernel_params[i].name +
-                 ",");
-    }
+    // for (size_t i = 0; i < output_kernel_params.size(); i++) {
+    //     code.Add(output_kernel_params[i].type + output_kernel_params[i].name +
+    //              ",");
+    // }
 
     code.Add("unsigned int *global_num_idle_warps, int *global_scan_offset,");
     //if self.interWarpLbMethod == 'aws':
@@ -160,15 +150,27 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     code.DecreaseNesting();
     code.Add(") {");
     code.IncreaseNesting();
-    // for (const auto &p : output_kernel_params) {
-    //     if (p.type.find('*') != std::string::npos) {
-    //         code.Add(p.type + " " + p.name + " = (" + p.type +
-    //                  ") output_data[" + std::to_string(out_idx) + "];");
-    //         ++out_idx;
-    //     } else {
-    //         // code.Add(p.type + " " + p.name + " = " + p.value + ";");
-    //     }
-    // code.Add("");
+    int in_idx  = 0;
+    int out_idx = 0;
+    for (const auto &p : input_kernel_params) {
+        if (p.type.find('*') != std::string::npos) {
+            code.Add(p.type + " " + p.name + " = (" + p.type +
+                     ") input_data[" + std::to_string(in_idx) + "];");
+            ++in_idx;
+        } else {
+            code.Add("const " + p.type + " " + p.name + " = " + p.value + ";");
+        }
+    }
+    for (const auto &p : output_kernel_params) {
+        if (p.type.find('*') != std::string::npos) {
+            code.Add(p.type + " " + p.name + " = (" + p.type +
+                     ") output_data[" + std::to_string(out_idx) + "];");
+            ++out_idx;
+        } else {
+            // code.Add(p.type + " " + p.name + " = " + p.value + ";");
+        }
+    }
+    code.Add("");
 
     // 1. Generate pipeline initilization
     code.Add("__shared__ int active_thread_ids[" +
@@ -343,12 +345,10 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
 
     code.Add("const int blockSize = 128;");
     code.Add("const int gridSize  = 3280;");
-    code.Add("void *args[] = { input_data, output_data, &output_count };");
-    code.Add("");
 
-    code.Add(
-        "CUresult r = cuLaunchKernel(gpu_kernel, gridSize,1,1, "
-        "blockSize,1,1, 0, 0, args, nullptr);");
+    GenerateDeclarationInHostCode(code);
+    GenerateKernelCallInHostCode(code);
+    
     code.Add("if (r != CUDA_SUCCESS) {");
     code.IncreaseNesting();
     code.Add("const char *name = nullptr, *str = nullptr;");
@@ -376,6 +376,97 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
     code.Add("}");
 
     generated_cpu_code = code.str();
+}
+
+void GpuCodeGenerator::GenerateDeclarationInHostCode(CodeBuilder &code)
+{
+    if (!do_inter_warp_lb) {
+        // If inter warp load balancing is not enabled, we can skip the
+        // declaration of global variables for inter warp load balancing
+        return;
+    }
+
+    int num_warps = int(KernelConstants::DEFAULT_BLOCK_SIZE / 32) *
+                    KernelConstants::DEFAULT_GRID_SIZE;
+    std::string num_warps_str = std::to_string(num_warps);
+    std::string min_num_warps =
+        std::to_string(std::min(num_warps, kernel_args.min_num_warps));
+    int bitmapsize_1 = 16;
+    int bitmapsize_2 = (int((num_warps - 1) / 64) + 1) * 16;
+    std::string bitmapsize_str = std::to_string(bitmapsize_1 + bitmapsize_2);
+    std::string bitmapsize_2_str = std::to_string(bitmapsize_2);
+
+    // Declare the basic variables for inter warp load balancing
+    code.Add("unsigned int *global_info;");
+    code.Add(
+        "cudaMalloc((void **)&global_info, sizeof(unsigned int) * 2 * 32);");
+    code.Add("unsigned int *global_num_idle_warps = global_info;");
+    code.Add("int *global_scan_offset = (int *)(global_info + 32);");
+
+    code.Add("Themis::StatisticsPerLvl *global_stats_per_lvl = NULL;");
+    code.Add("Themis::InitStatisticsPerLvl(global_stats_per_lvl, " +
+             num_warps_str + ");");
+    code.Add("Themis::PushedParts::PushedPartsStack *gts;");
+    code.Add("size_t size_of_stack_per_warp;");
+    code.Add(
+        "Themis::PushedParts::InitPushedPartsStack(gts, "
+        "size_of_stack_per_warp, 1 << 31, " +
+        num_warps_str + ");");
+    code.Add("unsigned long long *global_bit1;");
+    code.Add("cudaMalloc((void **)&global_bit1, sizeof(unsigned long long) * " +
+             bitmapsize_str + ");");
+    code.Add("unsigned long long *global_bit2 = global_bit1 + 16;");
+    code.Add("cudaMemset(global_bit1, 0, sizeof(unsigned long long) * 16);");
+    code.Add("cudaMemset(global_bit2, 0, sizeof(unsigned long long) * " +
+             bitmapsize_2_str + ");");
+}
+
+void GpuCodeGenerator::GenerateKernelCallInHostCode(CodeBuilder &code)
+{
+    if (!do_inter_warp_lb) {
+        code.Add("void *args[] = { input_data, output_data, &output_count };");
+        code.Add("");
+
+        code.Add(
+            "CUresult r = cuLaunchKernel(gpu_kernel, gridSize,1,1, "
+            "blockSize,1,1, 0, 0, args, nullptr);");
+        return;
+    } else {
+        int num_warps = int(KernelConstants::DEFAULT_BLOCK_SIZE / 32) *
+                        KernelConstants::DEFAULT_GRID_SIZE;
+        std::string num_subpipes =
+            std::to_string(pipeline_context.sub_pipelines.size());
+        code.Add("cudaMemset(global_info, 0, 64 * sizeof(unsigned int));");
+        code.Add(
+            "cudaMemset(global_stats_per_lvl, 0, "
+            "sizeof(Themis::StatisticsPerLvl) * " +
+            num_subpipes + ");");
+        // tableSize = pipe.subpipes[0].operators[0].genTableSize()
+        int tableSize = 100000; // TODO
+        // if tableSize[0] == '*': 
+        //     // tableSize = tableSize[1:]                
+        //     code.Add(f'Themis::InitStatisticsPerLvlPtr(global_stats_per_lvl, {num_warps}, {tableSize}, {len(pipe.subpipeSeqs)});')
+        // else:
+        code.Add("Themis::InitStatisticsPerLvl(global_stats_per_lvl, " +
+                 std::to_string(num_warps) + ", " + std::to_string(tableSize) +
+                 ", " + num_subpipes + ");");
+
+        int bitmapsize = (int((num_warps - 1) / 64) + 1);
+        std::string bitmapsize_str = std::to_string(16 + bitmapsize * 16);
+        code.Add("cudaMemset(global_bit1, 0, sizeof(unsigned long long) * " +
+                 bitmapsize_str + ");");
+
+        code.Add(
+            "void *args[] = { input_data, output_data, &output_count,"
+            "global_num_idle_warps, global_scan_offset, gts, "
+            "size_of_stack_per_warp,"
+            "global_bit1, global_bit2 };");
+        code.Add("");
+
+        code.Add(
+            "CUresult r = cuLaunchKernel(gpu_kernel, gridSize,1,1, "
+            "blockSize,1,1, 0, 0, args, nullptr);");
+    }
 }
 
 bool GpuCodeGenerator::CompileGeneratedCode()
@@ -547,12 +638,20 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
                     scan_column_info.col_position.push_back(column_idx);
                     scan_column_info.col_name.push_back(col_name);
 
-                    LogicalTypeId type_id =
-                        (LogicalTypeId)property_types_id->at(column_idx - 1);
-                    uint16_t extra_info = extra_infos->at(column_idx - 1);
-                    LogicalType type = GetLogicalTypeFromId(type_id, extra_info);
-                    uint64_t type_size = GetTypeIdSize(type.InternalType());
-                    scan_column_info.col_type_size.push_back(type_size);
+                    if (column_idx == 0) {
+                        scan_column_info.col_type_size.push_back(
+                            GetTypeIdSize(PhysicalType::UINT64));
+                    }
+                    else {
+                        LogicalTypeId type_id =
+                            (LogicalTypeId)property_types_id->at(column_idx -
+                                                                 1);
+                        uint16_t extra_info = extra_infos->at(column_idx - 1);
+                        LogicalType type =
+                            GetLogicalTypeFromId(type_id, extra_info);
+                        uint64_t type_size = GetTypeIdSize(type.InternalType());
+                        scan_column_info.col_type_size.push_back(type_size);
+                    }
                 }
             }
 
@@ -939,6 +1038,7 @@ void NodeScanCodeGenerator::GenerateCode(
         for (size_t extent_idx = 0;
              extent_idx < property_schema_cat_entry->extent_ids.size();
              extent_idx++) {
+            if (extent_idx != 0) continue; // TODO
             idx_t extent_id = property_schema_cat_entry->extent_ids[extent_idx];
 
             // Generate table name

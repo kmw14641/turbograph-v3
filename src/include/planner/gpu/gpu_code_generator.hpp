@@ -291,6 +291,9 @@ class GpuCodeGenerator {
         CypherPipeline &pipeline, CodeBuilder &code);
     void GenerateCopyCodeForAdaptiveWorkSharingPush(
         CypherPipeline &pipeline, CodeBuilder &code);
+    
+    void GenerateDeclarationInHostCode(CodeBuilder &code);
+    void GenerateKernelCallInHostCode(CodeBuilder &code);
 
     // Pipeline context management
     void InitializePipelineContext(const CypherPipeline &pipeline);
