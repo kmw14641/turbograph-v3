@@ -5,6 +5,7 @@
 #include "common/types/data_chunk.hpp"
 #include "execution/execution_context.hpp"
 #include "planner/expression/bound_reference_expression.hpp"
+#include "main/database.hpp"
 
 using namespace duckdb;
 
@@ -53,7 +54,10 @@ TEST_CASE("Test perfect hash join. Match one build input with one probe input") 
                                               right_build_types, right_build_map);
 
     // 7. Execution context/state
-    ExecutionContext exec_context(nullptr);
+    string dbdir = "/data/ldbc/sf1";
+    auto db = make_unique<DuckDB>(dbdir.c_str());
+    auto client_context = make_shared<ClientContext>(db->instance);
+    ExecutionContext exec_context(client_context.get());
     auto sink_state = perfect_hash_join.GetLocalSinkState(exec_context);
     auto op_state = perfect_hash_join.GetOperatorState(exec_context);
 
