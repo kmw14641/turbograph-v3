@@ -97,3 +97,11 @@ TEST_CASE("Test perfect hash join. Match one build input with one probe input") 
         {{10, 20, 20, 30}}  // expected output
     );
 }
+
+TEST_CASE("Test perfect hash join. Test multiple inputs") {
+    TestPerfectHashJoin(
+        {{10, 20}, {20, 40}, {30, 40}},
+        {{10, 10}, {20, 20}, {30, 30}, {40, 40}, {50, 50}},
+        {{10, 20, 20, 20}, {20, 40, 40, 40}, {30, 40, 40, 40}}
+    );
+}
