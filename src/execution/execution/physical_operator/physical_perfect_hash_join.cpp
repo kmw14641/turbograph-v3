@@ -28,7 +28,7 @@ PhysicalPerfectHashJoin::PhysicalPerfectHashJoin(
     : PhysicalComparisonJoin(sch, PhysicalOperatorType::HASH_JOIN, move(cond),
                              join_type),
       build_types(right_build_types),
-      right_projection_map(right_build_map),
+      build_map(right_build_map),
       output_left_projection_map(output_left_projection_map),
       output_right_projection_map(output_right_projection_map)
 {
@@ -37,7 +37,7 @@ PhysicalPerfectHashJoin::PhysicalPerfectHashJoin(
         condition_types.push_back(condition.left->return_type);
     }
 
-    D_ASSERT(build_types.size() == right_projection_map.size());
+    D_ASSERT(build_types.size() == build_map.size());
     if (join_type == JoinType::ANTI || join_type == JoinType::SEMI) {
         D_ASSERT(build_types.size() == 0);
     }
@@ -49,7 +49,7 @@ PhysicalPerfectHashJoin::PhysicalPerfectHashJoin(
 //===--------------------------------------------------------------------===//
 // Sink
 //===--------------------------------------------------------------------===//
-class PerfectHashJoinLocalState : public LocalSinkState {
+class PerfectHashJoinLocalSinkState : public LocalSinkState {
    public:
     DataChunk build_chunk;
     DataChunk join_keys;
@@ -64,8 +64,8 @@ class PerfectHashJoinLocalState : public LocalSinkState {
 unique_ptr<LocalSinkState> PhysicalPerfectHashJoin::GetLocalSinkState(
     ExecutionContext &context) const
 {
-    auto state = make_unique<PerfectHashJoinLocalState>();
-    if (!right_projection_map.empty()) {
+    auto state = make_unique<PerfectHashJoinLocalSinkState>();
+    if (!build_map.empty()) {
         state->build_chunk.Initialize(build_types);
     }
     for (auto &cond : conditions) {
@@ -98,21 +98,21 @@ SinkResultType PhysicalPerfectHashJoin::Sink(ExecutionContext &context,
                                       DataChunk &input,
                                       LocalSinkState &state) const
 {
-    auto &sink = (PerfectHashJoinLocalState &)state;
-    auto &lstate = (PerfectHashJoinLocalState &)state;
+    auto &sink = (PerfectHashJoinLocalSinkState &)state;
+    auto &lstate = (PerfectHashJoinLocalSinkState &)state;
     // resolve the join keys for the right chunk
     lstate.join_keys.Reset();
     lstate.build_executor.Execute(input, lstate.join_keys);
     // TODO: add statement to check for possible per
     // build the HT
-    if (!right_projection_map.empty()) {
+    if (!build_map.empty()) {
         // there is a projection map: fill the build chunk with the projected columns
         lstate.build_chunk.Reset();
         lstate.build_chunk.SetCardinality(input);
         auto input_types = input.GetTypes();
-        for (idx_t i = 0; i < right_projection_map.size(); i++) {
+        for (idx_t i = 0; i < build_map.size(); i++) {
             lstate.build_chunk.data[i].Reference(
-                input.data[right_projection_map[i]]);
+                input.data[build_map[i]]);
         }
         sink.hash_table->Build(lstate.join_keys, lstate.build_chunk);
     }
@@ -131,23 +131,23 @@ SinkResultType PhysicalPerfectHashJoin::Sink(ExecutionContext &context,
 void PhysicalPerfectHashJoin::Combine(ExecutionContext &context,
                                LocalSinkState &lstate) const
 {
-    auto &state = (PerfectHashJoinLocalState &)lstate;
+    auto &state = (PerfectHashJoinLocalSinkState &)lstate;
     // finalize contexts
-    auto &sink = (PerfectHashJoinLocalState &)lstate;
+    auto &sink = (PerfectHashJoinLocalSinkState &)lstate;
     sink.hash_table->Finalize();
     sink.finalized = true;
 }
 
 DataChunk &PhysicalPerfectHashJoin::GetLastSinkedData(LocalSinkState &lstate) const
 {
-    auto &state = (PerfectHashJoinLocalState &)lstate;
+    auto &state = (PerfectHashJoinLocalSinkState &)lstate;
     return state.build_chunk;
 }
 
 //===--------------------------------------------------------------------===//
 // Operator
 //===--------------------------------------------------------------------===//
-class PhysicalPerfectHashJoinState : public OperatorState {
+class PerfectHashJoinOperatorState : public OperatorState {
    public:
     //! The join keys used to probe the HT
     DataChunk join_keys;
@@ -167,8 +167,8 @@ class PhysicalPerfectHashJoinState : public OperatorState {
 unique_ptr<OperatorState> PhysicalPerfectHashJoin::GetOperatorState(
     ExecutionContext &context) const
 {
-    auto state = make_unique<PhysicalPerfectHashJoinState>();
-    // auto &sink = (PerfectHashJoinLocalState &)*sink_state;
+    auto state = make_unique<PerfectHashJoinOperatorState>();
+    // auto &sink = (PerfectHashJoinLocalSinkState &)*sink_state;
     // if (sink.perfect_join_executor) {
     // 	state->perfect_hash_join_state = sink.perfect_join_executor->GetOperatorState(context);
     // } else {
@@ -188,8 +188,8 @@ OperatorResultType PhysicalPerfectHashJoin::Execute(ExecutionContext &context,
                                              OperatorState &state_p,
                                              LocalSinkState &sink_state) const
 {
-    auto &state = (PhysicalPerfectHashJoinState &)state_p;
-    auto &sink = (PerfectHashJoinLocalState &)sink_state;
+    auto &state = (PerfectHashJoinOperatorState &)state_p;
+    auto &sink = (PerfectHashJoinLocalSinkState &)sink_state;
     D_ASSERT(sink.finalized);
 
     if (sink.hash_table->Count() == 0 && EmptyResultIfRHSIsEmpty()) {
@@ -274,9 +274,9 @@ std::string PhysicalPerfectHashJoin::ParamsToString() const
         result += std::to_string(i) + ", ";
     }
     result += "], ";
-    result += "right_projection_map.size()=" +
-              std::to_string(right_projection_map.size()) + "[";
-    for (auto &i : right_projection_map) {
+    result += "build_map.size()=" +
+              std::to_string(build_map.size()) + "[";
+    for (auto &i : build_map) {
         result += std::to_string(i) + ", ";
     }
     result += "], ";

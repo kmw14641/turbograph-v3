@@ -38,7 +38,7 @@ class PhysicalPerfectHashJoin : public PhysicalComparisonJoin {
     vector<uint32_t> output_left_projection_map;
     vector<uint32_t> output_right_projection_map;
     //! build side projection map
-    vector<idx_t> right_projection_map;
+    vector<idx_t> build_map;
     //! The types of the keys
     vector<LogicalType> condition_types;
     //! The types of all conditions
