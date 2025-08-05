@@ -13,17 +13,14 @@
 namespace duckdb {
 
 /**
- * TODO:
- * Build executor havs right expressions in join conditions
- * In schemaless execution, right expressions can have different BoundReferenceExpression (Note that they have different schema)
- * Therefore, according to their schema, build_executor should have initialized differently, which is crazy.
+ * PerfectHashJoin is enabled only when right key is not duplicated and left key always matches with any right key
 */
 PhysicalPerfectHashJoin::PhysicalPerfectHashJoin(
     Schema sch, vector<JoinCondition> cond, JoinType join_type,
     vector<uint32_t> &output_left_projection_map,  // s62 style projection map
-    vector<uint32_t> &output_right_projection_map,  // s62 style projection map (not used due to right_build_map)
+    vector<uint32_t> &output_right_projection_map,  // s62 style projection map (index matches build value's output, value indicates output schema's index)
     vector<LogicalType> &right_build_types,
-    vector<idx_t> &right_build_map  // right column indexes to build (they should be in the output)
+    vector<idx_t> &right_build_map  // right column indexes to build (index matches build value's input, value indicates right input's index)
     )
     : PhysicalComparisonJoin(sch, PhysicalOperatorType::HASH_JOIN, move(cond),
                              join_type),
