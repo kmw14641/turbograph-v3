@@ -132,7 +132,7 @@ void PHJProjectionTest(std::vector<std::vector<int>> left_data,
     for (idx_t i = 0; i < right_data.size(); ++i) {
         right_input.SetValue(0, i, Value::INTEGER(right_data[i][0]));  // right.col0
         right_input.SetValue(1, i, Value::INTEGER(right_data[i][1]));  // right.col1
-        right_input.SetValue(1, i, Value::INTEGER(right_data[i][2]));  // right.col2
+        right_input.SetValue(2, i, Value::INTEGER(right_data[i][2]));  // right.col2
     }
 
     // Create join expression: left.col1 = right.col0
@@ -223,7 +223,7 @@ void PHJMultiCondTest(std::vector<std::vector<int>> left_data,
     for (idx_t i = 0; i < right_data.size(); ++i) {
         right_input.SetValue(0, i, Value::INTEGER(right_data[i][0]));  // right.col0
         right_input.SetValue(1, i, Value::INTEGER(right_data[i][1]));  // right.col1
-        right_input.SetValue(1, i, Value::INTEGER(right_data[i][2]));  // right.col2
+        right_input.SetValue(2, i, Value::INTEGER(right_data[i][2]));  // right.col2
     }
 
     // Create join expression: left.col1 = right.col0
