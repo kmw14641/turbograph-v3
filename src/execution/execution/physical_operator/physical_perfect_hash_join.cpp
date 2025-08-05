@@ -29,7 +29,7 @@ PhysicalPerfectHashJoin::PhysicalPerfectHashJoin(
       output_left_projection_map(output_left_projection_map),
       output_right_projection_map(output_right_projection_map)
 {
-
+    D_ASSERT(conditions.size() == 1);  // TODO: implement PerfectHashFunction::CombineHash
     for (auto &condition : conditions) {
         condition_types.push_back(condition.left->return_type);
     }
