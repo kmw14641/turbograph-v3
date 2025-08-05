@@ -35,7 +35,7 @@ PhysicalPerfectHashJoin::PhysicalPerfectHashJoin(
     }
 
     D_ASSERT(build_types.size() == build_map.size());
-    if (join_type == JoinType::ANTI || join_type == JoinType::SEMI) {
+    if (join_type == JoinType::ANTI || join_type == JoinType::SEMI) {  // why mark is not here?
         D_ASSERT(build_types.size() == 0);
     }
 
@@ -46,7 +46,7 @@ PhysicalPerfectHashJoin::PhysicalPerfectHashJoin(
 //===--------------------------------------------------------------------===//
 // Sink
 //===--------------------------------------------------------------------===//
-class PerfectHashJoinLocalSinkState : public LocalSinkState {
+class PerfectHashJoinLocalSinkState : public LocalSinkState {  // Where is GlobalSinkState? We have to combine local hash table to global hash table!
    public:
     DataChunk build_chunk;
     DataChunk join_keys;
@@ -131,7 +131,7 @@ void PhysicalPerfectHashJoin::Combine(ExecutionContext &context,
     auto &state = (PerfectHashJoinLocalSinkState &)lstate;
     // finalize contexts
     auto &sink = (PerfectHashJoinLocalSinkState &)lstate;
-    sink.hash_table->Finalize();
+    sink.hash_table->Finalize();  // why Sink only creates block, and combines block in Combine? Combine exists for combine different pipeline to global state. block is not helpful for parallel execution. is it for cache efficiency?
     sink.finalized = true;
 }
 
