@@ -44,6 +44,7 @@ struct PushedPartsStack {
     volatile int num;
     volatile int start;
 
+#ifdef __CUDACC_RTC__
     __forceinline__ __device__ bool isLockFree()
     {
         return 0 == atomicCAS(&lock, -1, -1);
@@ -103,8 +104,10 @@ struct PushedPartsStack {
         start -= sizeof(PushedPartsAtZeroLvl);
         num -= 1;
     }
+#endif
 };
 
+#ifdef __CUDACC__
 __forceinline__ __device__ PushedPartsStack *GetIthStack(
     PushedPartsStack *stack, size_t size_per_warp, size_t i)
 {
@@ -123,6 +126,7 @@ __global__ void Krnl_InitPushedPartsStack(PushedPartsStack *stack,
     stack->num = 0;
     stack->start = 0;
 }
+#endif
 
 #ifndef __CUDACC_RTC__
 void InitPushedPartsStack(PushedPartsStack *&stack, size_t &size_per_warp,
@@ -136,8 +140,14 @@ void InitPushedPartsStack(PushedPartsStack *&stack, size_t &size_per_warp,
     // std::cout << "Init pushed parts stack " << size_per_warp << std::endl;
     cudaMalloc((void **)&result, size_per_warp * (num_warps));
     stack = (PushedPartsStack *)(result + size_per_warp - 128);
-    Krnl_InitPushedPartsStack<<<1024, 128>>>(stack, size_per_warp,
-                                             (size_t)num_warps);
+    // Krnl_InitPushedPartsStack<<<1024, 128>>>(stack, size_per_warp,
+    //                                          (size_t)num_warps);
+    for (int i = 0; i < num_warps; i++) {
+        PushedPartsStack *s = (PushedPartsStack *)(((char *)stack) + size_per_warp * i);
+        s->lock = 0;
+        s->num = 0;
+        s->start = 0;
+    }
 }
 #endif
 

@@ -287,8 +287,8 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
     // code.Add("#include \"range.cuh\"");
     // code.Add("#include \"themis.cuh\"");
     // code.Add("#include \"work_sharing.cuh\"");
-    // code.Add("#include \"adaptive_work_sharing.cuh\"");
-    // code.Add("#include \"pushedparts.cuh\"");
+    code.Add("#include \"adaptive_work_sharing.cuh\"");
+    code.Add("#include \"pushedparts.cuh\"");
     code.Add("");
 
     code.Add("extern \"C\" CUfunction gpu_kernel;\n");
@@ -453,7 +453,7 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(CodeBuilder &code)
         //     // tableSize = tableSize[1:]                
         //     code.Add(f'Themis::InitStatisticsPerLvlPtr(global_stats_per_lvl, {num_warps}, {tableSize}, {len(pipe.subpipeSeqs)});')
         // else:
-        code.Add("Themis::InitStatisticsPerLvl(global_stats_per_lvl, " +
+        code.Add("Themis::InitStatisticsPerLvlHost(global_stats_per_lvl, " +
                  std::to_string(num_warps) + ", " + std::to_string(tableSize) +
                  ", " + num_subpipes + ");");
 
@@ -463,10 +463,10 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(CodeBuilder &code)
                  bitmapsize_str + ");");
 
         code.Add(
-            "void *args[] = { input_data, output_data, &output_count,"
-            "global_num_idle_warps, global_scan_offset, gts, "
-            "size_of_stack_per_warp,"
-            "global_bit1, global_bit2 };");
+            "void *args[] = { input_data, output_data, &output_count, "
+            "&global_num_idle_warps, &global_scan_offset, &gts, "
+            "&size_of_stack_per_warp,"
+            "&global_bit1, &global_bit2 };");
         code.Add("");
 
         code.Add(
