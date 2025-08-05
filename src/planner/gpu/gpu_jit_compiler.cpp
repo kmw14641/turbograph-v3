@@ -146,6 +146,7 @@ std::vector<std::unique_ptr<llvm::Module>> GpuJitCompiler::CompileToIR(
         "-isystem", "/usr/local/cuda/include",
         "-isystem", "/usr/include",
         "-isystem", "/usr/include/x86_64-linux-gnu",
+        "-isystem", "/turbograph-v3/src/include/planner/gpu/themis/",
         "-I", project_include_path.c_str(),  // Use dynamic include path
         "-emit-llvm", "-c"
     };
@@ -358,6 +359,7 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, CUfunctio
         "-isystem", "/usr/local/cuda/include",
         "-isystem", "/usr/include",
         "-isystem", "/usr/include/x86_64-linux-gnu",
+        "-isystem", "/turbograph-v3/src/include/planner/gpu/themis/",
         "-I", project_include_path.c_str(),  // Use dynamic include path
         "-emit-llvm", "-c"
     };

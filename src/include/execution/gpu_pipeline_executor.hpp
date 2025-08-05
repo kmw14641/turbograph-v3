@@ -71,6 +71,7 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
 
     // Pointer mappings for GPU execution
     std::vector<PointerMapping> pointer_mappings;
+    std::vector<PointerMapping> input_pointer_mappings;
 
     // Scan column information for GPU execution
     std::vector<ScanColumnInfo> scan_column_infos;

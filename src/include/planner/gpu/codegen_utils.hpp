@@ -42,6 +42,7 @@ struct PipelineContext {
 
     // Sub pipeline
     std::vector<CypherPipeline> sub_pipelines;
+    std::string current_tid_name;
 
     // Operator schemas (references to original schemas)
     std::vector<const std::vector<std::string> *> operator_column_names;

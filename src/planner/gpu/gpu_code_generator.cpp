@@ -154,7 +154,7 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     int out_idx = 0;
     for (const auto &p : input_kernel_params) {
         if (p.type.find('*') != std::string::npos) {
-            code.Add(p.type + " " + p.name + " = (" + p.type +
+            code.Add(p.type + p.name + " = (" + p.type +
                      ") input_data[" + std::to_string(in_idx) + "];");
             ++in_idx;
         } else {
@@ -163,7 +163,7 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     }
     for (const auto &p : output_kernel_params) {
         if (p.type.find('*') != std::string::npos) {
-            code.Add(p.type + " " + p.name + " = (" + p.type +
+            code.Add(p.type + p.name + " = (" + p.type +
                      ") output_data[" + std::to_string(out_idx) + "];");
             ++out_idx;
         } else {
@@ -284,6 +284,12 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
     code.Add("#include <iostream>");
     code.Add("#include <string>");
     code.Add("#include <unordered_map>\n");
+    // code.Add("#include \"range.cuh\"");
+    // code.Add("#include \"themis.cuh\"");
+    // code.Add("#include \"work_sharing.cuh\"");
+    // code.Add("#include \"adaptive_work_sharing.cuh\"");
+    // code.Add("#include \"pushedparts.cuh\"");
+    code.Add("");
 
     code.Add("extern \"C\" CUfunction gpu_kernel;\n");
 
@@ -549,6 +555,7 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
     // Process oids to get table/column information
     for (size_t oid_idx = 0; oid_idx < scan_op->oids.size(); oid_idx++) {
         idx_t oid = scan_op->oids[oid_idx];
+        std::string graphlet_name = "gr" + std::to_string(oid);
 
         // Get property schema catalog entry using oid
         Catalog &catalog = context.db->GetCatalog();
@@ -616,19 +623,16 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
                     std::string param_name;
                     param_name = table_name + "_" + col_name;
 
-                    // Add data buffer parameter for this column (chunk)
-                    KernelParam data_param;
-                    data_param.name = param_name + "_data";
-                    data_param.type = "void *";
-                    data_param.is_device_ptr = true;
-                    input_kernel_params.push_back(data_param);
+                    // // Add data buffer parameter for this column (chunk)
+                    // KernelParam data_param;
+                    // data_param.name = param_name + "_data";
+                    // data_param.type = "void *";
+                    // data_param.is_device_ptr = true;
+                    // input_kernel_params.push_back(data_param);
 
                     // Add pointer mapping for this chunk (column)
                     std::string chunk_name = "chunk_" + std::to_string(cdf_id);
                     AddPointerMapping(chunk_name, nullptr, cdf_id);
-
-                    pipeline_context.column_to_param_mapping[column_names->at(
-                        column_idx - 1)] = param_name;
 
                     scan_column_info.chunk_ids[chunk_idx].push_back(cdf_id);
                 }
@@ -641,6 +645,9 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
                     if (column_idx == 0) {
                         scan_column_info.col_type_size.push_back(
                             GetTypeIdSize(PhysicalType::UINT64));
+                        pipeline_context
+                            .column_to_param_mapping["_id"] =
+                            graphlet_name + "_" + col_name;
                     }
                     else {
                         LogicalTypeId type_id =
@@ -651,7 +658,19 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
                             GetLogicalTypeFromId(type_id, extra_info);
                         uint64_t type_size = GetTypeIdSize(type.InternalType());
                         scan_column_info.col_type_size.push_back(type_size);
+
+                        pipeline_context
+                            .column_to_param_mapping[column_names->at(
+                                column_idx - 1)] =
+                            graphlet_name + "_" + col_name;
                     }
+
+                    // Add data buffer parameter for this column (chunk)
+                    KernelParam data_param;
+                    data_param.name = graphlet_name + "_" + col_name + "_data";
+                    data_param.type = "void *";
+                    data_param.is_device_ptr = true;
+                    input_kernel_params.push_back(data_param);
                 }
             }
 
@@ -794,6 +813,7 @@ void GpuCodeGenerator::GenerateInputCodeForType0(CypherPhysicalOperator *op,
     // tid = spSeq.getTid()
     std::string tid_name =
         "tid_" + std::to_string(pipeline_ctx.sub_pipelines[0].GetPipelineId());
+    pipeline_context.current_tid_name = tid_name;
 
     code.Add("while (lvl >= 0 && loop < " +
              std::to_string(kernel_args.inter_warp_lb_interval) +
@@ -1023,6 +1043,7 @@ void NodeScanCodeGenerator::GenerateCode(
     // Process oids and scan_projection_mapping to get chunk IDs
     for (size_t oid_idx = 0; oid_idx < scan_op->oids.size(); oid_idx++) {
         idx_t oid = scan_op->oids[oid_idx];
+        std::string graphlet_name = "gr" + std::to_string(oid);
 
         // Get property schema catalog entry using oid
         Catalog &catalog = context.db->GetCatalog();
@@ -1063,13 +1084,13 @@ void NodeScanCodeGenerator::GenerateCode(
                 op, code, pipeline_ctx,
                 PipeInputType::TYPE_0);  // TYPE_0 for node scan
 
-            // lazy materialization
-            code.Add("// lazy materialization");
-            code.Add("unsigned long long tuple_id_base = " +
-                     std::to_string(tuple_id_base) + ";");
-            code.Add(
-                "unsigned long long tuple_id = tuple_id_base "
-                "+ tid;");
+            // // lazy materialization
+            // code.Add("// lazy materialization");
+            // code.Add("unsigned long long tuple_id_base = " +
+            //          std::to_string(tuple_id_base) + ";");
+            // code.Add(
+            //     "unsigned long long tuple_id = tuple_id_base "
+            //     "+ tid;");
 
             // Declare input column pointers for lazy materialization
             code.Add("// Declare input column pointers");
@@ -1094,7 +1115,7 @@ void NodeScanCodeGenerator::GenerateCode(
 
                 // Generate parameter names based on verbose mode
                 std::string param_name;
-                param_name = table_name + "_" + col_name;
+                param_name = graphlet_name + "_" + col_name;
 
                 // Declare the pointer
                 code.Add(ctype + "* " + param_name + "_ptr = static_cast<" +
@@ -1123,8 +1144,9 @@ void NodeScanCodeGenerator::GenerateCode(
                             auto value_str =
                                 scan_op->eq_filter_pushdown_values[i]
                                     .ToString();
-                            predicate_string +=
-                                (attr_name + "[tid] == " + value_str);
+                            predicate_string += (attr_name + "[" +
+                                                 pipeline_ctx.current_tid_name +
+                                                 "] == " + value_str);
                         }
                     }
                 }
@@ -1149,15 +1171,21 @@ void NodeScanCodeGenerator::GenerateCode(
                             predicate_string +=
                                 scan_op->range_filter_pushdown_values[i]
                                         .l_inclusive
-                                    ? (attr_name + "[tid] >= " + left_value_str)
-                                    : (attr_name + "[tid] > " + left_value_str);
+                                    ? (attr_name + "[" +
+                                       pipeline_ctx.current_tid_name +
+                                       "] >= " + left_value_str)
+                                    : (attr_name + "[" +
+                                       pipeline_ctx.current_tid_name + "] > " +
+                                       left_value_str);
                             predicate_string += " && ";
                             predicate_string +=
                                 scan_op->range_filter_pushdown_values[i]
                                         .r_inclusive
-                                    ? (attr_name +
-                                       "[tid] <= " + right_value_str)
-                                    : (attr_name + "[tid] < " +
+                                    ? (attr_name + "[" +
+                                       pipeline_ctx.current_tid_name +
+                                       "] <= " + right_value_str)
+                                    : (attr_name + "[" +
+                                       pipeline_ctx.current_tid_name + "] < " +
                                        right_value_str);
                         }
                     }
@@ -1297,8 +1325,8 @@ void ProjectionCodeGenerator::GenerateProjectionExpressionCode(
     // Store the result in output buffer, except for BOUND_REF
     if (expr->expression_class != ExpressionClass::BOUND_REF) {
         code.Add("// Store projection result");
-        code.Add("output_col_" + std::to_string(expr_idx) +
-                 "[tid] = " + output_var + ";");
+        code.Add("output_col_" + std::to_string(expr_idx) + "[" +
+                 pipeline_ctx.current_tid_name + "] = " + output_var + ";");
     }
 }
 
@@ -1511,7 +1539,7 @@ void ProduceResultsCodeGenerator::GenerateCode(
     code.Add("// Produce results operator");
 
     // Declare output count pointer
-    code.Add("int* output_count_ptr = static_cast<int*>(&output_count);");
+    code.Add("int output_idx = atomicAdd(output_count, 1);");
 
     // Get the output schema to determine what columns to write
     auto &output_schema = results_op->GetSchema();
@@ -1552,20 +1580,19 @@ void ProduceResultsCodeGenerator::GenerateCode(
             // Column is already materialized, use the projection result
             code.Add(ctype + "* " + output_ptr_name + " = static_cast<" +
                      ctype + "*>(" + output_data_name + ");");
-            code.Add(output_ptr_name + "[tid] = proj_result_" +
+            code.Add(output_ptr_name + "[output_idx] = proj_result_" +
                      std::to_string(col_idx) + ";");
         }
         else {
             // Column needs to be materialized from input
             // Find the corresponding input column
-
             std::string orig_col_name_wo_varname =
                 orig_col_name.substr(orig_col_name.find_last_of('.') + 1);
             if (orig_col_name_wo_varname == "_id") {
                 code.Add("// Special case for _id column, use tuple_id");
                 code.Add(ctype + "* " + output_ptr_name + " = static_cast<" +
                          ctype + "*>(" + output_data_name + ");");
-                code.Add(output_ptr_name + "[tid] = " + "tuple_id;");
+                // code.Add(output_ptr_name + "[output_idx] = " + "tuple_id;");
             }
             else {
                 auto it = pipeline_ctx.column_to_param_mapping.find(
@@ -1577,14 +1604,12 @@ void ProduceResultsCodeGenerator::GenerateCode(
                     code.Add(ctype + "* " + output_ptr_name +
                              " = static_cast<" + ctype + "*>(" +
                              output_data_name + ");");
-                    // code.Add(ctype + "* " + input_col_name +
-                    //                             "_ptr" + " = static_cast<" +
-                    //                             ctype + "*>(" + input_col_name +
-                    //                             ");");
-                    code.Add(output_ptr_name + "[tid] = " + input_col_name +
-                             "_ptr" + "[i];");
+                    code.Add(output_ptr_name +
+                             "[output_idx] = " + input_col_name + "_ptr" + "[" +
+                             pipeline_ctx.current_tid_name + "];");
                 }
                 else {
+                    D_ASSERT(false); // TODO check
                     // No mapping found, check if it's a direct input column
                     auto input_it = std::find(
                         pipeline_ctx.input_column_names.begin(),
@@ -1595,8 +1620,9 @@ void ProduceResultsCodeGenerator::GenerateCode(
                         code.Add(ctype + "* " + output_ptr_name +
                                  " = static_cast<" + ctype + "*>(" +
                                  output_data_name + ");");
-                        code.Add(output_ptr_name + "[tid] = " + col_name +
-                                 "_ptr[i];");
+                        code.Add(output_ptr_name +
+                                 "[output_idx] = " + col_name + "_ptr[" +
+                                 pipeline_ctx.current_tid_name + "];");
                     }
                     else {
                         // Fallback: use projection result
@@ -1605,7 +1631,8 @@ void ProduceResultsCodeGenerator::GenerateCode(
                         code.Add(ctype + "* " + output_ptr_name +
                                  " = static_cast<" + ctype + "*>(" +
                                  output_data_name + ");");
-                        code.Add(output_ptr_name + "[tid] = proj_result_" +
+                        code.Add(output_ptr_name +
+                                 "[output_idx] = proj_result_" +
                                  std::to_string(col_idx) + ";");
                     }
                 }

@@ -1,6 +1,9 @@
+#ifdef __CUDACC_RTC__
 #include "themis.cuh"
+#endif
 namespace Themis {
 
+#ifdef __CUDACC_RTC__
 __device__ __forceinline__ int CalculateOrder(int cnt)
 {
     // if cnt is zero --> order is -1
@@ -29,6 +32,7 @@ __device__ __forceinline__ int CalculateUpperBoundOfOrder(int8_t order)
 {
     return 0x20 << (order);
 }
+#endif
 
 struct StatisticsPerLvl {
     unsigned long long cnt;
@@ -42,6 +46,7 @@ struct StatisticsPerLvl {
     unsigned long long max_inodes_cnt;
 };
 
+#ifdef __CUDACC_RTC__
 __global__ void krnl_InitStatisticsPerLvlPtr(StatisticsPerLvl *stats,
                                              unsigned int num_warps,
                                              int *num_inodes_at_zero_ptr,
@@ -187,6 +192,7 @@ __global__ void krnl_InitStatisticsPerLvl(
     stats[0].sub_num_warps[order_of_case_2] += num_warps_of_case_2;
     //printf("stats[0].max_order: %d, num_warps: %d, num_inodex_at_zero: %d\n", stats[0].max_order, stats[0].num_warps, num_inodes_at_zero);
 }
+#endif
 
 #ifndef __CUDACC_RTC__
 void InitStatisticsPerLvl(StatisticsPerLvl *stats, unsigned int num_warps,
@@ -239,6 +245,7 @@ void PrintStatisticsPerLvl(StatisticsPerLvl *device_stats,
 }
 #endif
 
+#ifdef __CUDACC_RTC__
 struct LocalLevelAndOrderInfo {
     int8_t locally_lowest_lvl;
     int8_t globally_lowest_lvl;
@@ -604,7 +611,9 @@ __device__ void Wait(int &gpart_id, int &busy_warp_id, int warp_id,
     busy_warp_id = __shfl_sync(ALL_LANES, busy_warp_id, 0);
     lowest_lvl = __shfl_sync(ALL_LANES, lowest_lvl, 0);
 }
+#endif
 
+#ifdef __CUDACC_RTC__
 namespace WorkloadTracking {
 
 __device__ __forceinline__ void UpdateWorkloadSizeOfIdleWarpAfterPush(
@@ -810,4 +819,5 @@ __device__ __forceinline__ void InitLocalWorkloadSize(
     local_info.globally_lowest_lvl = lvl;
 }
 }  // namespace WorkloadTracking
+#endif
 }  // namespace Themis
