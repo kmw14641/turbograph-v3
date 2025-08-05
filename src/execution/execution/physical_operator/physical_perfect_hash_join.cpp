@@ -100,28 +100,14 @@ SinkResultType PhysicalPerfectHashJoin::Sink(ExecutionContext &context,
     // resolve the join keys for the right chunk
     lstate.join_keys.Reset();
     lstate.build_executor.Execute(input, lstate.join_keys);
-    // TODO: add statement to check for possible per
+    // fill build_chunk from input, using build_map
+    lstate.build_chunk.Reset();
+    for (idx_t i = 0; i < build_map.size(); i++) {
+        lstate.build_chunk.data[i].Reference(input.data[build_map[i]]);
+    }
+    lstate.build_chunk.SetCardinality(input);
     // build the HT
-    if (!build_map.empty()) {
-        // there is a projection map: fill the build chunk with the projected columns
-        lstate.build_chunk.Reset();
-        lstate.build_chunk.SetCardinality(input);
-        auto input_types = input.GetTypes();
-        for (idx_t i = 0; i < build_map.size(); i++) {
-            lstate.build_chunk.data[i].Reference(
-                input.data[build_map[i]]);
-        }
-        sink.hash_table->Build(lstate.join_keys, lstate.build_chunk);
-    }
-    else if (!build_types.empty()) {
-        // there is not a projected map: place the entire right chunk in the HT
-        sink.hash_table->Build(lstate.join_keys, input);
-    }
-    else {
-        // there are only keys: place an empty chunk in the payload
-        lstate.build_chunk.SetCardinality(input.size());
-        sink.hash_table->Build(lstate.join_keys, lstate.build_chunk);
-    }
+    sink.hash_table->Build(lstate.join_keys, lstate.build_chunk);
     return SinkResultType::NEED_MORE_INPUT;
 }
 
