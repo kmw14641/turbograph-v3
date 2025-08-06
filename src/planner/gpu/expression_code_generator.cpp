@@ -12,39 +12,40 @@ ExpressionCodeGenerator::ExpressionCodeGenerator(ClientContext &context)
 
 std::string ExpressionCodeGenerator::GenerateExpressionCode(
     Expression *expr, CodeBuilder &code, PipelineContext &pipeline_ctx,
-    const std::string &result_var_prefix)
+    std::unordered_map<uint64_t, std::string> &column_map)
 {
-    if (!expr) {
-        std::string result_var = GetUniqueVariableName(result_var_prefix);
-        code.Add("bool " + result_var + " = true; // Null expression");
-        return result_var;
-    }
+    D_ASSERT(expr != nullptr);
 
     switch (expr->expression_class) {
         case ExpressionClass::BOUND_REF:
             return GenerateReferenceExpression(
                 dynamic_cast<BoundReferenceExpression *>(expr), code,
-                pipeline_ctx);
+                pipeline_ctx, column_map);
+        
+        case ExpressionClass::BOUND_BETWEEN:
+            return GenerateBetweenExpression(
+                dynamic_cast<BoundBetweenExpression *>(expr), code,
+                pipeline_ctx, column_map);
 
         case ExpressionClass::BOUND_CONSTANT:
             return GenerateConstantExpression(
                 dynamic_cast<BoundConstantExpression *>(expr), code,
-                pipeline_ctx);
+                pipeline_ctx, column_map);
 
         case ExpressionClass::BOUND_COMPARISON:
             return GenerateComparisonExpression(
                 dynamic_cast<BoundComparisonExpression *>(expr), code,
-                pipeline_ctx);
+                pipeline_ctx, column_map);
 
-        case ExpressionClass::BOUND_FUNCTION:
-            return GenerateFunctionExpression(
-                dynamic_cast<BoundFunctionExpression *>(expr), code,
-                pipeline_ctx);
+        // case ExpressionClass::BOUND_FUNCTION:
+        //     return GenerateFunctionExpression(
+        //         dynamic_cast<BoundFunctionExpression *>(expr), code,
+        //         pipeline_ctx, column_map);
 
-        case ExpressionClass::BOUND_OPERATOR:
-            return GenerateOperatorExpression(
-                dynamic_cast<BoundOperatorExpression *>(expr), code,
-                pipeline_ctx);
+        // case ExpressionClass::BOUND_OPERATOR:
+        //     return GenerateOperatorExpression(
+        //         dynamic_cast<BoundOperatorExpression *>(expr), code,
+        //         pipeline_ctx, column_map);
         
         case ExpressionClass::BOUND_CONJUNCTION: {
             std::string result_code = "";
@@ -59,27 +60,24 @@ std::string ExpressionCodeGenerator::GenerateExpressionCode(
                 }
                 result_code += GenerateExpressionCode(
                     bound_conj_expr->children[i].get(), code, pipeline_ctx,
-                    result_var_prefix);
+                    column_map);
             }
             return result_code;
         }
-
         default: {
-            std::string result_var = GetUniqueVariableName(result_var_prefix);
-            code.Add("// Unsupported expression type: " +
-                     std::to_string(static_cast<int>(expr->expression_class)));
-            code.Add(ConvertLogicalTypeToCUDAType(expr->return_type) + " " +
-                     result_var + " = 0; // TODO: implement");
-            return result_var;
+            throw NotImplementedException(
+                "Unsupported expression type: " +
+                std::to_string(static_cast<int>(expr->expression_class)));
         }
     }
 }
 
 std::string ExpressionCodeGenerator::GenerateConditionCode(
-    Expression *expr, CodeBuilder &code, PipelineContext &pipeline_ctx)
+    Expression *expr, CodeBuilder &code, PipelineContext &pipeline_ctx,
+    std::unordered_map<uint64_t, std::string> &column_map)
 {
     std::string condition_var =
-        GenerateExpressionCode(expr, code, pipeline_ctx, "condition");
+        GenerateExpressionCode(expr, code, pipeline_ctx, column_map);
 
     // If the result is not boolean, convert it
     if (expr && expr->return_type.id() != LogicalTypeId::BOOLEAN) {
@@ -96,31 +94,54 @@ std::string ExpressionCodeGenerator::GenerateConditionCode(
 
 std::string ExpressionCodeGenerator::GenerateReferenceExpression(
     BoundReferenceExpression *ref_expr, CodeBuilder &code,
-    PipelineContext &pipeline_ctx)
+    PipelineContext &pipeline_ctx,
+    std::unordered_map<uint64_t, std::string> &column_map)
 {
     if (!ref_expr) {
         throw InvalidInputException(
             "Reference expression cannot be null");
     }
 
-    if (ref_expr->index < pipeline_ctx.input_column_names.size()) {
-        std::string column_name =
-            pipeline_ctx.input_column_names[ref_expr->index];
-
-        // Ensure column is materialized
-        EnsureColumnMaterialized(column_name, code, pipeline_ctx);
-
-        std::string result_code = column_name + "_ptr[i]";
-        return result_code;
+    auto it = column_map.find(ref_expr->index);
+    if (it != column_map.end()) {
+        // If the column is already mapped, return its name
+        return it->second;
+    } else {
+        throw InvalidInputException(
+            "Invalid column index or not materialized: " +
+            std::to_string(ref_expr->index));
     }
-    else {
-        throw InvalidInputException("Invalid column index");
-    }
+}
+
+std::string ExpressionCodeGenerator::GenerateBetweenExpression(
+    BoundBetweenExpression *between_expr, CodeBuilder &code,
+    PipelineContext &pipeline_ctx,
+    std::unordered_map<uint64_t, std::string> &column_map)
+{
+    // Generate code for left, lower, and upper expressions
+    std::string input_var = GenerateExpressionCode(
+        between_expr->input.get(), code, pipeline_ctx, column_map);
+    std::string lower_var = GenerateExpressionCode(
+        between_expr->lower.get(), code, pipeline_ctx, column_map);
+    std::string upper_var = GenerateExpressionCode(
+        between_expr->upper.get(), code, pipeline_ctx, column_map);
+
+    // Generate the BETWEEN condition
+    std::string lower_compare_str =
+        between_expr->lower_inclusive ? " >= " : " > ";
+    std::string upper_compare_str =
+        between_expr->upper_inclusive ? " <= " : " < ";
+    std::string result_code = "(" + input_var + lower_compare_str + lower_var +
+                              " && " + input_var + upper_compare_str +
+                              upper_var + ")";
+
+    return result_code;
 }
 
 std::string ExpressionCodeGenerator::GenerateConstantExpression(
     BoundConstantExpression *const_expr, CodeBuilder &code,
-    PipelineContext &pipeline_ctx)
+    PipelineContext &pipeline_ctx,
+    std::unordered_map<uint64_t, std::string> &column_map)
 {
     if (!const_expr) {
         throw InvalidInputException("Constant expression cannot be null");
@@ -133,22 +154,14 @@ std::string ExpressionCodeGenerator::GenerateConstantExpression(
 
 std::string ExpressionCodeGenerator::GenerateComparisonExpression(
     BoundComparisonExpression *comp_expr, CodeBuilder &code,
-    PipelineContext &pipeline_ctx)
+    PipelineContext &pipeline_ctx,
+    std::unordered_map<uint64_t, std::string> &column_map)
 {
-    if (!comp_expr || !comp_expr->left || !comp_expr->right) {
-        std::string result_var = GetUniqueVariableName("comp_result");
-        code.Add("bool " + result_var + " = true; // Invalid comparison");
-        return result_var;
-    }
-
-    // code.Add("// Comparison expression: " +
-    //          GetComparisonOperator(comp_expr->type));
-
     // Generate code for left and right operands
     std::string left_var = GenerateExpressionCode(comp_expr->left.get(), code,
-                                                  pipeline_ctx, "left_operand");
+                                                  pipeline_ctx, column_map);
     std::string right_var = GenerateExpressionCode(
-        comp_expr->right.get(), code, pipeline_ctx, "right_operand");
+        comp_expr->right.get(), code, pipeline_ctx, column_map);
 
     // Generate comparison
     std::string operator_str = GetComparisonOperator(comp_expr->type);
@@ -159,7 +172,8 @@ std::string ExpressionCodeGenerator::GenerateComparisonExpression(
 
 std::string ExpressionCodeGenerator::GenerateFunctionExpression(
     BoundFunctionExpression *func_expr, CodeBuilder &code,
-    PipelineContext &pipeline_ctx)
+    PipelineContext &pipeline_ctx,
+    std::unordered_map<uint64_t, std::string> &column_map)
 {
     if (!func_expr) {
         throw InvalidInputException("Function expression cannot be null");
@@ -174,7 +188,8 @@ std::string ExpressionCodeGenerator::GenerateFunctionExpression(
 
 std::string ExpressionCodeGenerator::GenerateOperatorExpression(
     BoundOperatorExpression *op_expr, CodeBuilder &code,
-    PipelineContext &pipeline_ctx)
+    PipelineContext &pipeline_ctx,
+    std::unordered_map<uint64_t, std::string> &column_map)
 {
     if (!op_expr) {
         std::string result_var = GetUniqueVariableName("op_result");
@@ -191,9 +206,9 @@ std::string ExpressionCodeGenerator::GenerateOperatorExpression(
     if (op_expr->children.size() == 2) {
         // Binary operator
         std::string left_var = GenerateExpressionCode(
-            op_expr->children[0].get(), code, pipeline_ctx, "left_op");
+            op_expr->children[0].get(), code, pipeline_ctx, column_map);
         std::string right_var = GenerateExpressionCode(
-            op_expr->children[1].get(), code, pipeline_ctx, "right_op");
+            op_expr->children[1].get(), code, pipeline_ctx, column_map);
 
         // For now, just implement basic operations that we know exist
         switch (op_expr->type) {
@@ -214,7 +229,7 @@ std::string ExpressionCodeGenerator::GenerateOperatorExpression(
     else if (op_expr->children.size() == 1) {
         // Unary operator
         std::string operand_var = GenerateExpressionCode(
-            op_expr->children[0].get(), code, pipeline_ctx, "unary_op");
+            op_expr->children[0].get(), code, pipeline_ctx, column_map);
 
         switch (op_expr->type) {
             case ExpressionType::OPERATOR_NOT:
@@ -288,7 +303,9 @@ std::string ExpressionCodeGenerator::ConvertValueToCUDALiteral(
         case LogicalTypeId::VARCHAR:
             return "\"" + value.GetValue<string>() + "\"";
         default:
-            return "0";
+            throw NotImplementedException(
+                "Unsupported value type for CUDA literal: " +
+                value.type().ToString());
     }
 }
 

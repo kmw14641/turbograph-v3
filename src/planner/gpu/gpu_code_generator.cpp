@@ -219,16 +219,43 @@ void GpuCodeGenerator::GetReferencedColumns(
             referenced_columns.push_back(ref_expr->index);
             break;
         }
-        case ExpressionClass::BOUND_OPERATOR: {
-            auto op_expr = dynamic_cast<BoundOperatorExpression *>(expr);
-            if (op_expr) {
-                for (auto &child : op_expr->children) {
-                    GetReferencedColumns(child.get(), referenced_columns);
-                }
+        case ExpressionClass::BOUND_BETWEEN: {
+            auto between_expr = dynamic_cast<BoundBetweenExpression *>(expr);
+            GetReferencedColumns(between_expr->input.get(), referenced_columns);
+            break;
+        }
+        case ExpressionClass::BOUND_COMPARISON: {
+            auto comp_expr =
+                dynamic_cast<BoundComparisonExpression *>(expr);
+            GetReferencedColumns(comp_expr->left.get(), referenced_columns);
+            GetReferencedColumns(comp_expr->right.get(), referenced_columns);
+            break;
+        }
+        case ExpressionClass::BOUND_CONSTANT: {
+            // Constants do not reference any columns
+            break;
+        }
+        // case ExpressionClass::BOUND_OPERATOR: {
+        //     auto op_expr = dynamic_cast<BoundOperatorExpression *>(expr);
+        //     if (op_expr) {
+        //         for (auto &child : op_expr->children) {
+        //             GetReferencedColumns(child.get(), referenced_columns);
+        //         }
+        //     }
+        //     break;
+        // }
+        case ExpressionClass::BOUND_CONJUNCTION: {
+            auto conj_expr =
+                dynamic_cast<BoundConjunctionExpression *>(expr);
+            for (size_t i = 0; i < conj_expr->children.size(); i++) {
+                GetReferencedColumns(conj_expr->children[i].get(),
+                                     referenced_columns);
             }
             break;
         }
         default:
+            std::cerr << "Not implemented expression type for column reference "
+                    "extraction: " << (uint8_t)(expr->expression_class) << std::endl;
             throw NotImplementedException(
                 "Not implemented expression type for column reference "
                 "extraction");
@@ -1352,7 +1379,8 @@ void NodeScanCodeGenerator::GenerateCode(
             else {  // FP_COMPLEX
                 ExpressionCodeGenerator expr_gen(context);
                 predicate_string = expr_gen.GenerateConditionCode(
-                    scan_op->filter_expression.get(), code, pipeline_ctx);
+                    scan_op->filter_expression.get(), code, pipeline_ctx,
+                    column_pos_to_name);
             }
 
             code.Add("active = (" + predicate_string + ");");
@@ -1731,9 +1759,11 @@ void FilterCodeGenerator::GenerateCode(
 
     // Generate condition code from the filter expression
     std::string condition_var = "filter_condition";
+    std::unordered_map<uint64_t, std::string> column_pos_to_name;
     if (filter_op->expression) {
-        condition_var = expr_gen.GenerateConditionCode(
-            filter_op->expression.get(), code, pipeline_ctx);
+        condition_var =
+            expr_gen.GenerateConditionCode(filter_op->expression.get(), code,
+                                           pipeline_ctx, column_pos_to_name);
     }
     else {
         // Fallback for missing expression
