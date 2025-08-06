@@ -120,6 +120,122 @@ void GpuCodeGenerator::SplitPipelineIntoSubPipelines(CypherPipeline &pipeline)
     pipeline_context.sub_pipelines.emplace_back(groups);
 }
 
+void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
+{
+    int num_sub_pipelines = pipeline_context.sub_pipelines.size();
+    auto &columns_to_be_materialized =
+        pipeline_context.columns_to_be_materialized;
+    auto &column_types_to_be_materialized =
+        pipeline_context.column_types_to_be_materialized;
+    auto &column_pos_to_be_materialized =
+        pipeline_context.column_pos_to_be_materialized;
+    columns_to_be_materialized.clear();
+    column_types_to_be_materialized.clear();
+    column_pos_to_be_materialized.clear();
+    columns_to_be_materialized.resize(num_sub_pipelines);
+    column_types_to_be_materialized.resize(num_sub_pipelines);
+    column_pos_to_be_materialized.resize(num_sub_pipelines);
+
+    // Analyze each sub-pipeline to determine which columns need to be
+    // materialized
+    for (int sub_idx = 0; sub_idx < num_sub_pipelines; sub_idx++) {
+        auto &sub_pipeline = pipeline_context.sub_pipelines[sub_idx];
+        // Iterate over each operator in the sub-pipeline
+        for (int op_idx = 0; op_idx < sub_pipeline.GetPipelineLength();
+             op_idx++) {
+            auto *op = sub_pipeline.GetIdxOperator(op_idx);
+            auto &input_schema = op->GetSchema();
+            auto &input_column_names = input_schema.getStoredColumnNamesRef();
+            auto &input_column_types = input_schema.getStoredTypesRef();
+
+            switch (op->GetOperatorType()) {
+                case PhysicalOperatorType::NODE_SCAN: {
+                    auto *scan_op = dynamic_cast<PhysicalNodeScan *>(op);
+                    if (!scan_op->is_filter_pushdowned) {
+                        break;
+                    }
+                    std::vector<uint64_t> referenced_columns;
+                    if (scan_op->filter_pushdown_type ==
+                            FilterPushdownType::FP_EQ ||
+                        scan_op->filter_pushdown_type ==
+                            FilterPushdownType::FP_RANGE) {
+                        for (const auto &key_idx :
+                             scan_op->filter_pushdown_key_idxs) {
+                            referenced_columns.push_back(key_idx);
+                        }
+                    }
+                    else {
+                        GetReferencedColumns(scan_op->filter_expression.get(),
+                                             referenced_columns);
+                    }
+                    for (const auto &col_idx : referenced_columns) {
+                        D_ASSERT(col_idx >= 0 &&
+                                 col_idx < input_column_names.size());
+                        // Mark the column as materialized
+                        auto &col_name = input_column_names[col_idx];
+                        columns_to_be_materialized[sub_idx].push_back(col_name);
+                        column_types_to_be_materialized[sub_idx].push_back(
+                            input_column_types[col_idx]);
+                        column_pos_to_be_materialized[sub_idx].push_back(
+                            col_idx);
+                    }
+                    break;
+                }
+                case PhysicalOperatorType::FILTER: {
+                    auto *filter_op = dynamic_cast<PhysicalFilter *>(op);
+                    std::vector<uint64_t> referenced_columns;
+                    GetReferencedColumns(filter_op->expression.get(),
+                                         referenced_columns);
+                    for (const auto &col_idx : referenced_columns) {
+                        D_ASSERT(col_idx >= 0 &&
+                                 col_idx < input_column_names.size());
+                        // Mark the column as materialized
+                        auto &col_name = input_column_names[col_idx];
+                        columns_to_be_materialized[sub_idx].push_back(col_name);
+                        column_types_to_be_materialized[sub_idx].push_back(
+                            input_column_types[col_idx]);
+                        column_pos_to_be_materialized[sub_idx].push_back(
+                            col_idx);
+                    }
+                    break;
+                }
+                case PhysicalOperatorType::PROJECTION: {
+                    // TODO
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+    }
+}
+
+void GpuCodeGenerator::GetReferencedColumns(
+    Expression *expr, std::vector<uint64_t> &referenced_columns)
+{
+    switch (expr->expression_class) {
+        case ExpressionClass::BOUND_REF: {
+            auto ref_expr = dynamic_cast<BoundReferenceExpression *>(expr);
+            referenced_columns.push_back(ref_expr->index);
+            break;
+        }
+        case ExpressionClass::BOUND_OPERATOR: {
+            auto op_expr = dynamic_cast<BoundOperatorExpression *>(expr);
+            if (op_expr) {
+                for (auto &child : op_expr->children) {
+                    GetReferencedColumns(child.get(), referenced_columns);
+                }
+            }
+            break;
+        }
+        default:
+            throw NotImplementedException(
+                "Not implemented expression type for column reference "
+                "extraction");
+            break;
+    }
+}
+
 void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
 {
     CodeBuilder code;
@@ -959,15 +1075,26 @@ void GpuCodeGenerator::GenerateInputCodeForType2(CypherPipeline &sub_pipeline,
 void GpuCodeGenerator::GenerateCodeForMaterialization(
     CodeBuilder &code, PipelineContext &pipeline_context)
 {
-    for (auto i = 0; i < pipeline_context.columns_to_be_materialized.size();
+    int cur_subpipe_idx = pipeline_context.current_sub_pipeline_index;
+    auto &cur_cols_to_be_materialized =
+        pipeline_context.columns_to_be_materialized[cur_subpipe_idx];
+    auto &cur_col_types_to_be_materialized =
+        pipeline_context.column_types_to_be_materialized[cur_subpipe_idx];
+    for (auto i = 0; i < cur_cols_to_be_materialized.size();
          i++) {
-        auto column = pipeline_context.columns_to_be_materialized[i];
+        auto column = cur_cols_to_be_materialized[i];
+        if (pipeline_context.column_materialized.find(column) !=
+            pipeline_context.column_materialized.end()) {
+            // If the column is already materialized, skip it
+            continue;
+        }
         code.Add("// Materialize column: " + column);
         std::string col_name = column;
         std::replace(col_name.begin(), col_name.end(), '.', '_');
         std::string ctype = ConvertLogicalTypeToPrimitiveType(
-            pipeline_context.column_types_to_be_materialized[i]);
+            cur_col_types_to_be_materialized[i]);
         code.Add(ctype + col_name + ";");
+        pipeline_context.column_materialized[column] = true;
     }
 }
 
@@ -979,6 +1106,9 @@ void GpuCodeGenerator::GeneratePipelineCode(CypherPipeline &pipeline,
 
     // Split pipeline into sub-pipelines based on filter operators
     SplitPipelineIntoSubPipelines(pipeline);
+
+    // Analyze sub pipelines and get information for materialization
+    AnalyzeSubPipelinesForMaterialization();
 
     for (size_t i = 0; i < pipeline_context.sub_pipelines.size(); i++) {
         std::cerr << "Generating code for sub-pipeline " << i << std::endl;
@@ -1132,145 +1262,93 @@ void NodeScanCodeGenerator::GenerateCode(
         auto *property_types_id = property_schema_cat_entry->GetTypes();
         auto *extra_infos = property_schema_cat_entry->GetExtraTypeInfos();
 
-        // Get extent IDs from the property schema
-        for (size_t extent_idx = 0;
-             extent_idx < property_schema_cat_entry->extent_ids.size();
-             extent_idx++) {
-            if (extent_idx != 0) continue; // TODO
-            idx_t extent_id = property_schema_cat_entry->extent_ids[extent_idx];
+        // We need to generate code for materializing required columns
+        auto &columns_to_materialize =
+            pipeline_ctx.columns_to_be_materialized
+                [pipeline_ctx.current_sub_pipeline_index];
+        auto &column_types_to_materialize =
+            pipeline_ctx.column_types_to_be_materialized
+                [pipeline_ctx.current_sub_pipeline_index];
+        auto &column_pos_to_materialize =
+            pipeline_ctx.column_pos_to_be_materialized
+                [pipeline_ctx.current_sub_pipeline_index];
+        for (size_t i = 0; i < columns_to_materialize.size(); i++) {
+            auto &col_name = columns_to_materialize[i];
+            auto col_type = column_types_to_materialize[i];
+            auto col_pos = column_pos_to_materialize[i];
 
-            // Generate table name
-            std::string table_name =
-                "gr" + std::to_string(oid) + "_ext" + std::to_string(extent_id);
+            // Generate code for materializing this column
+            std::string col_name_fixed = col_name;
+            std::replace(col_name_fixed.begin(), col_name_fixed.end(), '.', '_');
+            code.Add(col_name_fixed + " = " + graphlet_name + "_col_" +
+                     std::to_string(col_pos - 1) + "_data[" +
+                     pipeline_ctx.current_tid_name + "];");
+        }
 
-            // Get extent catalog entry to access chunks (columns)
-            ExtentCatalogEntry *extent_cat_entry =
-                (ExtentCatalogEntry *)catalog.GetEntry(
-                    context, CatalogType::EXTENT_ENTRY, DEFAULT_SCHEMA,
-                    DEFAULT_EXTENT_PREFIX + std::to_string(extent_id));
-            D_ASSERT(extent_cat_entry != nullptr);
-
-            uint64_t tuple_id_base = extent_id;
-            tuple_id_base <<= 32;
-            // Generate scan loop for this extent
-            std::string count_param_name = table_name + "_count";
-            code.Add("// Process extent " + std::to_string(extent_id) +
-                     " (property " + std::to_string(oid) + ")");
-
-            // // lazy materialization
-            // code.Add("// lazy materialization");
-            // code.Add("unsigned long long tuple_id_base = " +
-            //          std::to_string(tuple_id_base) + ";");
-            // code.Add(
-            //     "unsigned long long tuple_id = tuple_id_base "
-            //     "+ tid;");
-
-            // Declare input column pointers for lazy materialization
-            // code.Add("// Declare input column pointers");
-
-            // for (size_t chunk_idx = 0;
-            //      chunk_idx < scan_op->scan_projection_mapping[oid_idx].size();
-            //      chunk_idx++) {
-
-            //     auto column_idx =
-            //         scan_op->scan_projection_mapping[oid_idx][chunk_idx];
-            //     if (column_idx == 0)
-            //         continue;  // _id column
-            //     // type extract
-            //     LogicalTypeId type_id =
-            //         (LogicalTypeId)property_types_id->at(column_idx - 1);
-            //     uint16_t extra_info = extra_infos->at(column_idx - 1);
-            //     std::string ctype = code_gen->ConvertLogicalTypeIdToPrimitiveType(
-            //         type_id, extra_info);
-
-            //     // Generate column name based on chunk index
-            //     std::string col_name = "col_" + std::to_string(column_idx - 1);
-
-            //     // Generate parameter names based on verbose mode
-            //     std::string param_name;
-            //     param_name = graphlet_name + "_" + col_name;
-
-            //     // Declare the pointer
-            //     code.Add(ctype + "* " + param_name + "_ptr = static_cast<" +
-            //              ctype + "*>(" + param_name + "_data);");
-
-            //     // Add to lazy materialization tracking
-            //     pipeline_ctx.input_column_names.push_back(param_name);
-            //     pipeline_ctx.column_materialized[param_name] = false;
-            // }
-
-            if (scan_op->is_filter_pushdowned) {
-                std::string predicate_string = "";
-                // Generate predicate string for filter pushdown
-                if (scan_op->filter_pushdown_type ==
-                    FilterPushdownType::FP_EQ) {
-                    for (auto i = 0;
-                         i < scan_op->filter_pushdown_key_idxs.size(); i++) {
-                        if (i > 0) {
-                            predicate_string += " && ";
-                        }
-                        auto key_idx = scan_op->filter_pushdown_key_idxs[i];
-                        std::string attr_name = table_name + "_col_" +
-                                                std::to_string(key_idx - 1) +
-                                                "_ptr";
-                        if (key_idx >= 0) {
-                            auto value_str =
-                                scan_op->eq_filter_pushdown_values[i]
-                                    .ToString();
-                            predicate_string += (attr_name + "[" +
-                                                 pipeline_ctx.current_tid_name +
-                                                 "] == " + value_str);
-                        }
+        if (scan_op->is_filter_pushdowned) {
+            code.Add("// Pushdowned filter for scan operator");
+            std::string predicate_string = "";
+            // Generate predicate string for filter pushdown
+            if (scan_op->filter_pushdown_type == FilterPushdownType::FP_EQ) {
+                for (auto i = 0; i < scan_op->filter_pushdown_key_idxs.size();
+                     i++) {
+                    if (i > 0) {
+                        predicate_string += " && ";
                     }
+                    auto key_idx = scan_op->filter_pushdown_key_idxs[i];
+                    if (key_idx < 0) continue;
+                    // TODO change below attr_name
+                    std::string attr_name = graphlet_name + "_col_" +
+                                            std::to_string(key_idx - 1) +
+                                            "_ptr";
+                    auto value_str =
+                        scan_op->eq_filter_pushdown_values[i].ToString();
+                    predicate_string +=
+                        (attr_name + "[" + pipeline_ctx.current_tid_name +
+                         "] == " + value_str);
                 }
-                else if (scan_op->filter_pushdown_type ==
-                         FilterPushdownType::FP_RANGE) {
-                    for (auto i = 0;
-                         i < scan_op->filter_pushdown_key_idxs.size(); i++) {
-                        if (i > 0) {
-                            predicate_string += " && ";
-                        }
-                        auto key_idx = scan_op->filter_pushdown_key_idxs[i];
-                        std::string attr_name = table_name + "_col_" +
-                                                std::to_string(key_idx - 1) +
-                                                "_ptr";
-                        if (key_idx >= 0) {
-                            auto left_value_str =
-                                scan_op->range_filter_pushdown_values[i]
-                                    .l_value.ToString();
-                            auto right_value_str =
-                                scan_op->range_filter_pushdown_values[i]
-                                    .r_value.ToString();
-                            predicate_string +=
-                                scan_op->range_filter_pushdown_values[i]
-                                        .l_inclusive
-                                    ? (attr_name + "[" +
-                                       pipeline_ctx.current_tid_name +
-                                       "] >= " + left_value_str)
-                                    : (attr_name + "[" +
-                                       pipeline_ctx.current_tid_name + "] > " +
-                                       left_value_str);
-                            predicate_string += " && ";
-                            predicate_string +=
-                                scan_op->range_filter_pushdown_values[i]
-                                        .r_inclusive
-                                    ? (attr_name + "[" +
-                                       pipeline_ctx.current_tid_name +
-                                       "] <= " + right_value_str)
-                                    : (attr_name + "[" +
-                                       pipeline_ctx.current_tid_name + "] < " +
-                                       right_value_str);
-                        }
-                    }
-                }
-                else {  // FP_COMPLEX
-                    ExpressionCodeGenerator expr_gen(context);
-                    predicate_string = expr_gen.GenerateConditionCode(
-                        scan_op->filter_expression.get(), code, pipeline_ctx);
-                }
-
-                code.Add("active = (" + predicate_string + ");");
             }
+            else if (scan_op->filter_pushdown_type ==
+                     FilterPushdownType::FP_RANGE) {
+                for (auto i = 0; i < scan_op->filter_pushdown_key_idxs.size();
+                     i++) {
+                    if (i > 0) {
+                        predicate_string += " && ";
+                    }
+                    auto key_idx = scan_op->filter_pushdown_key_idxs[i];
+                    if (key_idx < 0) continue;
+                    // TODO change below attr_name
+                    std::string attr_name = graphlet_name + "_col_" +
+                                            std::to_string(key_idx - 1) +
+                                            "_ptr";
+                    auto left_value_str =
+                        scan_op->range_filter_pushdown_values[i]
+                            .l_value.ToString();
+                    auto right_value_str =
+                        scan_op->range_filter_pushdown_values[i]
+                            .r_value.ToString();
+                    predicate_string +=
+                        scan_op->range_filter_pushdown_values[i].l_inclusive
+                            ? (attr_name + "[" + pipeline_ctx.current_tid_name +
+                               "] >= " + left_value_str)
+                            : (attr_name + "[" + pipeline_ctx.current_tid_name +
+                               "] > " + left_value_str);
+                    predicate_string += " && ";
+                    predicate_string +=
+                        scan_op->range_filter_pushdown_values[i].r_inclusive
+                            ? (attr_name + "[" + pipeline_ctx.current_tid_name +
+                               "] <= " + right_value_str)
+                            : (attr_name + "[" + pipeline_ctx.current_tid_name +
+                               "] < " + right_value_str);
+                }
+            }
+            else {  // FP_COMPLEX
+                ExpressionCodeGenerator expr_gen(context);
+                predicate_string = expr_gen.GenerateConditionCode(
+                    scan_op->filter_expression.get(), code, pipeline_ctx);
+            }
+
+            code.Add("active = (" + predicate_string + ");");
         }
     }
 }
@@ -1294,12 +1372,12 @@ void ProjectionCodeGenerator::GenerateCode(
         GenerateProjectionExpressionCode(expr.get(), expr_idx, code, code_gen,
                                          context, pipeline_ctx);
 
-        // Mark the output column as materialized
-        if (expr_idx < pipeline_ctx.output_column_names.size()) {
-            std::string output_col_name =
-                pipeline_ctx.output_column_names[expr_idx];
-            pipeline_ctx.column_materialized[output_col_name] = true;
-        }
+        // // Mark the output column as materialized
+        // if (expr_idx < pipeline_ctx.output_column_names.size()) {
+        //     std::string output_col_name =
+        //         pipeline_ctx.output_column_names[expr_idx];
+        //     pipeline_ctx.column_materialized[output_col_name] = true;
+        // }
     }
 }
 
@@ -2144,66 +2222,13 @@ void PipelineContext::AdvanceOperator()
 {
     cur_op_idx++;
     D_ASSERT(cur_op_idx >= 0 && cur_op_idx < total_operators);
-    columns_to_be_materialized.clear();
-    column_types_to_be_materialized.clear();
+    // columns_to_be_materialized.clear();
+    // column_types_to_be_materialized.clear();
 
     auto *current_op = current_pipeline->GetIdxOperator(cur_op_idx);
     auto &input_schema = current_op->GetSchema();
     auto &input_column_names = input_schema.getStoredColumnNamesRef();
     auto &input_column_types = input_schema.getStoredTypesRef();
-
-    // analyze the current operator for materialization
-    switch(current_op->GetOperatorType()) {
-        case PhysicalOperatorType::NODE_SCAN: {
-            auto *scan_op = dynamic_cast<PhysicalNodeScan *>(current_op);
-            if (!scan_op->is_filter_pushdowned) {
-                break;
-            }
-            std::vector<uint64_t> referenced_columns;
-            if (scan_op->filter_pushdown_type == FilterPushdownType::FP_EQ ||
-                scan_op->filter_pushdown_type == FilterPushdownType::FP_RANGE) {
-                for (const auto &key_idx : scan_op->filter_pushdown_key_idxs) {
-                    referenced_columns.push_back(key_idx);
-                }
-            }
-            else {
-                GetReferencedColumns(scan_op->filter_expression.get(),
-                                     referenced_columns);
-            }
-            for (const auto &col_idx : referenced_columns) {
-                D_ASSERT(col_idx >= 0 && col_idx < input_column_names.size());
-                // Mark the column as materialized
-                auto &col_name = input_column_names[col_idx];
-                column_materialized[col_name] = true;
-                columns_to_be_materialized.push_back(col_name);
-                column_types_to_be_materialized.push_back(
-                    input_column_types[col_idx]);
-            }
-            break;
-        }
-        case PhysicalOperatorType::FILTER: {
-            auto *filter_op = dynamic_cast<PhysicalFilter *>(current_op);
-            std::vector<uint64_t> referenced_columns;
-            GetReferencedColumns(filter_op->expression.get(),
-                                 referenced_columns);
-            for (const auto &col_idx : referenced_columns) {
-                D_ASSERT(col_idx >= 0 && col_idx < input_column_names.size());
-                // Mark the column as materialized
-                auto &col_name = input_column_names[col_idx];
-                column_materialized[col_name] = true;
-                columns_to_be_materialized.push_back(col_name);
-                column_types_to_be_materialized.push_back(
-                    input_column_types[col_idx]);
-            }
-            break;
-        }
-        case PhysicalOperatorType::PROJECTION: {
-            // TODO
-            break;
-        }
-        default:
-            break;
-    }
 
     // Update input schema from previous operator
     if (cur_op_idx > 0 && operator_column_names[cur_op_idx - 1] &&
@@ -2225,31 +2250,6 @@ void PipelineContext::AdvanceOperator()
     else {
         output_column_names.clear();
         output_column_types.clear();
-    }
-}
-
-void PipelineContext::GetReferencedColumns(
-    Expression *expr, std::vector<uint64_t> &referenced_columns)
-{
-    switch (expr->expression_class) {
-        case ExpressionClass::BOUND_REF: {
-            auto ref_expr = dynamic_cast<BoundReferenceExpression *>(expr);
-            referenced_columns.push_back(ref_expr->index);
-            break;
-        }
-        case ExpressionClass::BOUND_OPERATOR: {
-            auto op_expr = dynamic_cast<BoundOperatorExpression *>(expr);
-            if (op_expr) {
-                for (auto &child : op_expr->children) {
-                    GetReferencedColumns(child.get(), referenced_columns);
-                }
-            }
-            break;
-        }
-        default:
-            throw NotImplementedException(
-                "Not implemented expression type for column reference extraction");
-            break;
     }
 }
 

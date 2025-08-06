@@ -62,8 +62,11 @@ struct PipelineContext {
 
     // Materialization status for each column (logical level)
     std::unordered_map<std::string, bool> column_materialized;
-    std::vector<std::string> columns_to_be_materialized;
-    std::vector<LogicalType> column_types_to_be_materialized;
+    // std::vector<std::string> columns_to_be_materialized;
+    // std::vector<LogicalType> column_types_to_be_materialized;
+    std::vector<std::vector<std::string>> columns_to_be_materialized;
+    std::vector<std::vector<LogicalType>> column_types_to_be_materialized;
+    std::vector<std::vector<uint64_t>> column_pos_to_be_materialized;
 
     // Track which columns are actually used in expressions
     std::unordered_set<std::string> used_columns;
@@ -77,9 +80,6 @@ struct PipelineContext {
 
     // Move to next operator and update current schemas
     void AdvanceOperator();
-
-    void GetReferencedColumns(Expression *expr,
-                              std::vector<uint64_t> &referenced_columns);
 };
 
 } // namespace duckdb

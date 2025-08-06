@@ -307,6 +307,9 @@ class GpuCodeGenerator {
     void ExtractOutputSchema(CypherPhysicalOperator *op);
     void TrackColumnUsage(Expression *expr);
 
+    void GetReferencedColumns(Expression *expr,
+                              std::vector<uint64_t> &referenced_columns);
+
    private:
     ClientContext &context;
     GpuKernelArgs kernel_args;  // GPU kernel configuration
@@ -358,6 +361,9 @@ class GpuCodeGenerator {
 
     // Split pipeline into sub-pipelines
     void SplitPipelineIntoSubPipelines(CypherPipeline &pipeline);
+
+    // Analyze sub-pipelines for materialization
+    void AnalyzeSubPipelinesForMaterialization();
 
     // Schema analysis
     void ExtractInputSchema(CypherPhysicalOperator *op, PipelineContext &ctx);
