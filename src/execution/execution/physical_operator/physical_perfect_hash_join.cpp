@@ -138,7 +138,6 @@ class PerfectHashJoinOperatorState : public OperatorState {
     ExpressionExecutor probe_executor;
     //! The scan structure used to scan the HT after probing
     unique_ptr<JoinHashTable::ScanStructure> scan_structure;
-    unique_ptr<OperatorState> perfect_hash_join_state;
 
    public:
     void Finalize(PhysicalOperator *op, ExecutionContext &context) override
@@ -151,10 +150,6 @@ unique_ptr<OperatorState> PhysicalPerfectHashJoin::GetOperatorState(
     ExecutionContext &context) const
 {
     auto state = make_unique<PerfectHashJoinOperatorState>();
-    // auto &sink = (PerfectHashJoinLocalSinkState &)*sink_state;
-    // if (sink.perfect_join_executor) {
-    // 	state->perfect_hash_join_state = sink.perfect_join_executor->GetOperatorState(context);
-    // } else {
     state->join_keys.Initialize(condition_types);
     for (auto &cond : conditions) {
         state->probe_executor.AddExpression(*cond.left);
