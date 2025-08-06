@@ -223,6 +223,7 @@ void InitStatisticsPerLvlHost(StatisticsPerLvl *stats, unsigned int num_warps,
         if (i > 0 || num_inodes_at_zero == 0)
             continue;
 
+        // round-robin based partitioining
         int num_inodes_of_last_block = num_inodes_at_zero % 32;
         if (num_inodes_of_last_block == 0)
             num_inodes_of_last_block = 32;

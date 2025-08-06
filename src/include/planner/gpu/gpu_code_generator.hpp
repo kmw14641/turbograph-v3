@@ -267,16 +267,16 @@ class GpuCodeGenerator {
                                    CodeBuilder &code);
 
     // Generate input code for a specific type
-    void GenerateInputCode(CypherPhysicalOperator *op, CodeBuilder &code,
+    void GenerateInputCode(CypherPipeline &sub_pipeline, CodeBuilder &code,
                            PipelineContext &pipeline_ctx,
                            PipeInputType input_type);
-    void GenerateInputCodeForType0(CypherPhysicalOperator *op,
+    void GenerateInputCodeForType0(CypherPipeline &sub_pipeline,
                                    CodeBuilder &code,
                                    PipelineContext &pipeline_ctx);
-    void GenerateInputCodeForType1(CypherPhysicalOperator *op,
+    void GenerateInputCodeForType1(CypherPipeline &sub_pipeline,
                                    CodeBuilder &code,
                                    PipelineContext &pipeline_ctx);
-    void GenerateInputCodeForType2(CypherPhysicalOperator *op,
+    void GenerateInputCodeForType2(CypherPipeline &sub_pipeline,
                                    CodeBuilder &code,
                                    PipelineContext &pipeline_ctx);
 
@@ -291,14 +291,16 @@ class GpuCodeGenerator {
         CypherPipeline &pipeline, CodeBuilder &code);
     void GenerateCopyCodeForAdaptiveWorkSharingPush(
         CypherPipeline &pipeline, CodeBuilder &code);
-    
+
+    void GenerateCodeForMaterialization(CodeBuilder &code,
+                                        PipelineContext &pipeline_context);
+
     void GenerateDeclarationInHostCode(CodeBuilder &code);
     void GenerateKernelCallInHostCode(CodeBuilder &code);
 
     // Pipeline context management
-    void InitializePipelineContext(const CypherPipeline &pipeline);
-    void MoveToOperator(int op_idx);
-    void AnalyzeOperatorDependencies(CypherPhysicalOperator *op);
+    void InitializePipelineContext(CypherPipeline &pipeline);
+    void AdvanceOperator();
 
     // Schema analysis
     void ExtractInputSchema(CypherPhysicalOperator *op);
