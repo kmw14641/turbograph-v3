@@ -1272,6 +1272,7 @@ void NodeScanCodeGenerator::GenerateCode(
         auto &column_pos_to_materialize =
             pipeline_ctx.column_pos_to_be_materialized
                 [pipeline_ctx.current_sub_pipeline_index];
+        std::unordered_map<uint64_t, std::string> column_pos_to_name;
         for (size_t i = 0; i < columns_to_materialize.size(); i++) {
             auto &col_name = columns_to_materialize[i];
             auto col_type = column_types_to_materialize[i];
@@ -1283,6 +1284,7 @@ void NodeScanCodeGenerator::GenerateCode(
             code.Add(col_name_fixed + " = " + graphlet_name + "_col_" +
                      std::to_string(col_pos - 1) + "_data[" +
                      pipeline_ctx.current_tid_name + "];");
+            column_pos_to_name[col_pos] = col_name_fixed;
         }
 
         if (scan_op->is_filter_pushdowned) {
@@ -1296,16 +1298,19 @@ void NodeScanCodeGenerator::GenerateCode(
                         predicate_string += " && ";
                     }
                     auto key_idx = scan_op->filter_pushdown_key_idxs[i];
-                    if (key_idx < 0) continue;
-                    // TODO change below attr_name
-                    std::string attr_name = graphlet_name + "_col_" +
-                                            std::to_string(key_idx - 1) +
-                                            "_ptr";
+                    if (key_idx < 0)
+                        continue;
+
+                    auto it = column_pos_to_name.find(key_idx);
+                    if (it == column_pos_to_name.end()) {
+                        throw std::runtime_error(
+                            "Column position not found in materialized "
+                            "columns");
+                    }
+                    std::string attr_name = it->second;
                     auto value_str =
                         scan_op->eq_filter_pushdown_values[i].ToString();
-                    predicate_string +=
-                        (attr_name + "[" + pipeline_ctx.current_tid_name +
-                         "] == " + value_str);
+                    predicate_string += (attr_name + " == " + value_str);
                 }
             }
             else if (scan_op->filter_pushdown_type ==
@@ -1316,11 +1321,17 @@ void NodeScanCodeGenerator::GenerateCode(
                         predicate_string += " && ";
                     }
                     auto key_idx = scan_op->filter_pushdown_key_idxs[i];
-                    if (key_idx < 0) continue;
-                    // TODO change below attr_name
-                    std::string attr_name = graphlet_name + "_col_" +
-                                            std::to_string(key_idx - 1) +
-                                            "_ptr";
+                    if (key_idx < 0)
+                        continue;
+
+                    auto it = column_pos_to_name.find(key_idx);
+                    if (it == column_pos_to_name.end()) {
+                        throw std::runtime_error(
+                            "Column position not found in materialized "
+                            "columns");
+                    }
+                    std::string attr_name = it->second;
+
                     auto left_value_str =
                         scan_op->range_filter_pushdown_values[i]
                             .l_value.ToString();
@@ -1329,17 +1340,13 @@ void NodeScanCodeGenerator::GenerateCode(
                             .r_value.ToString();
                     predicate_string +=
                         scan_op->range_filter_pushdown_values[i].l_inclusive
-                            ? (attr_name + "[" + pipeline_ctx.current_tid_name +
-                               "] >= " + left_value_str)
-                            : (attr_name + "[" + pipeline_ctx.current_tid_name +
-                               "] > " + left_value_str);
+                            ? (attr_name + " >= " + left_value_str)
+                            : (attr_name + " > " + left_value_str);
                     predicate_string += " && ";
                     predicate_string +=
                         scan_op->range_filter_pushdown_values[i].r_inclusive
-                            ? (attr_name + "[" + pipeline_ctx.current_tid_name +
-                               "] <= " + right_value_str)
-                            : (attr_name + "[" + pipeline_ctx.current_tid_name +
-                               "] < " + right_value_str);
+                            ? (attr_name + " <= " + right_value_str)
+                            : (attr_name + " < " + right_value_str);
                 }
             }
             else {  // FP_COMPLEX
