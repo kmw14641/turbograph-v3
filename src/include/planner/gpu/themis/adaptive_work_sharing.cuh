@@ -1,6 +1,19 @@
+#ifdef __CUDACC_RTC__
 #include "themis.cuh"
+#endif
 namespace Themis {
 
+#ifndef __CUDACC_RTC__
+int CalculateOrderInHost(int cnt)
+{
+    // if cnt is zero --> order is -1
+    // if cnt < 32 --> order is 0
+    // if cnt < 64 --> order is 1
+    return cnt <= 0 ? -1 : 32 - __builtin_clz(cnt >> 5);
+}
+#endif
+
+#ifdef __CUDACC_RTC__
 __device__ __forceinline__ int CalculateOrder(int cnt)
 {
     // if cnt is zero --> order is -1
@@ -8,14 +21,6 @@ __device__ __forceinline__ int CalculateOrder(int cnt)
     // if cnt < 64 --> order is 1
     return cnt <= 0 ? -1 : 32 - __clz(cnt >> 5);
 }
-
-// int CalculateOrderInHost(int cnt)
-// {
-//     // if cnt is zero --> order is -1
-//     // if cnt < 32 --> order is 0
-//     // if cnt < 64 --> order is 1
-//     return cnt <= 0 ? -1 : 32 - clz(cnt >> 5);
-// }
 
 //order: 0 --> 1 <= cnt < 32
 //order: 1 --> cnt >= 32 & cnt < 64
@@ -29,6 +34,7 @@ __device__ __forceinline__ int CalculateUpperBoundOfOrder(int8_t order)
 {
     return 0x20 << (order);
 }
+#endif
 
 struct StatisticsPerLvl {
     unsigned long long cnt;
@@ -42,6 +48,7 @@ struct StatisticsPerLvl {
     unsigned long long max_inodes_cnt;
 };
 
+#ifdef __CUDACC_RTC__
 __global__ void krnl_InitStatisticsPerLvlPtr(StatisticsPerLvl *stats,
                                              unsigned int num_warps,
                                              int *num_inodes_at_zero_ptr,
@@ -188,19 +195,64 @@ __global__ void krnl_InitStatisticsPerLvl(
     //printf("stats[0].max_order: %d, num_warps: %d, num_inodex_at_zero: %d\n", stats[0].max_order, stats[0].num_warps, num_inodes_at_zero);
 }
 
-#ifndef __CUDACC_RTC__
-void InitStatisticsPerLvl(StatisticsPerLvl *stats, unsigned int num_warps,
-                          int num_inodes_at_zero, int depth)
-{
-    krnl_InitStatisticsPerLvl<<<1, 128>>>(stats, num_warps, num_inodes_at_zero,
-                                          depth);
-}
+// void InitStatisticsPerLvl(StatisticsPerLvl *stats, unsigned int num_warps,
+//                           int num_inodes_at_zero, int depth)
+// {
+//     krnl_InitStatisticsPerLvl<<<1, 128>>>(stats, num_warps, num_inodes_at_zero,
+//                                           depth);
+// }
 
-void InitStatisticsPerLvlPtr(StatisticsPerLvl *stats, unsigned int num_warps,
-                             int *num_inodes_at_zero_ptr, int depth)
+// void InitStatisticsPerLvlPtr(StatisticsPerLvl *stats, unsigned int num_warps,
+//                              int *num_inodes_at_zero_ptr, int depth)
+// {
+//     krnl_InitStatisticsPerLvlPtr<<<1, 128>>>(stats, num_warps,
+//                                              num_inodes_at_zero_ptr, depth);
+// }
+#endif
+
+#ifndef __CUDACC_RTC__
+void InitStatisticsPerLvlHost(StatisticsPerLvl *stats, unsigned int num_warps,
+                              int num_inodes_at_zero, int depth)
 {
-    krnl_InitStatisticsPerLvlPtr<<<1, 128>>>(stats, num_warps,
-                                             num_inodes_at_zero_ptr, depth);
+    for (int i = 0; i < depth; ++i) {
+        if (i >= depth) break;
+
+        stats[i].max_order = (i == 0 ? 0 : 31);
+        stats[i].num_warps = 0;
+
+        if (i > 0 || num_inodes_at_zero == 0)
+            continue;
+
+        // round-robin based partitioining
+        int num_inodes_of_last_block = num_inodes_at_zero % 32;
+        if (num_inodes_of_last_block == 0)
+            num_inodes_of_last_block = 32;
+
+        int num_blocks = (num_inodes_at_zero + 31) / 32;
+
+        int idx_case_1 = (num_blocks + num_warps - 1) % num_warps;
+        int num_case_0 = idx_case_1;
+        int num_inodes_of_case_0 = 32 * ((num_blocks - 1) / num_warps) + 32;
+        int8_t order = CalculateOrderInHost(num_inodes_of_case_0);
+
+        stats[0].max_order = order;
+        stats[0].sub_num_warps[order] = num_case_0;
+
+        int num_case_1 = 1;
+        int num_inodes_of_case_1 =
+            32 * ((num_blocks - 1) / num_warps) + num_inodes_of_last_block;
+        order = CalculateOrderInHost(num_inodes_of_case_1);
+        stats[0].sub_num_warps[order] += num_case_1;
+
+        int num_case_2 = num_warps - num_case_0 - 1;
+        int num_inodes_of_case_2 = 32 * ((num_blocks - 1) / num_warps);
+        order = CalculateOrderInHost(num_inodes_of_case_2);
+        stats[0].sub_num_warps[order] += num_case_2;
+
+        stats[0].num_warps = (num_inodes_of_case_2 > 0)
+                                 ? num_warps
+                                 : num_case_0 + 1;
+    }
 }
 
 void InitStatisticsPerLvl(StatisticsPerLvl *&device_stats,
@@ -239,6 +291,7 @@ void PrintStatisticsPerLvl(StatisticsPerLvl *device_stats,
 }
 #endif
 
+#ifdef __CUDACC_RTC__
 struct LocalLevelAndOrderInfo {
     int8_t locally_lowest_lvl;
     int8_t globally_lowest_lvl;
@@ -604,7 +657,9 @@ __device__ void Wait(int &gpart_id, int &busy_warp_id, int warp_id,
     busy_warp_id = __shfl_sync(ALL_LANES, busy_warp_id, 0);
     lowest_lvl = __shfl_sync(ALL_LANES, lowest_lvl, 0);
 }
+#endif
 
+#ifdef __CUDACC_RTC__
 namespace WorkloadTracking {
 
 __device__ __forceinline__ void UpdateWorkloadSizeOfIdleWarpAfterPush(
@@ -810,4 +865,5 @@ __device__ __forceinline__ void InitLocalWorkloadSize(
     local_info.globally_lowest_lvl = lvl;
 }
 }  // namespace WorkloadTracking
+#endif
 }  // namespace Themis

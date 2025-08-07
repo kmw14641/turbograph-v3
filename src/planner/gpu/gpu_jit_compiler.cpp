@@ -146,6 +146,7 @@ std::vector<std::unique_ptr<llvm::Module>> GpuJitCompiler::CompileToIR(
         "-isystem", "/usr/local/cuda/include",
         "-isystem", "/usr/include",
         "-isystem", "/usr/include/x86_64-linux-gnu",
+        "-isystem", "/turbograph-v3/src/include/planner/gpu/themis/",
         "-I", project_include_path.c_str(),  // Use dynamic include path
         "-emit-llvm", "-c"
     };
@@ -227,20 +228,21 @@ bool GpuJitCompiler::AddCudaRuntimeSymbols()
     using FnSync = cudaError_t (*)();
     using FnErrStr = const char *(*)(cudaError_t);
     // using FnCfg = cudaError_t (*)(...);
-    using FnMemcpy = cudaError_t (*)(void*, const void*, size_t, cudaMemcpyKind);
+    using FnMemcpy =
+        cudaError_t (*)(void *, const void *, size_t, cudaMemcpyKind);
+    using FnMemset = cudaError_t (*)(void *, int, size_t);
 
     struct Pair {
         const char *name;
         void *addr;
-    } tbl[] = {
-        {"cudaMalloc", to_void(static_cast<FnMalloc>(&cudaMalloc))},
-        {"cudaFree", to_void(static_cast<FnFree>(&cudaFree))},
-        {"cudaDeviceSynchronize",
-         to_void(static_cast<FnSync>(&cudaDeviceSynchronize))},
-        {"cudaGetErrorString",
-         to_void(static_cast<FnErrStr>(&cudaGetErrorString))},
-        {"cudaMemcpy", to_void(static_cast<FnMemcpy>(&cudaMemcpy))}
-    };
+    } tbl[] = {{"cudaMalloc", to_void(static_cast<FnMalloc>(&cudaMalloc))},
+               {"cudaFree", to_void(static_cast<FnFree>(&cudaFree))},
+               {"cudaDeviceSynchronize",
+                to_void(static_cast<FnSync>(&cudaDeviceSynchronize))},
+               {"cudaGetErrorString",
+                to_void(static_cast<FnErrStr>(&cudaGetErrorString))},
+               {"cudaMemcpy", to_void(static_cast<FnMemcpy>(&cudaMemcpy))},
+               {"cudaMemset", to_void(static_cast<FnMemset>(&cudaMemset))}};
 
     llvm::orc::SymbolMap smap;
     for (auto &p : tbl)
@@ -358,6 +360,7 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, CUfunctio
         "-isystem", "/usr/local/cuda/include",
         "-isystem", "/usr/include",
         "-isystem", "/usr/include/x86_64-linux-gnu",
+        "-isystem", "/turbograph-v3/src/include/planner/gpu/themis/",
         "-I", project_include_path.c_str(),  // Use dynamic include path
         "-emit-llvm", "-c"
     };

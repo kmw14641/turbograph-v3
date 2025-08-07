@@ -95,6 +95,18 @@ struct PointerMapping {
     ChunkDefinitionID cid;  // Chunk ID for GPU chunk cache manager
 };
 
+struct ScanColumnInfo {
+    ScanColumnInfo() : get_physical_id_column(false), graphlet_id(0) {}
+    bool get_physical_id_column = false;
+    uint64_t graphlet_id;
+    std::vector<ExtentID> extent_ids;
+    std::vector<uint64_t> num_tuples_per_extent;
+    std::vector<uint64_t> col_position;
+    std::vector<uint64_t> col_type_size;
+    std::vector<std::string> col_name;
+    std::vector<std::vector<ChunkDefinitionID>> chunk_ids;
+};
+
 enum class PipeInputType : uint8_t {
     TYPE_0, // scan
     TYPE_1, // multi
@@ -206,7 +218,11 @@ class GpuCodeGenerator {
         return kernel_args;
     }
 
-    std::string ConvertLogicalTypeToPrimitiveType(LogicalTypeId type_id);
+    LogicalType GetLogicalTypeFromId(LogicalTypeId type_id,
+                                     uint16_t extra_info = 0);
+    std::string ConvertLogicalTypeToPrimitiveType(LogicalType &type);
+    std::string ConvertLogicalTypeIdToPrimitiveType(LogicalTypeId type_id,
+                                                    uint16_t extra_info);
 
     // Set whether this kernel needs to be repeatable
     void SetRepeatable(bool repeatable) { is_repeatable = repeatable; }
@@ -227,6 +243,12 @@ class GpuCodeGenerator {
         return pointer_mappings;
     }
 
+    // Get scan column information
+    const std::vector<ScanColumnInfo> &GetScanColumnInfos() const
+    {
+        return scan_column_infos;
+    }
+
     // Cleanup resources
     void Cleanup();
 
@@ -245,16 +267,16 @@ class GpuCodeGenerator {
                                    CodeBuilder &code);
 
     // Generate input code for a specific type
-    void GenerateInputCode(CypherPhysicalOperator *op, CodeBuilder &code,
+    void GenerateInputCode(CypherPipeline &sub_pipeline, CodeBuilder &code,
                            PipelineContext &pipeline_ctx,
                            PipeInputType input_type);
-    void GenerateInputCodeForType0(CypherPhysicalOperator *op,
+    void GenerateInputCodeForType0(CypherPipeline &sub_pipeline,
                                    CodeBuilder &code,
                                    PipelineContext &pipeline_ctx);
-    void GenerateInputCodeForType1(CypherPhysicalOperator *op,
+    void GenerateInputCodeForType1(CypherPipeline &sub_pipeline,
                                    CodeBuilder &code,
                                    PipelineContext &pipeline_ctx);
-    void GenerateInputCodeForType2(CypherPhysicalOperator *op,
+    void GenerateInputCodeForType2(CypherPipeline &sub_pipeline,
                                    CodeBuilder &code,
                                    PipelineContext &pipeline_ctx);
 
@@ -270,15 +292,23 @@ class GpuCodeGenerator {
     void GenerateCopyCodeForAdaptiveWorkSharingPush(
         CypherPipeline &pipeline, CodeBuilder &code);
 
+    void GenerateCodeForMaterialization(CodeBuilder &code,
+                                        PipelineContext &pipeline_context);
+
+    void GenerateDeclarationInHostCode(CodeBuilder &code);
+    void GenerateKernelCallInHostCode(CodeBuilder &code);
+
     // Pipeline context management
-    void InitializePipelineContext(const CypherPipeline &pipeline);
-    void MoveToOperator(int op_idx);
-    void AnalyzeOperatorDependencies(CypherPhysicalOperator *op);
+    void InitializePipelineContext(CypherPipeline &pipeline);
+    void AdvanceOperator();
 
     // Schema analysis
     void ExtractInputSchema(CypherPhysicalOperator *op);
     void ExtractOutputSchema(CypherPhysicalOperator *op);
     void TrackColumnUsage(Expression *expr);
+
+    void GetReferencedColumns(Expression *expr,
+                              std::vector<uint64_t> &referenced_columns);
 
    private:
     ClientContext &context;
@@ -298,15 +328,17 @@ class GpuCodeGenerator {
 
     std::unique_ptr<GpuJitCompiler> jit_compiler;
 
-    bool do_inter_warp_lb = true;
     bool is_compiled;
     bool is_repeatable;
     bool verbose_mode = true;  // Control parameter naming style
+    bool do_inter_warp_lb = true;
     bool doWorkoadSizeTracking = false;
+    bool generateInputPtrMapping = true;
     int tsWidth = 32;
     std::string idleWarpDetectionType = "twolvlbitmaps";  // twolvlbitmaps / idqueue
 
     std::vector<PointerMapping> pointer_mappings;
+    std::vector<ScanColumnInfo> scan_column_infos;
 
     // Strategy pattern for operator-specific code generation
     std::unordered_map<PhysicalOperatorType,
@@ -329,6 +361,9 @@ class GpuCodeGenerator {
 
     // Split pipeline into sub-pipelines
     void SplitPipelineIntoSubPipelines(CypherPipeline &pipeline);
+
+    // Analyze sub-pipelines for materialization
+    void AnalyzeSubPipelinesForMaterialization();
 
     // Schema analysis
     void ExtractInputSchema(CypherPhysicalOperator *op, PipelineContext &ctx);

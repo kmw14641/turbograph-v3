@@ -1,9 +1,11 @@
 #include "execution/gpu_pipeline_executor.hpp"
-#include <iostream>
 #include "execution/execution_context.hpp"
 #include "execution/schema_flow_graph.hpp"
 #include "main/client_context.hpp"
 #include "storage/cache/gpu_chunk_cache_manager.h"
+
+#include <iostream>
+#include <cuda_runtime.h>
 
 namespace duckdb {
 
@@ -44,10 +46,12 @@ GPUPipelineExecutor::GPUPipelineExecutor(ExecutionContext *context,
 
 GPUPipelineExecutor::GPUPipelineExecutor(
     ExecutionContext *context, CypherPipeline *pipeline, void *main_function,
-    const std::vector<PointerMapping> &pointer_mappings)
+    const std::vector<PointerMapping> &pointer_mappings,
+    const std::vector<ScanColumnInfo> &scan_column_infos)
     : BasePipelineExecutor(),
       main_function(main_function),
       pointer_mappings(pointer_mappings),
+      scan_column_infos(scan_column_infos),
       cuda_stream(nullptr),
       is_initialized(false)
 {
@@ -62,10 +66,12 @@ GPUPipelineExecutor::GPUPipelineExecutor(
 
 GPUPipelineExecutor::GPUPipelineExecutor(
     ExecutionContext *context, CypherPipeline *pipeline, SchemaFlowGraph &sfg,
-    void *main_function, const std::vector<PointerMapping> &pointer_mappings)
+    void *main_function, const std::vector<PointerMapping> &pointer_mappings,
+    const std::vector<ScanColumnInfo> &scan_column_infos)
     : BasePipelineExecutor(),
       main_function(main_function),
       pointer_mappings(pointer_mappings),
+      scan_column_infos(scan_column_infos),
       cuda_stream(nullptr),
       is_initialized(false)
 {
@@ -116,44 +122,112 @@ bool GPUPipelineExecutor::AllocateGPUMemory()
 
     auto *gpu_cache_manager = GpuChunkCacheManager::g_ccm;
 
-    for (const auto &mapping : pointer_mappings) {
-        if (mapping.cid >= 0) {
-            // This is a chunk that needs GPU memory allocation
-            // std::cout << "Allocating GPU memory for chunk " << mapping.cid
-            //           << " (name: " << mapping.name << ")" << std::endl;
-
-            uint8_t *gpu_ptr = nullptr;
-            size_t size = 0;
-            std::string file_path = DiskAioParameters::WORKSPACE +
-                                    std::string("/chunk_") +
-                                    std::to_string(mapping.cid);
-
-            ReturnStatus status = gpu_cache_manager->PinSegment(
-                mapping.cid, file_path, &gpu_ptr, &size, false, false);
-
-            if (status == ReturnStatus::OK) {
-                // Store the allocated GPU memory info
-                GPUMemory gpu_mem;
-                gpu_mem.data_ptr = gpu_ptr;
-                gpu_mem.size = size;
-                gpu_mem.is_allocated = true;
-                gpu_memory_pool.push_back(gpu_mem);
-
-                // Update the pointer mapping with the actual GPU address
-                const_cast<PointerMapping &>(mapping).address = gpu_ptr;
-
-                // fprintf(stderr, "GPU memory address = %p\n", gpu_ptr);
+    if (use_scan_column_infos) {
+        for (const auto &scan_info : scan_column_infos) {
+            uint64_t num_tuples_total = 0;
+            for (const auto &num_tuples : scan_info.num_tuples_per_extent) {
+                num_tuples_total += num_tuples;
             }
-            else {
-                std::cerr << "Failed to allocate GPU memory for chunk "
-                          << mapping.cid << std::endl;
-                return false;
+            if (scan_info.get_physical_id_column) {
+                // generate physical id column
+                uint64_t *d_physical_id = nullptr;
+                size_t total_bytes = num_tuples_total * sizeof(uint64_t);
+                cudaMalloc(reinterpret_cast<void **>(&d_physical_id),
+                           total_bytes);
+                // Store the physical ID values
+                // TODO: currently, we generate data in host and copy to device.
+                // This can be optimized by generating data directly on device.
+                std::vector<uint64_t> h_physical_id(num_tuples_total);
+                uint64_t current_idx = 0;
+                for (uint64_t i = 0; i < scan_info.extent_ids.size(); i++) {
+                    uint64_t eid_base =
+                        (uint64_t(scan_info.extent_ids[i]) << 32);
+                    for (uint64_t j = 0; j < scan_info.num_tuples_per_extent[i];
+                         ++j)
+                        h_physical_id[current_idx++] = eid_base + j;
+                }
+                cudaMemcpy(d_physical_id, h_physical_id.data(), total_bytes,
+                           cudaMemcpyHostToDevice);
+                
+                PointerMapping physical_id_mapping;
+                physical_id_mapping.name = "_id";
+                physical_id_mapping.address = reinterpret_cast<void *>(d_physical_id);
+                physical_id_mapping.cid = -1;
+                input_pointer_mappings.push_back(physical_id_mapping);
+            }
+            for (auto i = 0; i < scan_info.col_name.size(); i++) {
+                const auto &col_name = scan_info.col_name[i];
+                auto col_pos = scan_info.col_position[i];
+                auto col_type_size = scan_info.col_type_size[i];
+
+                // generate column pointer
+                uint64_t *d_col_ptr = nullptr;
+                size_t total_bytes = num_tuples_total * sizeof(uint64_t);
+                cudaMalloc(reinterpret_cast<void **>(&d_col_ptr), total_bytes);
+
+                // Store the column value ptrs
+                std::vector<uint64_t> h_col_ptr(num_tuples_total);
+                uint64_t current_idx = 0;
+                for (uint64_t j = 0; i < scan_info.extent_ids.size(); j++) {
+                    auto extent_id = scan_info.extent_ids[j];
+                    auto num_tuples = scan_info.num_tuples_per_extent[j];
+                    auto cid_in_extent = scan_info.chunk_ids[i][j];
+
+                    PointerMapping *target_mapping;
+                    // TODO: below code is super inefficient
+                    for (auto &mapping : pointer_mappings) {
+                        if (mapping.cid == cid_in_extent) {
+                            target_mapping = &mapping;
+                            break;
+                        }
+                    }
+
+                    uint8_t *gpu_ptr = nullptr;
+                    size_t size = 0;
+                    std::string file_path = DiskAioParameters::WORKSPACE +
+                                            std::string("/chunk_") +
+                                            std::to_string(cid_in_extent);
+
+                    ReturnStatus status = gpu_cache_manager->PinSegment(
+                        cid_in_extent, file_path, &gpu_ptr, &size, false, false);
+
+                    if (status == ReturnStatus::OK) {
+                        // Store the allocated GPU memory info
+                        GPUMemory gpu_mem;
+                        gpu_mem.data_ptr = gpu_ptr;
+                        gpu_mem.size = size;
+                        gpu_mem.is_allocated = true;
+                        gpu_memory_pool.push_back(gpu_mem);
+
+                        // Update the pointer mapping with the actual GPU address
+                        target_mapping->address = gpu_ptr;
+                    }
+                    else {
+                        std::cerr << "Failed to allocate GPU memory for chunk "
+                                  << cid_in_extent << std::endl;
+                        return false;
+                    }
+
+                    // For each tuple in this extent, store the ptrs to column value
+                    for (uint64_t k = 0; k < num_tuples; k++) {
+                        uint64_t value_address = reinterpret_cast<uint64_t>(
+                            gpu_ptr + k * col_type_size);
+                        h_col_ptr[current_idx++] = value_address;
+                    }
+                }
+                D_ASSERT(current_idx == num_tuples_total);
+
+                cudaMemcpy(d_col_ptr, h_col_ptr.data(), total_bytes,
+                           cudaMemcpyHostToDevice);
+                
+                PointerMapping col_mapping;
+                col_mapping.name = col_name;
+                col_mapping.address = reinterpret_cast<void *>(d_col_ptr);
+                col_mapping.cid = -1;  // No chunk ID for virtual columns
+                input_pointer_mappings.push_back(col_mapping);
             }
         }
     }
-
-    // std::cout << "GPU memory allocation completed for "
-    //           << gpu_memory_pool.size() << " chunks" << std::endl;
     return true;
 }
 
@@ -165,10 +239,11 @@ bool GPUPipelineExecutor::LaunchKernel()
         auto exec = reinterpret_cast<ExecuteQueryFn>(main_function);
 
         // Call the main function with pointer mappings
-        exec(const_cast<PointerMapping *>(pointer_mappings.data()),
-             pointer_mappings.size());
-        std::cout << "Launching GPU kernel with " << pointer_mappings.size()
-                  << " pointer mappings..." << std::endl;
+        exec(const_cast<PointerMapping *>(input_pointer_mappings.data()),
+             input_pointer_mappings.size());
+        std::cout << "Launching GPU kernel with "
+                  << input_pointer_mappings.size() << " pointer mappings..."
+                  << std::endl;
         return true;
     }
     return false;
