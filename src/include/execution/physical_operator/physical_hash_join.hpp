@@ -11,7 +11,7 @@
 #include "common/types/chunk_collection.hpp"
 #include "common/value_operations/value_operations.hpp"
 #include "execution/join_hashtable.hpp"
-//#include "execution/operator/join/perfect_hash_join_executor.hpp"
+#include "execution/physical_operator/perfect_hash_join_executor.hpp"
 #include "execution/physical_operator/cypher_physical_operator.hpp"
 #include "execution/physical_operator/physical_comparison_join.hpp"
 // #include "planner/operator/logical_join.hpp"
@@ -48,6 +48,11 @@ class PhysicalHashJoin : public PhysicalComparisonJoin {
     //! Duplicate eliminated types; only used for delim_joins (i.e. correlated subqueries)
     vector<LogicalType> delim_types;
     mutable uint64_t num_loops = 0;
+
+    //! The perfect hash join executor (if any)
+	unique_ptr<PerfectHashJoinExecutor> perfect_join_executor;
+    //! Flag for using perfect hash. Automatically become false if impossible, also can adjust by default value.
+    mutable bool use_perfect_hash = true;
 
    public:
     // Operator Interface

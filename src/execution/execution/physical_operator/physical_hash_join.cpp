@@ -38,6 +38,18 @@ PhysicalHashJoin::PhysicalHashJoin(
         condition_types.push_back(condition.left->return_type);
     }
 
+    PerfectHashJoinStats perfect_join_statistics;
+    perfect_join_statistics.build_min = 10;
+    perfect_join_statistics.build_max = 50;
+    perfect_join_statistics.probe_min = 10;
+    perfect_join_statistics.probe_max = 50;
+    perfect_join_statistics.is_build_small = true;
+    perfect_join_statistics.is_build_dense = true;
+    perfect_join_statistics.is_probe_in_domain = true;
+    perfect_join_statistics.build_range = 40;
+    perfect_join_statistics.estimated_cardinality = 5;
+	perfect_join_executor = make_unique<PerfectHashJoinExecutor>(*this, perfect_join_statistics);
+
     D_ASSERT(build_types.size() == right_projection_map.size());
     if (join_type == JoinType::ANTI || join_type == JoinType::SEMI) {
         D_ASSERT(build_types.size() == 0);
@@ -135,7 +147,19 @@ void PhysicalHashJoin::Combine(ExecutionContext &context,
     auto &state = (HashJoinLocalState &)lstate;
     // finalize contexts
     auto &sink = (HashJoinLocalState &)lstate;
-    sink.hash_table->Finalize();
+	// check for possible perfect hash table
+	if (use_perfect_hash) {
+        use_perfect_hash = perfect_join_executor->CanDoPerfectHashJoin();
+    }
+	if (use_perfect_hash) {
+		D_ASSERT(sink.hash_table->equality_types.size() == 1);
+		auto key_type = sink.hash_table->equality_types[0];
+		use_perfect_hash = perfect_join_executor->BuildPerfectHashTable(key_type, sink.hash_table);
+	}
+	// In case of a large build side or duplicates, use regular hash join
+	if (!use_perfect_hash) {
+		sink.hash_table->Finalize();
+	}
     sink.finalized = true;
 }
 
@@ -169,13 +193,13 @@ unique_ptr<OperatorState> PhysicalHashJoin::GetOperatorState(
     ExecutionContext &context) const
 {
     auto state = make_unique<PhysicalHashJoinState>();
-    // auto &sink = (HashJoinLocalState &)*sink_state;
-    // if (sink.perfect_join_executor) {
-    // 	state->perfect_hash_join_state = sink.perfect_join_executor->GetOperatorState(context);
-    // } else {
-    state->join_keys.Initialize(condition_types);
-    for (auto &cond : conditions) {
-        state->probe_executor.AddExpression(*cond.left);
+    if (use_perfect_hash) {
+    	state->perfect_hash_join_state = perfect_join_executor->GetOperatorState(context);
+    } else {
+        state->join_keys.Initialize(condition_types);
+        for (auto &cond : conditions) {
+            state->probe_executor.AddExpression(*cond.left);
+        }
     }
     return move(state);
 }
@@ -196,6 +220,9 @@ OperatorResultType PhysicalHashJoin::Execute(ExecutionContext &context,
     if (sink.hash_table->Count() == 0 && EmptyResultIfRHSIsEmpty()) {
         return OperatorResultType::FINISHED;
     }
+    if (use_perfect_hash) {
+		return perfect_join_executor->ProbePerfectHashTable(context, input, chunk, *state.perfect_hash_join_state, sink.hash_table);
+	}
 
     /**
 	 * NOTE
