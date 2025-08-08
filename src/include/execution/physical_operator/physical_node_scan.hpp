@@ -78,6 +78,8 @@ class PhysicalNodeScan : public CypherPhysicalOperator {
 
     ~PhysicalNodeScan();
 
+    void ConvertFilterPushdownKeyIdxs();
+
    public:
     /**
 	 * Source APIs
@@ -108,6 +110,7 @@ class PhysicalNodeScan : public CypherPhysicalOperator {
     mutable FilterPushdownType filter_pushdown_type;
     mutable FilterKeyIdxs
         filter_pushdown_key_idxs;  // when negative, no filter pushdown
+    mutable FilterKeyIdxs filter_pushdown_key_idxs_in_output;
     mutable EQFilterValues
         eq_filter_pushdown_values;  // do not use when filter_pushdown_key_idx < 0
     mutable RangeFilterValues range_filter_pushdown_values;

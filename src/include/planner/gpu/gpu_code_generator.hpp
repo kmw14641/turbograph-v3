@@ -182,6 +182,22 @@ class FilterCodeGenerator : public OperatorCodeGenerator {
                       bool is_main_loop = false) override;
 };
 
+class HashAggregateCodeGenerator : public OperatorCodeGenerator {
+   public:
+    void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
+                      GpuCodeGenerator *code_gen, ClientContext &context,
+                      PipelineContext &pipeline_ctx,
+                      bool is_main_loop = false) override;
+    void GenerateBuildSideCode(CypherPhysicalOperator *op, CodeBuilder &code,
+                               GpuCodeGenerator *code_gen,
+                               ClientContext &context,
+                               PipelineContext &pipeline_ctx);
+    void GenerateProbeSideCode(CypherPhysicalOperator *op, CodeBuilder &code,
+                               GpuCodeGenerator *code_gen,
+                               ClientContext &context,
+                               PipelineContext &pipeline_ctx);
+};
+
 class GpuCodeGenerator {
    public:
     GpuCodeGenerator(ClientContext &context);
@@ -333,14 +349,6 @@ class GpuCodeGenerator {
     // Initialize operator generators
     void InitializeOperatorGenerators();
 
-    // Pipeline context management
-    PipelineContext CreatePipelineContext(const CypherPipeline &pipeline,
-                                          int op_idx);
-    void UpdatePipelineContext(PipelineContext &ctx,
-                               CypherPhysicalOperator *op);
-    void AnalyzeOperatorDependencies(CypherPhysicalOperator *op,
-                                     PipelineContext &ctx);
-
     // Split pipeline into sub-pipelines
     void SplitPipelineIntoSubPipelines(CypherPipeline &pipeline);
 
@@ -373,7 +381,7 @@ class GpuCodeGenerator {
     bool is_repeatable;
     bool verbose_mode = true;  // Control parameter naming style
     bool do_inter_warp_lb = true;
-    bool doWorkoadSizeTracking = false;
+    bool doWorkoadSizeTracking = true;
     bool generateInputPtrMapping = true;
     int tsWidth = 32;
     std::string idleWarpDetectionType = "twolvlbitmaps";  // twolvlbitmaps / idqueue

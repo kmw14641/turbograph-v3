@@ -14,6 +14,7 @@
 #include "execution/physical_operator/physical_node_scan.hpp"
 #include "execution/physical_operator/physical_produce_results.hpp"
 #include "execution/physical_operator/physical_projection.hpp"
+#include "execution/physical_operator/physical_hash_aggregate.hpp"
 #include "llvm/Support/TargetSelect.h"
 #include "main/database.hpp"
 #include "planner/gpu/expression_code_generator.hpp"
@@ -57,6 +58,8 @@ void GpuCodeGenerator::InitializeOperatorGenerators()
         std::make_unique<ProjectionCodeGenerator>();
     operator_generators[PhysicalOperatorType::PRODUCE_RESULTS] =
         std::make_unique<ProduceResultsCodeGenerator>();
+    operator_generators[PhysicalOperatorType::HASH_AGGREGATE] =
+        std::make_unique<HashAggregateCodeGenerator>();
 }
 
 void GpuCodeGenerator::GenerateGPUCode(CypherPipeline &pipeline)
@@ -172,7 +175,7 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                         scan_op->filter_pushdown_type ==
                             FilterPushdownType::FP_RANGE) {
                         for (const auto &key_idx :
-                             scan_op->filter_pushdown_key_idxs) {
+                             scan_op->filter_pushdown_key_idxs_in_output) {
                             referenced_columns.push_back(key_idx);
                         }
                     }
@@ -396,8 +399,8 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
             // for attrId, attr in spSeq.inBoundaryAttrs.items():
             //     if attrId == tid.id: continue
             //     if attrId in lastOp.generatingAttrs: continue
-            //     c.add(f'{langType(attr.dataType)} ts_{spSeqId}_{attr.id_name};')
-            //     c.add(f'{langType(attr.dataType)} ts_{spSeqId}_{attr.id_name}_cached;')
+            //     code.Add(f'{langType(attr.dataType)} ts_{spSeqId}_{attr.id_name};')
+            //     code.Add(f'{langType(attr.dataType)} ts_{spSeqId}_{attr.id_name}_cached;')
         }
         else if (input_type == PipeInputType::TYPE_2) {
             D_ASSERT(i > 0);
@@ -1438,21 +1441,25 @@ PipeOutputType GpuCodeGenerator::GetPipeOutputType(CypherPipeline &sub_pipeline)
 {
     PipeOutputType pipe_output_type;
     auto last_op = sub_pipeline.GetSink();
-    if (last_op->GetOperatorType() == PhysicalOperatorType::PRODUCE_RESULTS) {
-        // TODO correctness check
-        pipe_output_type = PipeOutputType::TYPE_0;
-    }
-    else if (last_op->GetOperatorType() == PhysicalOperatorType::FILTER) {
-        pipe_output_type = PipeOutputType::TYPE_2;
-    }
-    else if (last_op->GetOperatorType() == PhysicalOperatorType::NODE_SCAN) {
-        // Filter pushdowned scan case
-        D_ASSERT(
-            dynamic_cast<PhysicalNodeScan *>(last_op)->is_filter_pushdowned);
-        pipe_output_type = PipeOutputType::TYPE_2;
-    }
-    else {
-        throw NotImplementedException("Output type");
+    switch (last_op->GetOperatorType()) {
+        case PhysicalOperatorType::PRODUCE_RESULTS:
+            // TODO correctness check
+            pipe_output_type = PipeOutputType::TYPE_0;
+            break;
+        case PhysicalOperatorType::FILTER:
+            pipe_output_type = PipeOutputType::TYPE_2;
+            break;
+        case PhysicalOperatorType::NODE_SCAN:
+            // Filter pushdowned scan case
+            D_ASSERT(dynamic_cast<PhysicalNodeScan *>(last_op)
+                         ->is_filter_pushdowned);
+            pipe_output_type = PipeOutputType::TYPE_2;
+            break;
+        case PhysicalOperatorType::HASH_AGGREGATE:
+            pipe_output_type = PipeOutputType::TYPE_0;
+            break;
+        default:
+            throw NotImplementedException("Output type");
     }
     return pipe_output_type;
 }
@@ -1551,35 +1558,9 @@ void GpuCodeGenerator::ProcessRemainingOperators(CypherPipeline &pipeline,
     // Move to current operator and update schemas
     AdvanceOperator();
 
-    switch (op->GetOperatorType()) {
-        case PhysicalOperatorType::FILTER:
-            code.Add("if (condition) {");
-            code.IncreaseNesting();
-            GenerateOperatorCode(op, code, pipeline_context,
-                                 /*is_main_loop=*/false);
-            ProcessRemainingOperators(pipeline, op_idx + 1, code);
-            code.DecreaseNesting();
-            code.Add("}");
-            break;
-
-        case PhysicalOperatorType::PROJECTION:
-            GenerateOperatorCode(op, code, pipeline_context,
-                                 /*is_main_loop=*/false);
-            ProcessRemainingOperators(pipeline, op_idx + 1, code);
-            break;
-
-        case PhysicalOperatorType::PRODUCE_RESULTS:
-            GenerateOperatorCode(op, code, pipeline_context,
-                                 /*is_main_loop=*/false);
-            ProcessRemainingOperators(pipeline, op_idx + 1, code);
-            break;
-
-        default:
-            GenerateOperatorCode(op, code, pipeline_context,
-                                 /*is_main_loop=*/false);
-            ProcessRemainingOperators(pipeline, op_idx + 1, code);
-            break;
-    }
+    GenerateOperatorCode(op, code, pipeline_context,
+                         /*is_main_loop=*/false);
+    ProcessRemainingOperators(pipeline, op_idx + 1, code);
 }
 
 void GpuCodeGenerator::GenerateOperatorCode(CypherPhysicalOperator *op,
@@ -1653,12 +1634,14 @@ void NodeScanCodeGenerator::GenerateCode(
             std::string predicate_string = "";
             // Generate predicate string for filter pushdown
             if (scan_op->filter_pushdown_type == FilterPushdownType::FP_EQ) {
-                for (auto i = 0; i < scan_op->filter_pushdown_key_idxs.size();
+                for (auto i = 0;
+                     i < scan_op->filter_pushdown_key_idxs_in_output.size();
                      i++) {
                     if (i > 0) {
                         predicate_string += " && ";
                     }
-                    auto key_idx = scan_op->filter_pushdown_key_idxs[i];
+                    auto key_idx =
+                        scan_op->filter_pushdown_key_idxs_in_output[i];
                     if (key_idx < 0)
                         continue;
 
@@ -1676,12 +1659,14 @@ void NodeScanCodeGenerator::GenerateCode(
             }
             else if (scan_op->filter_pushdown_type ==
                      FilterPushdownType::FP_RANGE) {
-                for (auto i = 0; i < scan_op->filter_pushdown_key_idxs.size();
+                for (auto i = 0;
+                     i < scan_op->filter_pushdown_key_idxs_in_output.size();
                      i++) {
                     if (i > 0) {
                         predicate_string += " && ";
                     }
-                    auto key_idx = scan_op->filter_pushdown_key_idxs[i];
+                    auto key_idx =
+                        scan_op->filter_pushdown_key_idxs_in_output[i];
                     if (key_idx < 0)
                         continue;
 
@@ -2113,6 +2098,139 @@ void FilterCodeGenerator::GenerateCode(
     code.Add("// Filter condition passed, continue processing");
 }
 
+void HashAggregateCodeGenerator::GenerateCode(
+    CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
+    ClientContext &context, PipelineContext &pipeline_ctx, bool is_main_loop)
+{
+    // Hashaggregate operator is either the first or the last operator
+    D_ASSERT(pipeline_ctx.cur_op_idx == 0 ||
+             pipeline_ctx.cur_op_idx == pipeline_ctx.total_operators - 1);
+
+    if (pipeline_ctx.cur_op_idx == 0) {
+        GenerateProbeSideCode(op, code, code_gen, context, pipeline_ctx);
+    }
+    else if (pipeline_ctx.cur_op_idx == pipeline_ctx.total_operators - 1) {
+        GenerateBuildSideCode(op, code, code_gen, context, pipeline_ctx);
+    }
+    else {
+        throw InvalidInputException("HashAggregate as intermediate operator");
+    }
+}
+
+void HashAggregateCodeGenerator::GenerateProbeSideCode(
+    CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
+    ClientContext &context, PipelineContext &pipeline_ctx)
+{
+    auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
+    throw NotImplementedException(
+        "HashAggregate probe side code generation not implemented yet");
+}
+
+void HashAggregateCodeGenerator::GenerateBuildSideCode(
+    CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
+    ClientContext &context, PipelineContext &pipeline_ctx)
+{
+    auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
+    if (agg_op->groups.size() == 0) {
+        // if not self.touched and not self.doGroup and KernelCall.args.local_aggregation:
+        //     for attrId, (inId, reductionType) in self.lop.aggregateTuples.items():
+        //         attr, inputIdentifier, reductionType = self.lop.aggregateTuplesCreated[attrId]
+        //         inAttr = self.lop.aggregateInAttributes.get(inId, None)
+        //         if reductionType == Reduction.COUNT:
+        //             code.Add(f'local_{attr.id_name} += 1;')
+        //         elif reductionType == Reduction.SUM or reductionType == Reduction.AVG:
+        //             code.Add(f'local_{attr.id_name} += {inAttr.id_name};')
+        //         elif reductionType == Reduction.MAX:
+        //             code.Add(f'local_{attr.id_name} = local_{attr.id_name} < {inAttr.id_name} ? {inAttr.id_name} : local_{attr.id_name};')
+        //         elif reductionType == Reduction.MIN:
+        //             code.Add(f'local_{attr.id_name} = local_{attr.id_name} > {inAttr.id_name} ? {inAttr.id_name} : local_{attr.id_name};')
+        // else:        
+        //     for attrId, (inId, _) in self.lop.aggregateTuples.items():
+        //         attr, inputIdentifier, reductionType = self.lop.aggregateTuplesCreated[attrId]
+        //         inAttr = self.lop.aggregateInAttributes.get(inId, None)
+        //         dst = f"aht{self.opId}_{attr.id_name}[0]"
+        //         if reductionType == Reduction.COUNT:
+        //             code.Add(f"atomicAdd(&{dst},1);")
+        //         elif reductionType == Reduction.SUM or reductionType == Reduction.AVG:
+        //             code.Add(f"atomicAdd(&{dst},{inAttr.id_name});")
+        //         elif reductionType == Reduction.MAX:
+        //             code.Add(f"atomicMax(&{dst},{inAttr.id_name});")
+        //         elif reductionType == Reduction.MIN:
+        //             code.Add(f"atomicMin(&{dst},{inAttr.id_name});")
+    } else {
+        D_ASSERT(agg_op->groups.size() >= 1);
+        std::string op_id = std::to_string(agg_op->GetOperatorId());
+        code.Add("Payload" + op_id + " buf_payl;");
+        code.Add("uint64_t hash_key = 0;");
+
+        // for attrId, attr in self.lop.groupAttributes.items():
+        //     code.Add(f'buf_payl.{attr.id_name} = {attr.id_name};")
+
+        // for attrId, attr in self.lop.groupAttributes.items():
+        //     if attr.dataType == Type.STRING:
+        //         code.Add(f'hash_key = hash(hash_key + stringHash({attr.id_name}));")
+        //     else:
+        //         code.Add(f'hash_key = hash(hash_key + ((uint64_t) {attr.id_name}));")
+                
+        code.Add("int bucketFound = 0;");
+        code.Add("int numLookups = 0;");
+        code.Add("int bucketId = -1;");
+        
+        code.Add("while (!bucketFound) {");
+        code.IncreaseNesting();
+        code.Add("bucketId = -1;");
+        code.Add("bool done = false;");
+        
+        code.Add("while (!done) {");
+        code.IncreaseNesting();
+        code.Add("bucketId = (hash_key + numLookups) % {int(self.size)};");
+        code.Add("agg_ht<Payload" + op_id + ">& entry = aht" + op_id +
+                 "[bucketId];");
+        code.Add("numLookups++;");
+
+        code.Add("if (entry.lock.enter()) {");
+        code.IncreaseNesting();
+        code.Add("entry.payload = buf_payl;");
+        code.Add("entry.hash = hash_key;");
+        code.Add("entry.lock.done();");
+        code.Add("break;");
+        code.DecreaseNesting();
+        code.Add("} else {");
+        code.IncreaseNesting();
+        code.Add("entry.lock.wait();");
+        code.Add("done = (entry.hash == hash_key);");
+        code.DecreaseNesting();
+        code.Add("}");
+        code.DecreaseNesting();
+        code.Add("}");
+
+        code.Add("Payload" + op_id + " entry = aht" + op_id +
+                 "[bucketId].payload;");
+        code.Add("bucketFound = 1;");
+        // for attrId, attr in self.lop.groupAttributes.items():
+        //     if attr.dataType == Type.STRING:
+        //         code.Add(f"bucketFound &= stringEquals(entry.{attr.id_name}, {attr.id_name});")
+        //     else:
+        //         code.Add(f"bucketFound &= entry.{attr.id_name} == {attr.id_name};")
+        
+        code.DecreaseNesting();
+        code.Add("}");
+
+        // for attrId, (inId, _) in self.lop.aggregateTuples.items():
+        //     attr, inputIdentifier, reductionType = self.lop.aggregateTuplesCreated[attrId]
+        //     inAttr = self.lop.aggregateInAttributes.get(inId, None)
+        //     dst = f"aht{self.opId}_{attr.id_name}[bucketId]"
+        //     if reductionType == Reduction.COUNT:
+        //         code.Add(f"atomicAdd(&{dst},1);")
+        //     elif reductionType == Reduction.SUM or reductionType == Reduction.AVG:
+        //         code.Add(f"atomicAdd(&{dst},{inAttr.id_name});")
+        //     elif reductionType == Reduction.MAX:
+        //         code.Add(f"atomicMax(&{dst},{inAttr.id_name});")
+        //     elif reductionType == Reduction.MIN:
+        //         code.Add(f"atomicMin(&{dst},{inAttr.id_name});")
+    }
+}
+
 void GpuCodeGenerator::GenerateCodeForAdaptiveWorkSharing(
     CypherPipeline &pipeline, CodeBuilder &code)
 {
@@ -2226,13 +2344,13 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPull(
 {
     code.Add("switch (lowest_lvl) {");
     // for spSeqId, spSeq in enumerate(pipe.subpipeSeqs):
-    //     code.Add('case {spSeqId}: ' + '{');
+    //     code.Add("case {spSeqId}: ' + '{');
     //     if spSeq.inputType == 0:
-    //         code.Add('Themis::PushedParts::PushedPartsAtZeroLvl* src_pparts = (Themis::PushedParts::PushedPartsAtZeroLvl*) stack->Top();')
-    //         code.Add('Themis::PullINodesFromPPartAtZeroLvl(thread_id, src_pparts, ts_0_range_cached, inodes_cnts);')
-    //         code.Add('if (thread_id == 0) stack->PopPartsAtZeroLvl();')
+    //         code.Add("Themis::PushedParts::PushedPartsAtZeroLvl* src_pparts = (Themis::PushedParts::PushedPartsAtZeroLvl*) stack->Top();')
+    //         code.Add("Themis::PullINodesFromPPartAtZeroLvl(thread_id, src_pparts, ts_0_range_cached, inodes_cnts);')
+    //         code.Add("if (thread_id == 0) stack->PopPartsAtZeroLvl();')
     //     elif spSeq.inputType == 1:
-    //         code.Add('Themis::PushedParts::PushedPartsAtLoopLvl* src_pparts = (Themis::PushedParts::PushedPartsAtLoopLvl*) stack->Top();')
+    //         code.Add("Themis::PushedParts::PushedPartsAtLoopLvl* src_pparts = (Themis::PushedParts::PushedPartsAtLoopLvl*) stack->Top();')
     //         code.Add(f'Themis::PullINodesFromPPartAtLoopLvl(thread_id, {spSeqId}, src_pparts, ts_{spSeqId}_range_cached, ts_{spSeqId}_range, inodes_cnts);')
 
     //         attrs = {}
@@ -2245,7 +2363,7 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPull(
 
     //         speculated_size = 0
     //         if len(attrs) > 0:
-    //             code.Add('volatile char* src_pparts_attrs = src_pparts->GetAttrsPtr();')
+    //             code.Add("volatile char* src_pparts_attrs = src_pparts->GetAttrsPtr();')
 
     //             for attrId, attr in attrs.items():
     //                 if attr.dataType == Type.STRING:
@@ -2257,10 +2375,10 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPull(
     //                 speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
     //         code.Add(f'if (thread_id == 0) stack->PopPartsAtLoopLvl({speculated_size});')
     //     elif spSeq.inputType == 2:
-    //         code.Add('Themis::PushedParts::PushedPartsAtIfLvl* src_pparts = (Themis::PushedParts::PushedPartsAtIfLvl*) stack->Top();')
+    //         code.Add("Themis::PushedParts::PushedPartsAtIfLvl* src_pparts = (Themis::PushedParts::PushedPartsAtIfLvl*) stack->Top();')
     //         code.Add(f'Themis::PullINodesFromPPartAtIfLvl(thread_id, {spSeqId}, src_pparts, inodes_cnts);')
     //         if len(spSeq.inBoundaryAttrs) > 0:
-    //             code.Add('volatile char* src_pparts_attrs = src_pparts->GetAttrsPtr();')
+    //             code.Add("volatile char* src_pparts_attrs = src_pparts->GetAttrsPtr();')
     //             speculated_size = 0
     //             for attrId, attr in spSeq.inBoundaryAttrs.items():
     //                 if attr.dataType == Type.STRING:
@@ -2271,7 +2389,7 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPull(
     //                     code.Add(f'Themis::PullAttributesAtIfLvl<{langType(attr.dataType)}>(thread_id, ts_{spSeqId}_{attr.id_name}_flushed, ({langType(attr.dataType)}*) (src_pparts_attrs + {speculated_size}));')
     //                 speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
     //             code.Add(f'if (thread_id == 0) stack->PopPartsAtIfLvl({speculated_size});')
-    //     code.Add('} break;')
+    //     code.Add("} break;')
     code.Add("} // switch");
 }
 
@@ -2422,7 +2540,7 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPush(
     //     code.Add(f'case {spSeqId}: ' + '{')
     //     if spSeq.inputType == 0:
     //         code.Add(f'if (thread_id == 0) stack->PushPartsAtZeroLvl();')
-    //         code.Add('Themis::PushedParts::PushedPartsAtZeroLvl* target_pparts = (Themis::PushedParts::PushedPartsAtZeroLvl*) stack->Top();')
+    //         code.Add("Themis::PushedParts::PushedPartsAtZeroLvl* target_pparts = (Themis::PushedParts::PushedPartsAtZeroLvl*) stack->Top();')
     //         code.Add(f'num_to_push = Themis::PushINodesToPPartAtZeroLvl(thread_id, target_pparts, ts_0_range_cached, {stepSize});')
     //         code.Add(f'num_remaining = num_nodes - num_to_push;')
     //         code.Add(f'mask_32 = num_remaining >= 32 ? (m | mask_32) : ((~m) & mask_32);')
@@ -2442,7 +2560,7 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPush(
     //         for attrId, attr in attrs.items():
     //             speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
     //         code.Add(f'if (thread_id == 0) stack->PushPartsAtLoopLvl({spSeqId}, {speculated_size});')
-    //         code.Add('Themis::PushedParts::PushedPartsAtLoopLvl* target_pparts = (Themis::PushedParts::PushedPartsAtLoopLvl*) stack->Top();')
+    //         code.Add("Themis::PushedParts::PushedPartsAtLoopLvl* target_pparts = (Themis::PushedParts::PushedPartsAtLoopLvl*) stack->Top();')
     //         code.Add(f'num_to_push = Themis::PushINodesToPPartAtLoopLvl(thread_id, {spSeqId}, target_pparts, ts_{spSeqId}_range_cached, ts_{spSeqId}_range);')
     //         code.Add(f'num_remaining = num_nodes - num_to_push;')
     //         code.Add(f'mask_32 = num_remaining >= 32 ? (m | mask_32) : ((~m) & mask_32);')
@@ -2451,10 +2569,10 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPush(
     //         code.Add(f'Themis::DistributeFromPartToDPart(thread_id, {spSeqId}, ts_src, ts_{spSeqId}_range, ts_{spSeqId}_range_cached, mask_32, mask_1);')
     //         if len(attrs) > 0:
     //             speculated_size = 0
-    //             code.Add('volatile char* target_pparts_attrs = target_pparts->GetAttrsPtr();')
+    //             code.Add("volatile char* target_pparts_attrs = target_pparts->GetAttrsPtr();')
     //             for attrId, attr in attrs.items():
     //                 name = f'ts_{spSeqId}_{attr.id_name}'
-    //                 code.Add('{')
+    //                 code.Add("{')
     //                 if attr.dataType == Type.STRING:
     //                     code.Add(f'Themis::PushStrAttributesAtLoopLvl(thread_id, (volatile str_t*) (target_pparts_attrs + {speculated_size}), {name}_cached, {name});')
     //                     code.Add(f'char* start = (char*) __shfl_sync(ALL_LANES, (uint64_t) {name}.start, ts_src);')
@@ -2470,23 +2588,23 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPush(
     //                     code.Add(f'Themis::PushAttributesAtLoopLvl<{dtype}>(thread_id, (volatile {dtype}*) (target_pparts_attrs + {speculated_size}), {name}_cached, {name});')
     //                     code.Add(f'{dtype} cache = __shfl_sync(ALL_LANES, {name}, ts_src);')
     //                     code.Add(f'if (ts_src < 32) {name}_cached = cache;')
-    //                 code.Add('}')
+    //                 code.Add("}')
     //                 speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
     //     else:
     //         speculated_size = 0
     //         for attrId, attr in spSeq.inBoundaryAttrs.items():
     //             speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
     //         code.Add(f'if (thread_id == 0) stack->PushPartsAtIfLvl({spSeqId}, {speculated_size});')
-    //         code.Add('Themis::PushedParts::PushedPartsAtIfLvl* target_pparts = (Themis::PushedParts::PushedPartsAtIfLvl*) stack->Top();')
+    //         code.Add("Themis::PushedParts::PushedPartsAtIfLvl* target_pparts = (Themis::PushedParts::PushedPartsAtIfLvl*) stack->Top();')
     //         code.Add(f'num_to_push = Themis::PushINodesToPPartAtIfLvl(thread_id, {spSeqId}, target_pparts, inodes_cnts);')
     //         code.Add(f'mask_32 = ((~m) & mask_32);')
     //         code.Add(f'mask_1 = ((~m) & mask_1);')
     //         if len(spSeq.inBoundaryAttrs) > 0:
-    //             code.Add('volatile char* target_pparts_attrs = target_pparts->GetAttrsPtr();')
+    //             code.Add("volatile char* target_pparts_attrs = target_pparts->GetAttrsPtr();')
     //             speculated_size = 0
     //             for attrId, attr in spSeq.inBoundaryAttrs.items():
     //                 name = f'ts_{spSeqId}_{attr.id_name}'
-    //                 code.Add('{')
+    //                 code.Add("{')
     //                 if attr.dataType == Type.STRING:
     //                     code.Add(f'Themis::PushStrAttributesAtIfLvl(thread_id, (volatile str_t*) (target_pparts_attrs + {speculated_size}), {name}_flushed);')
     //                 elif attr.dataType == Type.PTR_INT:
@@ -2494,9 +2612,9 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPush(
     //                 else:
     //                     dtype = langType(attr.dataType)
     //                     code.Add(f'Themis::PushAttributesAtIfLvl<{dtype}>(thread_id, (volatile {dtype}*) (target_pparts_attrs + {speculated_size}), {name}_flushed);')
-    //                 code.Add('}')
+    //                 code.Add("}')
     //                 speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
-    //     code.Add('} break;')
+    //     code.Add("} break;')
     code.Add("}");
     int num_warps_per_block = int(KernelConstants::DEFAULT_BLOCK_SIZE / 32);
     code.Add("if ((target_warp_id / " + std::to_string(num_warps_per_block) +
