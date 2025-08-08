@@ -5,9 +5,9 @@
 
 namespace duckdb {
 
-PerfectHashJoinExecutor::PerfectHashJoinExecutor(const PhysicalHashJoin &join_p, JoinHashTable &ht_p,
+PerfectHashJoinExecutor::PerfectHashJoinExecutor(const PhysicalHashJoin &join_p,
                                                  PerfectHashJoinStats perfect_join_stats)
-    : join(join_p), ht(ht_p), perfect_join_statistics(move(perfect_join_stats)) {
+    : join(join_p), perfect_join_statistics(move(perfect_join_stats)) {
 }
 
 bool PerfectHashJoinExecutor::CanDoPerfectHashJoin() {
@@ -17,10 +17,10 @@ bool PerfectHashJoinExecutor::CanDoPerfectHashJoin() {
 //===--------------------------------------------------------------------===//
 // Build
 //===--------------------------------------------------------------------===//
-bool PerfectHashJoinExecutor::BuildPerfectHashTable(LogicalType &key_type) {
+bool PerfectHashJoinExecutor::BuildPerfectHashTable(LogicalType &key_type, unique_ptr<JoinHashTable> &ht) {
 	// First, allocate memory for each build column
 	auto build_size = perfect_join_statistics.build_range + 1;
-	for (const auto &type : ht.build_types) {
+	for (const auto &type : ht->build_types) {
 		perfect_hash_table.emplace_back(type, build_size);
 	}
 	// and for duplicate_checking
@@ -29,18 +29,18 @@ bool PerfectHashJoinExecutor::BuildPerfectHashTable(LogicalType &key_type) {
 
 	// Now fill columns with build data
 	JoinHTScanState join_ht_state;
-	return FullScanHashTable(join_ht_state, key_type);
+	return FullScanHashTable(join_ht_state, key_type, ht);
 }
 
-bool PerfectHashJoinExecutor::FullScanHashTable(JoinHTScanState &state, LogicalType &key_type) {
-	Vector tuples_addresses(LogicalType::POINTER, ht.Count());              // allocate space for all the tuples
+bool PerfectHashJoinExecutor::FullScanHashTable(JoinHTScanState &state, LogicalType &key_type, unique_ptr<JoinHashTable> &ht) {
+	Vector tuples_addresses(LogicalType::POINTER, ht->Count());              // allocate space for all the tuples
 	auto key_locations = FlatVector::GetData<data_ptr_t>(tuples_addresses); // get a pointer to vector data
 	// TODO: In a parallel finalize: One should exclusively lock and each thread should do one part of the code below.
 	// Go through all the blocks and fill the keys addresses
-	auto keys_count = ht.FillWithHTOffsets(key_locations, state);
+	auto keys_count = ht->FillWithHTOffsets(key_locations, state);
 	// Scan the build keys in the hash table
 	Vector build_vector(key_type, keys_count);
-	RowOperations::FullScanColumn(ht.layout, tuples_addresses, build_vector, keys_count, 0);
+	RowOperations::FullScanColumn(ht->layout, tuples_addresses, build_vector, keys_count, 0);
 	// Now fill the selection vector using the build keys and create a sequential vector
 	// todo: add check for fast pass when probe is part of build domain
 	SelectionVector sel_build(keys_count + 1);
@@ -50,17 +50,17 @@ bool PerfectHashJoinExecutor::FullScanHashTable(JoinHTScanState &state, LogicalT
 	if (!success) {
 		return false;
 	}
-	if (unique_keys == perfect_join_statistics.build_range + 1 && !ht.has_null) {
+	if (unique_keys == perfect_join_statistics.build_range + 1 && !ht->has_null) {
 		perfect_join_statistics.is_build_dense = true;
 	}
 	keys_count = unique_keys; // do not consider keys out of the range
 	// Full scan the remaining build columns and fill the perfect hash table
-	for (idx_t i = 0; i < ht.build_types.size(); i++) {
+	for (idx_t i = 0; i < ht->build_types.size(); i++) {
 		auto build_size = perfect_join_statistics.build_range + 1;
 		auto &vector = perfect_hash_table[i];
-		D_ASSERT(vector.GetType() == ht.build_types[i]);
-		const auto col_no = ht.condition_types.size() + i;
-		const auto col_offset = ht.layout.GetOffsets()[col_no];
+		D_ASSERT(vector.GetType() == ht->build_types[i]);
+		const auto col_no = ht->condition_types.size() + i;
+		const auto col_offset = ht->layout.GetOffsets()[col_no];
 		RowOperations::Gather(tuples_addresses, sel_tuples, vector, sel_build, keys_count, col_offset, col_no,
 		                      build_size);
 	}
@@ -147,7 +147,7 @@ unique_ptr<OperatorState> PerfectHashJoinExecutor::GetOperatorState(ExecutionCon
 }
 
 OperatorResultType PerfectHashJoinExecutor::ProbePerfectHashTable(ExecutionContext &context, DataChunk &input,
-                                                                  DataChunk &result, OperatorState &state_p) {
+                                                                  DataChunk &result, OperatorState &state_p, unique_ptr<JoinHashTable> &ht) {
 	auto &state = (PerfectHashJoinState &)state_p;
 	// keeps track of how many probe keys have a match
 	idx_t probe_sel_count = 0;

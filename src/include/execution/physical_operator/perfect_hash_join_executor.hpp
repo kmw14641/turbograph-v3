@@ -36,15 +36,15 @@ class PerfectHashJoinExecutor {
 	using PerfectHashTable = std::vector<Vector>;
 
 public:
-	explicit PerfectHashJoinExecutor(const PhysicalHashJoin &join, JoinHashTable &ht, PerfectHashJoinStats pjoin_stats);
+	explicit PerfectHashJoinExecutor(const PhysicalHashJoin &join, PerfectHashJoinStats pjoin_stats);
 
 public:
 	bool CanDoPerfectHashJoin();
 
 	unique_ptr<OperatorState> GetOperatorState(ExecutionContext &context);
 	OperatorResultType ProbePerfectHashTable(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
-	                                         OperatorState &state);
-	bool BuildPerfectHashTable(LogicalType &type);
+	                                         OperatorState &state, unique_ptr<JoinHashTable> &ht);
+	bool BuildPerfectHashTable(LogicalType &type, unique_ptr<JoinHashTable> &ht);
 
 private:
 	void FillSelectionVectorSwitchProbe(Vector &source, SelectionVector &build_sel_vec, SelectionVector &probe_sel_vec,
@@ -58,11 +58,10 @@ private:
 	template <typename T>
 	bool TemplatedFillSelectionVectorBuild(Vector &source, SelectionVector &sel_vec, SelectionVector &seq_sel_vec,
 	                                       idx_t count);
-	bool FullScanHashTable(JoinHTScanState &state, LogicalType &key_type);
+	bool FullScanHashTable(JoinHTScanState &state, LogicalType &key_type, unique_ptr<JoinHashTable> &ht);
 
 private:
 	const PhysicalHashJoin &join;
-	JoinHashTable &ht;
 	//! Columnar perfect hash table
 	PerfectHashTable perfect_hash_table;
 	//! Build and probe statistics
