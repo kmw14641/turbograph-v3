@@ -161,21 +161,39 @@ OperatorResultType PerfectHashJoinExecutor::ProbePerfectHashTable(ExecutionConte
 	// todo: add check for fast pass when probe is part of build domain
 	FillSelectionVectorSwitchProbe(keys_vec, state.build_sel_vec, state.probe_sel_vec, keys_count, probe_sel_count);
 
-	// If build is dense and probe is in build's domain, just reference probe
-	if (perfect_join_statistics.is_build_dense && keys_count == probe_sel_count) {
-		result.Reference(input);
-	} else {
-		// otherwise, filter it out the values that do not match
-		result.Slice(input, state.probe_sel_vec, probe_sel_count, 0);
+	// S62 - Left projection mapping
+	for (idx_t i = 0; i < ht->output_left_projection_map.size(); i++) {
+		if (ht->output_left_projection_map[i] !=
+			std::numeric_limits<uint32_t>::max()) {
+			// If build is dense and probe is in build's domain, just reference probe
+			if (perfect_join_statistics.is_build_dense && keys_count == probe_sel_count) {
+				result.data[ht->output_left_projection_map[i]].Reference(
+					input.data[i]);
+			} else {
+				// otherwise, filter it out the values that do not match
+				result.data[ht->output_left_projection_map[i]].Slice(
+					input.data[i], state.probe_sel_vec,
+					probe_sel_count);
+			}
+		}
 	}
+
 	// on the build side, we need to fetch the data and build dictionary vectors with the sel_vec
-	for (idx_t i = 0; i < ht.build_types.size(); i++) {
-		auto &result_vector = result.data[input.ColumnCount() + i];
-		D_ASSERT(result_vector.GetType() == ht.build_types[i]);
-		auto &build_vec = perfect_hash_table[i];
-		result_vector.Reference(build_vec);
-		result_vector.Slice(state.build_sel_vec, probe_sel_count);
+	idx_t i = 0;
+	for (idx_t projection_map_idx = 0;
+			projection_map_idx < ht->output_right_projection_map.size();
+			projection_map_idx++) {
+		if (ht->output_right_projection_map[projection_map_idx] !=
+			std::numeric_limits<uint32_t>::max()) {
+			auto &result_vector = result.data[ht->output_right_projection_map[projection_map_idx]];
+			D_ASSERT(result_vector.GetType() == ht->build_types[i]);
+			auto &build_vec = perfect_hash_table[i];
+			result_vector.Reference(build_vec);
+			result_vector.Slice(state.build_sel_vec, probe_sel_count);
+			i++;
+		}
 	}
+	result.SetCardinality(probe_sel_count);
 	return OperatorResultType::NEED_MORE_INPUT;
 }
 
