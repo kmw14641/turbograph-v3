@@ -82,7 +82,7 @@ void TestPerfectHashJoin(std::vector<std::vector<int>> left_data,
     auto result = perfect_hash_join.Execute(exec_context, left_input, output, *op_state, *sink_state);
 
     // Check result
-    REQUIRE(result == OperatorResultType::HAVE_MORE_OUTPUT);
+    REQUIRE(result == OperatorResultType::NEED_MORE_INPUT);
     REQUIRE(output.size() == expected_output.size());
     for (int i = 0; i < expected_output.size(); i++) {
         for (size_t j = 0; j < expected_output[i].size(); j++) {
@@ -183,7 +183,7 @@ void PHJProjectionTest(std::vector<std::vector<int>> left_data,
     auto result = perfect_hash_join.Execute(exec_context, left_input, output, *op_state, *sink_state);
 
     // Check result
-    REQUIRE(result == OperatorResultType::HAVE_MORE_OUTPUT);
+    REQUIRE(result == OperatorResultType::NEED_MORE_INPUT);
     REQUIRE(output.size() == expected_output.size());
     for (int i = 0; i < expected_output.size(); i++) {
         for (size_t j = 0; j < expected_output[i].size(); j++) {
@@ -279,7 +279,7 @@ void PHJMultiCondTest(std::vector<std::vector<int>> left_data,
     auto result = perfect_hash_join.Execute(exec_context, left_input, output, *op_state, *sink_state);
 
     // Check result
-    REQUIRE(result == OperatorResultType::HAVE_MORE_OUTPUT);
+    REQUIRE(result == OperatorResultType::NEED_MORE_INPUT);
     REQUIRE(output.size() == expected_output.size());
     for (int i = 0; i < expected_output.size(); i++) {
         for (size_t j = 0; j < expected_output[i].size(); j++) {
