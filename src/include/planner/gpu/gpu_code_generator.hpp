@@ -113,6 +113,12 @@ enum class PipeInputType : uint8_t {
     TYPE_2 // filter
 };
 
+enum class PipeOutputType : uint8_t {
+    TYPE_0, // materialize
+    TYPE_1, // multi
+    TYPE_2 // filter
+};
+
 // Strategy pattern for operator-specific code generation
 class OperatorCodeGenerator {
    public:
@@ -279,6 +285,25 @@ class GpuCodeGenerator {
     void GenerateInputCodeForType2(CypherPipeline &sub_pipeline,
                                    CodeBuilder &code,
                                    PipelineContext &pipeline_ctx);
+    
+    // Generate output code for a specific type
+    void GenerateOutputCode(CypherPipeline &sub_pipeline, CodeBuilder &code,
+                            PipelineContext &pipeline_ctx,
+                            PipeOutputType output_type);
+    void GenerateOutputCodeForType0(CypherPipeline &sub_pipeline,
+                                    CodeBuilder &code,
+                                    PipelineContext &pipeline_ctx);
+    void GenerateOutputCodeForType1(CypherPipeline &sub_pipeline,
+                                    CodeBuilder &code,
+                                    PipelineContext &pipeline_ctx);
+    void GenerateOutputCodeForType2(CypherPipeline &sub_pipeline,
+                                    CodeBuilder &code,
+                                    PipelineContext &pipeline_ctx);
+    int FindLowerLoopLvl(PipelineContext &pipeline_context);
+
+    // Helper code for get pipe input/output type
+    PipeInputType GetPipeInputType(CypherPipeline &sub_pipeline);
+    PipeOutputType GetPipeOutputType(CypherPipeline &sub_pipeline);
 
     // Generate code for adaptive work sharing
     void GenerateCodeForAdaptiveWorkSharing(
@@ -302,13 +327,29 @@ class GpuCodeGenerator {
     void InitializePipelineContext(CypherPipeline &pipeline);
     void AdvanceOperator();
 
-    // Schema analysis
-    void ExtractInputSchema(CypherPhysicalOperator *op);
-    void ExtractOutputSchema(CypherPhysicalOperator *op);
-    void TrackColumnUsage(Expression *expr);
-
     void GetReferencedColumns(Expression *expr,
                               std::vector<uint64_t> &referenced_columns);
+
+    // Initialize operator generators
+    void InitializeOperatorGenerators();
+
+    // Pipeline context management
+    PipelineContext CreatePipelineContext(const CypherPipeline &pipeline,
+                                          int op_idx);
+    void UpdatePipelineContext(PipelineContext &ctx,
+                               CypherPhysicalOperator *op);
+    void AnalyzeOperatorDependencies(CypherPhysicalOperator *op,
+                                     PipelineContext &ctx);
+
+    // Split pipeline into sub-pipelines
+    void SplitPipelineIntoSubPipelines(CypherPipeline &pipeline);
+
+    // Analyze sub-pipelines for materialization
+    void AnalyzeSubPipelinesForMaterialization();
+
+    void ResolveAttributes();
+
+    void ResolveBoundaryAttributes();
 
    private:
     ClientContext &context;
@@ -347,28 +388,6 @@ class GpuCodeGenerator {
 
     // Single pipeline context for the entire pipeline
     PipelineContext pipeline_context;
-
-    // Initialize operator generators
-    void InitializeOperatorGenerators();
-
-    // Pipeline context management
-    PipelineContext CreatePipelineContext(const CypherPipeline &pipeline,
-                                          int op_idx);
-    void UpdatePipelineContext(PipelineContext &ctx,
-                               CypherPhysicalOperator *op);
-    void AnalyzeOperatorDependencies(CypherPhysicalOperator *op,
-                                     PipelineContext &ctx);
-
-    // Split pipeline into sub-pipelines
-    void SplitPipelineIntoSubPipelines(CypherPipeline &pipeline);
-
-    // Analyze sub-pipelines for materialization
-    void AnalyzeSubPipelinesForMaterialization();
-
-    // Schema analysis
-    void ExtractInputSchema(CypherPhysicalOperator *op, PipelineContext &ctx);
-    void ExtractOutputSchema(CypherPhysicalOperator *op, PipelineContext &ctx);
-    void TrackColumnUsage(Expression *expr, PipelineContext &ctx);
 };
 
 }  // namespace duckdb

@@ -34,6 +34,24 @@ class CodeBuilder {
     int nesting_level = 0;
 };
 
+// what we need is
+// we need attribute -> tid name mapping
+// we should build this information in node-scan or seek operator
+// 1. build all attributes information
+// 2. columns_to_be_materialized stores offset in the all_attributes
+// 3. 
+
+
+struct Attr {
+    std::string name;
+    LogicalType type;
+    uint64_t pos;  // Position in the schema
+
+    Attr(const std::string &name, const LogicalType &type, uint64_t pos)
+        : name(name), type(type), pos(pos)
+    {}
+};
+
 // Structure to track pipeline state and dependencies
 struct PipelineContext {
     // Pipeline-wide information
@@ -46,7 +64,9 @@ struct PipelineContext {
 
     // Sub pipeline
     std::vector<CypherPipeline> sub_pipelines;
-    std::string current_tid_name;
+    std::vector<std::vector<std::string>> sub_pipeline_tids;
+
+    std::unordered_map<std::string, std::string> attribute_tid_mapping;
 
     // Operator schemas (references to original schemas)
     std::vector<const std::vector<std::string> *> operator_column_names;
@@ -60,13 +80,9 @@ struct PipelineContext {
     std::vector<std::string> output_column_names;
     std::vector<LogicalType> output_column_types;
 
-    // Materialization status for each column (logical level)
-    std::unordered_map<std::string, bool> column_materialized;
-    // std::vector<std::string> columns_to_be_materialized;
-    // std::vector<LogicalType> column_types_to_be_materialized;
-    std::vector<std::vector<std::string>> columns_to_be_materialized;
-    std::vector<std::vector<LogicalType>> column_types_to_be_materialized;
-    std::vector<std::vector<uint64_t>> column_pos_to_be_materialized;
+    // Materialization status for each column
+    std::unordered_map<std::string, bool> column_materialized;    
+    std::vector<std::vector<Attr>> columns_to_be_materialized;
 
     // Track which columns are actually used in expressions
     std::unordered_set<std::string> used_columns;
