@@ -552,6 +552,7 @@ vector<duckdb::BasePipelineExecutor *> Planner::genPipelineExecutors(bool enable
     unique_ptr<duckdb::GpuCodeGenerator> code_gen;
     if (enable_gpu_processing) {
         code_gen = make_unique<duckdb::GpuCodeGenerator>(*context);
+        code_gen->GenerateGlobalDeclarations(pipelines);
     }
 
     /* inject per-operator-dependencies and per-pipeline dependencies
@@ -565,7 +566,6 @@ vector<duckdb::BasePipelineExecutor *> Planner::genPipelineExecutors(bool enable
 
         // find children and deps - the child/dep ordering matters.
         // must run in ascending order of the vector
-        auto *new_ctxt = new duckdb::ExecutionContext(context);
         vector<duckdb::BasePipelineExecutor *>
             child_executors;  // child : pipe's sink == op's source
         std::map<duckdb::CypherPhysicalOperator *,
@@ -609,52 +609,54 @@ vector<duckdb::BasePipelineExecutor *> Planner::genPipelineExecutors(bool enable
             }
         }
 
-        // GPU specific processing
-        void *main_function = nullptr;
         if (enable_gpu_processing) {
             // Generate GPU kernel code for this pipeline
             code_gen->GenerateGPUCode(*pipe);
-            
-            // Compile generated code
-            if (!code_gen->CompileGeneratedCode()) {
-                throw std::runtime_error("Failed to compile GPU kernel code");
-            }
-
-            // Get compiled kernel function
-            main_function = code_gen->GetCompiledHost();
-            if (!main_function) {
-                throw std::runtime_error("Failed to get compiled kernel function");
-            }
+            continue;
         }
 
         // Create pipeline executor
         duckdb::BasePipelineExecutor *pipe_exec;
+        auto *new_ctxt = new duckdb::ExecutionContext(context);
         if (generate_sfg) {
-            if (enable_gpu_processing) {
-                pipe_exec = new duckdb::GPUPipelineExecutor(
-                    new_ctxt, pipe, *sfg, main_function,
-                    code_gen->GetPointerMappings(),
-                    code_gen->GetScanColumnInfos());
-            }
-            else {
-                pipe_exec = new duckdb::CypherPipelineExecutor(
-                    new_ctxt, pipe, *sfg, move(child_executors),
-                    move(dep_executors));
-            }
+            pipe_exec = new duckdb::CypherPipelineExecutor(
+                new_ctxt, pipe, *sfg, move(child_executors),
+                move(dep_executors));
         }
         else {
-            if (enable_gpu_processing) {
-                pipe_exec = new duckdb::GPUPipelineExecutor(
-                    new_ctxt, pipe, main_function,
-                    code_gen->GetPointerMappings(),
-                    code_gen->GetScanColumnInfos());
-            }
-            else {
-                pipe_exec = new duckdb::CypherPipelineExecutor(
-                    new_ctxt, pipe, move(child_executors), move(dep_executors));
-            }
+            pipe_exec = new duckdb::CypherPipelineExecutor(
+                new_ctxt, pipe, move(child_executors), move(dep_executors));
         }
 
+        executors.push_back(pipe_exec);
+    }
+
+    if (enable_gpu_processing) {
+        // Compile generated code
+        if (!code_gen->CompileGeneratedCode()) {
+            throw std::runtime_error("Failed to compile GPU kernel code");
+        }
+
+        // Get compiled kernel function
+        void *main_function = code_gen->GetCompiledHost();
+        if (!main_function) {
+            throw std::runtime_error("Failed to get compiled kernel function");
+        }
+
+        // Create pipeline executor
+        duckdb::BasePipelineExecutor *pipe_exec;
+        auto *new_ctxt = new duckdb::ExecutionContext(context);
+        if (generate_sfg) {
+            D_ASSERT(false);
+            // pipe_exec = new duckdb::GPUPipelineExecutor(
+            //     new_ctxt, pipe, *sfg, main_function,
+            //     code_gen->GetPointerMappings(), code_gen->GetScanColumnInfos());
+        }
+        else {
+            pipe_exec = new duckdb::GPUPipelineExecutor(
+                new_ctxt, main_function, code_gen->GetPointerMappings(),
+                code_gen->GetScanColumnInfos());
+        }
         executors.push_back(pipe_exec);
     }
 

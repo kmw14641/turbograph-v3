@@ -14,16 +14,14 @@ class SchemaFlowGraph;
 //! GPU Pipeline Executor for GPU-accelerated pipeline execution
 class GPUPipelineExecutor : public BasePipelineExecutor {
    public:
-    GPUPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline,
+    GPUPipelineExecutor(ExecutionContext *context, void *kernel_function);
+    GPUPipelineExecutor(ExecutionContext *context, SchemaFlowGraph &sfg,
                         void *kernel_function);
-    GPUPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline,
-                        SchemaFlowGraph &sfg, void *kernel_function);
-    GPUPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline,
-                        void *kernel_function,
+    GPUPipelineExecutor(ExecutionContext *context, void *kernel_function,
                         const std::vector<PointerMapping> &pointer_mappings,
                         const std::vector<ScanColumnInfo> &scan_column_infos);
-    GPUPipelineExecutor(ExecutionContext *context, CypherPipeline *pipeline,
-                        SchemaFlowGraph &sfg, void *kernel_function,
+    GPUPipelineExecutor(ExecutionContext *context, SchemaFlowGraph &sfg,
+                        void *kernel_function,
                         const std::vector<PointerMapping> &pointer_mappings,
                         const std::vector<ScanColumnInfo> &scan_column_infos);
     ~GPUPipelineExecutor();
@@ -32,7 +30,7 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
     void ExecutePipeline() override;
 
     //! Get pipeline pointer
-    CypherPipeline *GetPipeline() const override { return pipeline; }
+    CypherPipeline *GetPipeline() const override { return nullptr; }
 
     //! Get context pointer
     ExecutionContext *GetContext() const override { return context; }

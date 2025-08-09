@@ -3,7 +3,6 @@
 #include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <nvrtc.h>
-#include <fstream>
 #include <sstream>
 #include "catalog/catalog.hpp"
 #include "catalog/catalog_entry/list.hpp"
@@ -27,11 +26,19 @@ GpuCodeGenerator::GpuCodeGenerator(ClientContext &context)
     InitializeLLVMTargets();
     jit_compiler = std::make_unique<GpuJitCompiler>();
     InitializeOperatorGenerators();
+
+    // for debugging
+    gpu_code_file.open("generated_gpu_code.cu", std::ios::out | std::ios::trunc);
+    cpu_code_file.open("generated_cpu_code.cpp", std::ios::out | std::ios::trunc);
+    gpu_code_file.close();
+    cpu_code_file.close();
 }
 
 GpuCodeGenerator::~GpuCodeGenerator()
 {
     Cleanup();
+    gpu_code_file.close();
+    cpu_code_file.close();
 }
 
 void GpuCodeGenerator::InitializeLLVMTargets()
@@ -62,6 +69,25 @@ void GpuCodeGenerator::InitializeOperatorGenerators()
         std::make_unique<HashAggregateCodeGenerator>();
 }
 
+void GpuCodeGenerator::GenerateGlobalDeclarations(
+    std::vector<CypherPipeline *> &pipelines)
+{
+    CodeBuilder code;
+    for (auto &pipeline : pipelines) {
+        // Generate global declarations for each operator
+        for (size_t i = 0; i < pipeline->GetPipelineLength(); i++) {
+            auto *op = pipeline->GetIdxOperator(i);
+            GenerateGlobalDeclarations(op, i, code, pipeline_context);
+        }
+    }
+    global_declarations = code.str();
+
+    // for debugging - write to file
+    gpu_code_file.open("generated_gpu_code.cu", std::ios::app);
+    gpu_code_file << global_declarations << std::endl;
+    gpu_code_file.close();
+}
+
 void GpuCodeGenerator::GenerateGPUCode(CypherPipeline &pipeline)
 {
     SCOPED_TIMER_SIMPLE(GenerateGPUCode, spdlog::level::info,
@@ -78,17 +104,12 @@ void GpuCodeGenerator::GenerateGPUCode(CypherPipeline &pipeline)
     SUBTIMER_STOP(GenerateGPUCode, "GenerateHostCode");
 
     // for debug - write to files
-    std::ofstream gpu_code_file("generated_gpu_code.cu");
-    if (gpu_code_file.is_open()) {
-        gpu_code_file << generated_gpu_code << std::endl;
-        gpu_code_file.close();
-    }
-
-    std::ofstream cpu_code_file("generated_cpu_code.cpp");
-    if (cpu_code_file.is_open()) {
-        cpu_code_file << generated_cpu_code << std::endl;
-        cpu_code_file.close();
-    }
+    gpu_code_file.open("generated_gpu_code.cu", std::ios::app);
+    gpu_code_file << generated_gpu_code << std::endl;
+    gpu_code_file.close();
+    cpu_code_file.open("generated_cpu_code.cpp", std::ios::app);
+    cpu_code_file << generated_cpu_code << std::endl;
+    cpu_code_file.close();
 }
 
 void GpuCodeGenerator::SplitPipelineIntoSubPipelines(CypherPipeline &pipeline)
@@ -210,8 +231,7 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                     }
                     break;
                 }
-                case PhysicalOperatorType::PROJECTION: {
-                    // TODO
+                case PhysicalOperatorType::HASH_AGGREGATE: {
                     break;
                 }
                 default:
@@ -983,7 +1003,8 @@ std::string GpuCodeGenerator::ConvertLogicalTypeToPrimitiveType(
         case PhysicalType::DOUBLE:
             return "double ";
         case PhysicalType::VARCHAR:
-            return "char *";
+            // return "char *";
+            return "str_t "; // TODO string_t?
         default:
             throw std::runtime_error("Unsupported logical type: " +
                                      std::to_string((uint8_t)type.id()));
@@ -1580,6 +1601,23 @@ void GpuCodeGenerator::GenerateOperatorCode(CypherPhysicalOperator *op,
     }
 }
 
+void GpuCodeGenerator::GenerateGlobalDeclarations(CypherPhysicalOperator *op,
+                                                  size_t op_idx,
+                                                  CodeBuilder &code,
+                                                  PipelineContext &pipeline_ctx)
+{
+    auto it = operator_generators.find(op->GetOperatorType());
+    if (it != operator_generators.end()) {
+        it->second->GenerateGlobalDeclarations(op, op_idx, code, this, context,
+                                               pipeline_ctx);
+    }
+    else {
+        // Default handling for unknown operators
+        code.Add("// Unknown operator type: " +
+                 std::to_string(static_cast<int>(op->GetOperatorType())));
+    }
+}
+
 void NodeScanCodeGenerator::GenerateCode(
     CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
     ClientContext &context, PipelineContext &pipeline_ctx, bool is_main_loop)
@@ -1707,6 +1745,14 @@ void NodeScanCodeGenerator::GenerateCode(
     }
 }
 
+void NodeScanCodeGenerator::GenerateGlobalDeclarations(
+    CypherPhysicalOperator *op, size_t op_idx, CodeBuilder &code,
+    GpuCodeGenerator *code_gen, ClientContext &context,
+    PipelineContext &pipeline_ctx)
+{
+    return;
+}
+
 void ProjectionCodeGenerator::GenerateCode(
     CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
     ClientContext &context, PipelineContext &pipeline_ctx, bool is_main_loop)
@@ -1744,201 +1790,12 @@ void ProjectionCodeGenerator::GenerateProjectionExpressionCode(
         return;
 }
 
-std::string ProjectionCodeGenerator::ConvertLogicalTypeToCUDAType(
-    LogicalType type)
-{
-    switch (type.id()) {
-        case LogicalTypeId::BOOLEAN:
-            return "bool ";
-        case LogicalTypeId::TINYINT:
-            return "int8_t ";
-        case LogicalTypeId::SMALLINT:
-            return "int16_t ";
-        case LogicalTypeId::INTEGER:
-            return "int32_t ";
-        case LogicalTypeId::BIGINT:
-            return "int64_t ";
-        case LogicalTypeId::UBIGINT:
-            return "uint64_t ";
-        case LogicalTypeId::FLOAT:
-            return "float ";
-        case LogicalTypeId::DOUBLE:
-            return "double ";
-        case LogicalTypeId::VARCHAR:
-            return "char *";
-        default:
-            return "uint64_t ";  // Default to uint64_t for compatibility
-    }
-}
-
-std::string ProjectionCodeGenerator::ConvertValueToCUDALiteral(
-    const Value &value)
-{
-    switch (value.type().id()) {
-        case LogicalTypeId::BOOLEAN:
-            return value.GetValue<bool>() ? "true" : "false";
-        case LogicalTypeId::TINYINT:
-        case LogicalTypeId::SMALLINT:
-        case LogicalTypeId::INTEGER:
-        case LogicalTypeId::BIGINT:
-            return std::to_string(value.GetValue<int64_t>());
-        case LogicalTypeId::UBIGINT:
-            return std::to_string(value.GetValue<uint64_t>());
-        case LogicalTypeId::FLOAT:
-            return std::to_string(value.GetValue<float>()) + "f";
-        case LogicalTypeId::DOUBLE:
-            return std::to_string(value.GetValue<double>());
-        case LogicalTypeId::VARCHAR:
-            return "\"" + value.GetValue<string>() + "\"";
-        default:
-            return "0";  // Default value
-    }
-}
-
-std::string ProjectionCodeGenerator::ExpressionTypeToString(ExpressionType type)
-{
-    switch (type) {
-        case ExpressionType::COMPARE_EQUAL:
-            return "==";
-        case ExpressionType::COMPARE_NOTEQUAL:
-            return "!=";
-        case ExpressionType::COMPARE_LESSTHAN:
-            return "<";
-        case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-            return "<=";
-        case ExpressionType::COMPARE_GREATERTHAN:
-            return ">";
-        case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-            return ">=";
-        default:
-            return "unknown";
-    }
-}
-
-void ProjectionCodeGenerator::GenerateFunctionCallCode(
-    BoundFunctionExpression *func_expr, const std::string &output_var,
-    CodeBuilder &code, GpuCodeGenerator *code_gen, ClientContext &context,
+void ProjectionCodeGenerator::GenerateGlobalDeclarations(
+    CypherPhysicalOperator *op, size_t op_idx, CodeBuilder &code,
+    GpuCodeGenerator *code_gen, ClientContext &context,
     PipelineContext &pipeline_ctx)
 {
-    // For now, we'll implement a simple approach
-    // In the future, this should be expanded to handle different function types
-
-    if (func_expr->children.size() == 1) {
-        // Unary function
-        code.Add(ConvertLogicalTypeToCUDAType(func_expr->return_type) + " " +
-                 output_var + " = ");
-
-        // Generate lazy loading for the input
-        auto child_expr = func_expr->children[0].get();
-        if (child_expr->expression_class == ExpressionClass::BOUND_REF) {
-            auto ref_expr =
-                dynamic_cast<BoundReferenceExpression *>(child_expr);
-            if (ref_expr) {
-                std::string input_col_name =
-                    "input_col_" + std::to_string(ref_expr->index);
-                code.Add("// Lazy load input column if needed");
-                code.Add("if (!" + input_col_name + "_loaded) {");
-                code.IncreaseNesting();
-                code.Add(input_col_name + "_ptr = static_cast<uint64_t*>(" +
-                         input_col_name + "_data);");
-                code.Add(input_col_name + "_loaded = true;");
-                code.DecreaseNesting();
-                code.Add("}");
-
-                if (func_expr->function.name == "abs") {
-                    code.Add(output_var + " = abs(" + input_col_name +
-                             "_ptr[i]);");
-                }
-                else if (func_expr->function.name == "sqrt") {
-                    code.Add(output_var + " = sqrt(" + input_col_name +
-                             "_ptr[i]);");
-                }
-                else {
-                    code.Add(output_var + " = " + input_col_name +
-                             "_ptr[i]; // TODO: implement function " +
-                             func_expr->function.name);
-                }
-            }
-        }
-        else {
-            code.Add("input_col_0; // TODO: get actual input column");
-        }
-    }
-    else {
-        // Multi-argument function
-        code.Add(ConvertLogicalTypeToCUDAType(func_expr->return_type) +
-                 output_var + " = 0; // TODO: implement multi-arg function");
-    }
-}
-
-void ProjectionCodeGenerator::GenerateOperatorCode(
-    BoundOperatorExpression *op_expr, const std::string &output_var,
-    CodeBuilder &code, GpuCodeGenerator *code_gen, ClientContext &context,
-    PipelineContext &pipeline_ctx)
-{
-    if (op_expr->children.size() == 2) {
-        // Binary operator
-        code.Add(ConvertLogicalTypeToCUDAType(op_expr->return_type) +
-                 output_var + " = ");
-
-        // Generate lazy loading for both operands
-        std::string left_operand, right_operand;
-
-        if (op_expr->children[0]->expression_class ==
-            ExpressionClass::BOUND_REF) {
-            auto ref_expr = dynamic_cast<BoundReferenceExpression *>(
-                op_expr->children[0].get());
-            if (ref_expr) {
-                left_operand =
-                    "input_col_" + std::to_string(ref_expr->index) + "_ptr[i]";
-                std::string input_col_name =
-                    "input_col_" + std::to_string(ref_expr->index);
-                code.Add("// Lazy load left operand if needed");
-                code.Add("if (!" + input_col_name + "_loaded) {");
-                code.IncreaseNesting();
-                code.Add(input_col_name + "_ptr = static_cast<uint64_t*>(" +
-                         input_col_name + "_data);");
-                code.Add(input_col_name + "_loaded = true;");
-                code.DecreaseNesting();
-                code.Add("}");
-            }
-        }
-        else {
-            left_operand = "0";  // TODO: handle other expression types
-        }
-
-        if (op_expr->children[1]->expression_class ==
-            ExpressionClass::BOUND_REF) {
-            auto ref_expr = dynamic_cast<BoundReferenceExpression *>(
-                op_expr->children[1].get());
-            if (ref_expr) {
-                right_operand =
-                    "input_col_" + std::to_string(ref_expr->index) + "_ptr[i]";
-                std::string input_col_name =
-                    "input_col_" + std::to_string(ref_expr->index);
-                code.Add("// Lazy load right operand if needed");
-                code.Add("if (!" + input_col_name + "_loaded) {");
-                code.IncreaseNesting();
-                code.Add(input_col_name + "_ptr = static_cast<uint64_t*>(" +
-                         input_col_name + "_data);");
-                code.Add(input_col_name + "_loaded = true;");
-                code.DecreaseNesting();
-                code.Add("}");
-            }
-        }
-        else {
-            right_operand = "0";  // TODO: handle other expression types
-        }
-
-        code.Add(output_var + " = " + left_operand + " " +
-                 ExpressionTypeToString(op_expr->type) + " " + right_operand +
-                 ";");
-    }
-    else {
-        // Unary or other operator
-        code.Add(ConvertLogicalTypeToCUDAType(op_expr->return_type) +
-                 output_var + " = 0; // TODO: implement operator");
-    }
+    return;
 }
 
 void ProduceResultsCodeGenerator::GenerateCode(
@@ -2060,6 +1917,14 @@ void ProduceResultsCodeGenerator::GenerateCode(
     code.Add("// Results produced successfully");
 }
 
+void ProduceResultsCodeGenerator::GenerateGlobalDeclarations(
+    CypherPhysicalOperator *op, size_t op_idx, CodeBuilder &code,
+    GpuCodeGenerator *code_gen, ClientContext &context,
+    PipelineContext &pipeline_ctx)
+{
+    return;
+}
+
 void FilterCodeGenerator::GenerateCode(
     CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
     ClientContext &context, PipelineContext &pipeline_ctx, bool is_main_loop)
@@ -2098,6 +1963,14 @@ void FilterCodeGenerator::GenerateCode(
     code.Add("// Filter condition passed, continue processing");
 }
 
+void FilterCodeGenerator::GenerateGlobalDeclarations(
+    CypherPhysicalOperator *op, size_t op_idx, CodeBuilder &code,
+    GpuCodeGenerator *code_gen, ClientContext &context,
+    PipelineContext &pipeline_ctx)
+{
+    return;
+}
+
 void HashAggregateCodeGenerator::GenerateCode(
     CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
     ClientContext &context, PipelineContext &pipeline_ctx, bool is_main_loop)
@@ -2132,6 +2005,7 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
 {
     auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
     if (agg_op->groups.size() == 0) {
+        code.Add("// HashAggregate build side code without grouping");
         // if not self.touched and not self.doGroup and KernelCall.args.local_aggregation:
         //     for attrId, (inId, reductionType) in self.lop.aggregateTuples.items():
         //         attr, inputIdentifier, reductionType = self.lop.aggregateTuplesCreated[attrId]
@@ -2160,18 +2034,43 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
     } else {
         D_ASSERT(agg_op->groups.size() >= 1);
         std::string op_id = std::to_string(agg_op->GetOperatorId());
+        code.Add("// HashAggregate build side code with grouping");
         code.Add("Payload" + op_id + " buf_payl;");
         code.Add("uint64_t hash_key = 0;");
 
-        // for attrId, attr in self.lop.groupAttributes.items():
-        //     code.Add(f'buf_payl.{attr.id_name} = {attr.id_name};")
+        std::vector<uint64_t> group_key_idxs;
+        for (auto &group : agg_op->groups) {
+            code_gen->GetReferencedColumns(group.get(), group_key_idxs);
+        }
 
-        // for attrId, attr in self.lop.groupAttributes.items():
-        //     if attr.dataType == Type.STRING:
-        //         code.Add(f'hash_key = hash(hash_key + stringHash({attr.id_name}));")
-        //     else:
-        //         code.Add(f'hash_key = hash(hash_key + ((uint64_t) {attr.id_name}));")
-                
+        std::vector<std::string> group_key_names;
+        for (auto &group_key_idx : group_key_idxs) {
+            std::string col_name =
+                pipeline_ctx.input_column_names[group_key_idx];
+            std::replace(col_name.begin(), col_name.end(), '.', '_');
+            group_key_names.push_back(col_name);
+        }
+
+        for (size_t i = 0; i < group_key_idxs.size(); i++) {
+            auto group_key_idx = group_key_idxs[i];
+            std::string col_name = group_key_names[i];
+            code.Add("buf_payl." + col_name + " = " + col_name + ";");
+        }
+
+        for (size_t i = 0; i < group_key_idxs.size(); i++) {
+            auto group_key_idx = group_key_idxs[i];
+            std::string col_name = group_key_names[i];
+            if (pipeline_ctx.input_column_types[group_key_idx].id() ==
+                LogicalTypeId::VARCHAR) {
+                code.Add("hash_key = hash(hash_key + stringHash(" + col_name +
+                         "));");
+            }
+            else {
+                code.Add("hash_key = hash(hash_key + ((uint64_t) " + col_name +
+                         "));");
+            }
+        }
+
         code.Add("int bucketFound = 0;");
         code.Add("int numLookups = 0;");
         code.Add("int bucketId = -1;");
@@ -2207,28 +2106,94 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
         code.Add("Payload" + op_id + " entry = aht" + op_id +
                  "[bucketId].payload;");
         code.Add("bucketFound = 1;");
-        // for attrId, attr in self.lop.groupAttributes.items():
-        //     if attr.dataType == Type.STRING:
-        //         code.Add(f"bucketFound &= stringEquals(entry.{attr.id_name}, {attr.id_name});")
-        //     else:
-        //         code.Add(f"bucketFound &= entry.{attr.id_name} == {attr.id_name};")
-        
+
+        for (size_t i = 0; i < group_key_idxs.size(); i++) {
+            auto group_key_idx = group_key_idxs[i];
+            std::string col_name = group_key_names[i];
+            if (pipeline_ctx.input_column_types[group_key_idx].id() ==
+                LogicalTypeId::VARCHAR) {
+                code.Add("bucketFound &= stringEquals(entry." + col_name +
+                         ", " + col_name + ");");
+            }
+            else {
+                code.Add("bucketFound &= entry." + col_name +
+                         " == " + col_name + ";");
+            }
+        }
+
         code.DecreaseNesting();
         code.Add("}");
 
-        // for attrId, (inId, _) in self.lop.aggregateTuples.items():
-        //     attr, inputIdentifier, reductionType = self.lop.aggregateTuplesCreated[attrId]
-        //     inAttr = self.lop.aggregateInAttributes.get(inId, None)
-        //     dst = f"aht{self.opId}_{attr.id_name}[bucketId]"
-        //     if reductionType == Reduction.COUNT:
-        //         code.Add(f"atomicAdd(&{dst},1);")
-        //     elif reductionType == Reduction.SUM or reductionType == Reduction.AVG:
-        //         code.Add(f"atomicAdd(&{dst},{inAttr.id_name});")
-        //     elif reductionType == Reduction.MAX:
-        //         code.Add(f"atomicMax(&{dst},{inAttr.id_name});")
-        //     elif reductionType == Reduction.MIN:
-        //         code.Add(f"atomicMin(&{dst},{inAttr.id_name});")
+        std::vector<std::string> agg_function_names;
+        for (auto &aggregate : agg_op->aggregates) {
+            D_ASSERT(aggregate->GetExpressionType() ==
+                     ExpressionType::BOUND_AGGREGATE);
+            auto bound_agg =
+                dynamic_cast<BoundAggregateExpression *>(aggregate.get());
+            agg_function_names.push_back(bound_agg->function.name);
+        }
+
+        for (size_t i = 0; i < agg_function_names.size(); i++) {
+            auto &agg_function_name = agg_function_names[i];
+            std::string agg_var_name = "agg_" + std::to_string(i);
+            std::string dst = "aht" + op_id + "_" + agg_var_name + "[bucketId]";
+            std::string inattr = "todo";  // TODO
+            if (agg_function_name == "count_star" ||
+                agg_function_name == "count") {
+                code.Add("atomicAdd(&" + dst + ", 1);");
+            }
+            else if (agg_function_name == "sum" || agg_function_name == "avg") {
+                code.Add("atomicAdd(&" + dst + ", " + inattr + ");");
+            }
+            else if (agg_function_name == "max") {
+                code.Add("atomicMax(&" + dst + ", " + inattr + ");");
+            }
+            else if (agg_function_name == "min") {
+                code.Add("atomicMin(&" + dst + ", " + inattr + ");");
+            }
+            else {
+                throw NotImplementedException(
+                    "HashAggregate build side code generation for " +
+                    agg_function_name + " not implemented yet");
+            }
+        }
     }
+}
+
+void HashAggregateCodeGenerator::GenerateGlobalDeclarations(
+    CypherPhysicalOperator *op, size_t op_idx, CodeBuilder &code,
+    GpuCodeGenerator *code_gen, ClientContext &context,
+    PipelineContext &pipeline_ctx)
+{
+    // Hashaggregate appears twice in the pipelines, once for build side
+    // and once for probe side. We need to generate payload structure only once
+    if (op_idx == 0)
+        return;
+
+    // declare payload
+    auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
+    uint64_t op_id = agg_op->GetOperatorId();
+    code.Add("struct Payload" + std::to_string(op_id) + " {");
+    code.IncreaseNesting();
+
+    auto &input_schema = agg_op->GetSchema();
+    auto &input_column_names = input_schema.getStoredColumnNamesRef();
+    auto &input_column_types = input_schema.getStoredTypesRef();
+    vector<uint64_t> group_key_idxs;
+    for (auto &group : agg_op->groups) {
+        code_gen->GetReferencedColumns(group.get(), group_key_idxs);
+    }
+    for (auto &group_key_idx : group_key_idxs) {
+        std::string col_name = input_column_names[group_key_idx];
+        std::replace(col_name.begin(), col_name.end(), '.', '_');
+        auto col_type = input_column_types[group_key_idx];
+        std::string ctype =
+            code_gen->ConvertLogicalTypeToPrimitiveType(col_type);
+        code.Add(ctype + col_name + ";");
+    }
+    code.DecreaseNesting();
+    code.Add("}; // Payload" + std::to_string(op_id));
+    return;
 }
 
 void GpuCodeGenerator::GenerateCodeForAdaptiveWorkSharing(
@@ -2673,9 +2638,9 @@ void PipelineContext::AdvanceOperator()
     D_ASSERT(cur_op_idx >= 0 && cur_op_idx < total_operators);
 
     auto *current_op = current_pipeline->GetIdxOperator(cur_op_idx);
-    auto &input_schema = current_op->GetSchema();
-    auto &input_column_names = input_schema.getStoredColumnNamesRef();
-    auto &input_column_types = input_schema.getStoredTypesRef();
+    // auto &input_schema = current_op->GetSchema();
+    // auto &input_column_names = input_schema.getStoredColumnNamesRef();
+    // auto &input_column_types = input_schema.getStoredTypesRef();
 
     // Update input schema from previous operator
     if (cur_op_idx > 0 && operator_column_names[cur_op_idx - 1] &&

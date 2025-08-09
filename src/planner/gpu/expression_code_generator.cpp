@@ -277,7 +277,8 @@ std::string ExpressionCodeGenerator::ConvertLogicalTypeToCUDAType(
         case LogicalTypeId::DOUBLE:
             return "double";
         case LogicalTypeId::VARCHAR:
-            return "char*";
+            // return "char*";
+            return "str_t"; // TODO: Use str_t for string types
         default:
             return "uint64_t";
     }
