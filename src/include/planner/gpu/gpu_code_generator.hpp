@@ -330,7 +330,7 @@ class GpuCodeGenerator {
 
     bool is_compiled;
     bool is_repeatable;
-    bool verbose_mode = true;  // Control parameter naming style
+    bool verbose_mode = false;  // Control parameter naming style
     bool do_inter_warp_lb = true;
     bool doWorkoadSizeTracking = false;
     bool generateInputPtrMapping = true;
