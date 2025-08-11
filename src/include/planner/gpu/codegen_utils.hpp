@@ -89,6 +89,9 @@ struct PipelineContext {
 
     std::unordered_map<std::string, std::string> column_to_param_mapping;
 
+    std::unordered_map<size_t, std::string> projection_variable_names;
+    std::unordered_set<size_t> input_proj_vars_generated;
+
     PipelineContext() : total_operators(0), cur_op_idx(0) {}
 
     // Initialize pipeline context with all operator schemas

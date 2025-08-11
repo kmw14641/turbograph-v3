@@ -37,15 +37,20 @@ std::string ExpressionCodeGenerator::GenerateExpressionCode(
                 dynamic_cast<BoundComparisonExpression *>(expr), code,
                 pipeline_ctx, column_map);
 
-        // case ExpressionClass::BOUND_FUNCTION:
-        //     return GenerateFunctionExpression(
-        //         dynamic_cast<BoundFunctionExpression *>(expr), code,
-        //         pipeline_ctx, column_map);
+        case ExpressionClass::BOUND_CAST:
+            return GenerateCastExpression(
+                dynamic_cast<BoundCastExpression *>(expr), code,
+                pipeline_ctx, column_map);
 
-        // case ExpressionClass::BOUND_OPERATOR:
-        //     return GenerateOperatorExpression(
-        //         dynamic_cast<BoundOperatorExpression *>(expr), code,
-        //         pipeline_ctx, column_map);
+        case ExpressionClass::BOUND_FUNCTION:
+            return GenerateFunctionExpression(
+                dynamic_cast<BoundFunctionExpression *>(expr), code,
+                pipeline_ctx, column_map);
+
+        case ExpressionClass::BOUND_OPERATOR:
+            return GenerateOperatorExpression(
+                dynamic_cast<BoundOperatorExpression *>(expr), code,
+                pipeline_ctx, column_map);
         
         case ExpressionClass::BOUND_CONJUNCTION: {
             std::string result_code = "";
@@ -170,6 +175,27 @@ std::string ExpressionCodeGenerator::GenerateComparisonExpression(
     return result_code;
 }
 
+std::string ExpressionCodeGenerator::GenerateCastExpression(
+    BoundCastExpression *cast_expr, CodeBuilder &code,
+    PipelineContext &pipeline_ctx,
+    std::unordered_map<uint64_t, std::string> &column_map)
+{
+    if (!cast_expr) {
+        throw InvalidInputException("Cast expression cannot be null");
+    }
+
+    std::string child_var = GenerateExpressionCode(cast_expr->child.get(), code, pipeline_ctx, column_map);
+
+    std::string target_type = ConvertLogicalTypeToCUDAType(cast_expr->return_type);
+    
+    if (!target_type.empty() && target_type.back() == ' ') {
+        target_type = target_type.substr(0, target_type.length()-1);
+    }
+    std::string result_code = "(" + target_type + ")(" + child_var + ")";
+
+    return result_code;
+}
+
 std::string ExpressionCodeGenerator::GenerateFunctionExpression(
     BoundFunctionExpression *func_expr, CodeBuilder &code,
     PipelineContext &pipeline_ctx,
@@ -179,11 +205,44 @@ std::string ExpressionCodeGenerator::GenerateFunctionExpression(
         throw InvalidInputException("Function expression cannot be null");
     }
 
-    throw NotImplementedException(
-        "Function expressions are not yet implemented in GPU code generation");
-
-    std::string result_code;
-    return result_code;
+    std::string func_name = func_expr->function.name;
+    
+    if (func_name == "-" && func_expr->children.size() == 2) {
+        std::string left_var = GenerateExpressionCode(
+            func_expr->children[0].get(), code, pipeline_ctx, column_map);
+        std::string right_var = GenerateExpressionCode(
+            func_expr->children[1].get(), code, pipeline_ctx, column_map);
+        return "(" + left_var + " - " + right_var + ")";
+    }
+    else if (func_name == "+" && func_expr->children.size() == 2) {
+        std::string left_var = GenerateExpressionCode(
+            func_expr->children[0].get(), code, pipeline_ctx, column_map);
+        std::string right_var = GenerateExpressionCode(
+            func_expr->children[1].get(), code, pipeline_ctx, column_map);
+        return "(" + left_var + " + " + right_var + ")";
+    }
+    else if (func_name == "*" && func_expr->children.size() == 2) {
+        std::string left_var = GenerateExpressionCode(
+            func_expr->children[0].get(), code, pipeline_ctx, column_map);
+        std::string right_var = GenerateExpressionCode(
+            func_expr->children[1].get(), code, pipeline_ctx, column_map);
+        return "(" + left_var + " * " + right_var + ")";
+    }
+    else if (func_name == "/" && func_expr->children.size() == 2) {
+        std::string left_var = GenerateExpressionCode(
+            func_expr->children[0].get(), code, pipeline_ctx, column_map);
+        std::string right_var = GenerateExpressionCode(
+            func_expr->children[1].get(), code, pipeline_ctx, column_map);
+        return "(" + left_var + " / " + right_var + ")";
+    }
+    else if (func_name == "-" && func_expr->children.size() == 1) {
+        std::string operand_var = GenerateExpressionCode(
+            func_expr->children[0].get(), code, pipeline_ctx, column_map);
+        return "(-" + operand_var + ")";
+    }
+    else {
+        throw NotImplementedException("Function '" + func_name + "' is not yet implemented in GPU code generation");
+    }
 }
 
 std::string ExpressionCodeGenerator::GenerateOperatorExpression(

@@ -14,6 +14,7 @@
 #include "planner/expression/bound_reference_expression.hpp"
 #include "planner/expression/bound_conjunction_expression.hpp"
 #include "planner/expression/bound_between_expression.hpp"
+#include "planner/expression/bound_cast_expression.hpp"
 #include "planner/gpu/codegen_utils.hpp"
 
 namespace duckdb {
@@ -55,6 +56,11 @@ class ExpressionCodeGenerator {
 
     std::string GenerateComparisonExpression(
         BoundComparisonExpression *comp_expr, CodeBuilder &code,
+        PipelineContext &pipeline_ctx,
+        std::unordered_map<uint64_t, std::string> &column_map);
+
+    std::string GenerateCastExpression(
+        BoundCastExpression *cast_expr, CodeBuilder &code,
         PipelineContext &pipeline_ctx,
         std::unordered_map<uint64_t, std::string> &column_map);
 
