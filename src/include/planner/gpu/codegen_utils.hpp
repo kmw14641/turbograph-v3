@@ -67,6 +67,7 @@ struct PipelineContext {
     std::vector<std::vector<std::string>> sub_pipeline_tids;
 
     std::unordered_map<std::string, std::string> attribute_tid_mapping;
+    std::unordered_map<std::string, std::string> attribute_source_mapping;
 
     // Operator schemas (references to original schemas)
     std::vector<const std::vector<std::string> *> operator_column_names;

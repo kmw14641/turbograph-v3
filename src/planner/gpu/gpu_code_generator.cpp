@@ -160,6 +160,7 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
     sub_pipeline_tids.clear();
     sub_pipeline_tids.resize(num_sub_pipelines);
     pipeline_context.attribute_tid_mapping.clear();
+    pipeline_context.attribute_source_mapping.clear();
 
     // Analyze each sub-pipeline to determine which columns need to be
     // materialized
@@ -188,6 +189,29 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                         pipeline_context.attribute_tid_mapping[col_name] = tid;
                     }
                     sub_pipeline_tids[sub_idx].push_back(tid);
+
+                    // Create source mapping info
+                    for (size_t i = 0; i < scan_op->oids.size(); i++) {
+                        uint64_t oid = scan_op->oids[i];
+                        auto &scan_projection_mapping =
+                            scan_op->scan_projection_mapping[i];
+                        for (size_t j = 0; j < scan_projection_mapping.size();
+                             j++) {
+                            auto &col_name = output_column_names[j];
+                            std::string source_name =
+                                "gr" + std::to_string(oid) + "_col_" +
+                                std::to_string(scan_projection_mapping[j] - 1) +
+                                "_data";
+                            D_ASSERT(
+                                pipeline_context.attribute_source_mapping.find(
+                                    col_name) ==
+                                pipeline_context.attribute_source_mapping
+                                    .end());
+                            pipeline_context
+                                .attribute_source_mapping[col_name] =
+                                source_name;
+                        }
+                    }
 
                     // Check if the scan operator has filter pushdown
                     // If it does, we need to materialize the columns
@@ -259,8 +283,8 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                         GetReferencedColumns(expr.get(), referenced_columns);
                         for (const auto &col_idx : referenced_columns) {
                             D_ASSERT(col_idx >= 0 &&
-                                     col_idx < input_column_names.size());
-                            auto &col_name = input_column_names[col_idx];
+                                     col_idx < output_column_names.size());
+                            auto &col_name = output_column_names[col_idx];
 
                             bool is_valid_column = true;
                             for (char c : col_name) {
@@ -273,7 +297,7 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
 
                             if (is_valid_column) {
                                 columns_to_be_materialized[sub_idx].push_back(
-                                    Attr{col_name, input_column_types[col_idx],
+                                    Attr{col_name, output_column_types[col_idx],
                                          col_idx});
                             }
                         }
@@ -1092,6 +1116,7 @@ void GpuCodeGenerator::GenerateOutputCode(CypherPipeline &sub_pipeline,
             break;
         default:
             throw std::runtime_error("Unsupported output type");
+    }
 }
 
 void GpuCodeGenerator::GenerateOutputCodeForType0(CypherPipeline &sub_pipeline,
@@ -1239,6 +1264,7 @@ void GpuCodeGenerator::GenerateOutputCodeForType2(CypherPipeline &sub_pipeline,
             std::string name = "ts_" + next_subpipe_id + "_" + tid;
             code.Add("{");
             code.IncreaseNesting();
+            // TODO additional types
             // if attr.dataType == Type.STRING:
             //     code.Add(f'char* start = (char*) __shfl_sync(ALL_LANES, (uint64_t) {name}_flushed.start, ts_src);')
             //     code.Add(f'char* end = (char*) __shfl_sync(ALL_LANES, (uint64_t) {name}_flushed.end, ts_src);')
@@ -1277,6 +1303,7 @@ void GpuCodeGenerator::GenerateOutputCodeForType2(CypherPipeline &sub_pipeline,
             std::string name = "ts_" + next_subpipe_id + "_" + tid;
             code.Add("{");
             code.IncreaseNesting();
+            // TODO additional types
             // if attr.dataType == Type.STRING:
             //     code.Add(f'char* start = (char*) __shfl_sync(ALL_LANES, (uint64_t) {attr.id_name}.start, ts_src);')
             //     code.Add(f'char* end = (char*) __shfl_sync(ALL_LANES, (uint64_t) {attr.id_name}.end, ts_src);')
@@ -1389,6 +1416,7 @@ PipeOutputType GpuCodeGenerator::GetPipeOutputType(CypherPipeline &sub_pipeline)
 void GpuCodeGenerator::GenerateCodeForMaterialization(
     CodeBuilder &code, PipelineContext &pipeline_context)
 {
+    // Declaration only in this point
     int cur_subpipe_idx = pipeline_context.current_sub_pipeline_index;
     auto &cur_cols_to_be_materialized =
         pipeline_context.columns_to_be_materialized[cur_subpipe_idx];
@@ -1405,7 +1433,7 @@ void GpuCodeGenerator::GenerateCodeForMaterialization(
         std::string ctype = ConvertLogicalTypeToPrimitiveType(
             cur_cols_to_be_materialized[i].type);
         code.Add(ctype + col_name + ";");
-        pipeline_context.column_materialized[column] = true;
+        // pipeline_context.column_materialized[column] = true;
     }
     // int cur_subpipe_idx = pipeline_context.current_sub_pipeline_index;
     // auto &cur_cols_to_be_materialized =
@@ -1593,40 +1621,35 @@ void NodeScanCodeGenerator::GenerateCode(
             auto &col_name = columns_to_materialize[i].name;
             auto col_type = columns_to_materialize[i].type;
             auto col_pos = columns_to_materialize[i].pos;
+            auto col_id = scan_op->scan_projection_mapping[0][col_pos];
 
             // Generate code for materializing this column
-            std::string col_name_fixed = col_name;
             D_ASSERT(pipeline_ctx.attribute_tid_mapping.find(col_name) !=
                      pipeline_ctx.attribute_tid_mapping.end());
             std::string tid_name = pipeline_ctx.attribute_tid_mapping[col_name];
-            std::replace(col_name_fixed.begin(), col_name_fixed.end(), '.',
-                         '_');
-            code.Add(col_name_fixed + " = " + graphlet_name + "_col_" +
-                     std::to_string(col_pos - 1) + "_data[" + tid_name + "];");
-            column_pos_to_name[col_pos] = col_name_fixed;
-            
-            // TODO merge
-            // std::string sanitized_col_name;
-            // for (char c : col_name_fixed) {
-            //     if (std::isalnum(c) || c == '_') {
-            //         sanitized_col_name += c;
-            //     } else {
-            //         sanitized_col_name += '_';
-            //     }
-            // }
-            
-            // if (!sanitized_col_name.empty() && std::isdigit(sanitized_col_name[0])) {
-            //     sanitized_col_name = "col_" + sanitized_col_name;
-            // }
-            
-            // if (sanitized_col_name.empty()) {
-            //     sanitized_col_name = "col_" + std::to_string(i);
-            // }
-            
-            // code.Add(sanitized_col_name + " = " + graphlet_name + "_col_" +
-            //          std::to_string(i) + "_data[" +
-            //          pipeline_ctx.current_tid_name + "];");
-            // column_pos_to_name[col_pos] = sanitized_col_name;
+
+            std::string sanitized_col_name;
+            for (char c : col_name) {
+                if (std::isalnum(c) || c == '_') {
+                    sanitized_col_name += c;
+                }
+                else {
+                    sanitized_col_name += '_';
+                }
+            }
+
+            if (!sanitized_col_name.empty() &&
+                std::isdigit(sanitized_col_name[0])) {
+                sanitized_col_name = "col_" + sanitized_col_name;
+            }
+
+            if (sanitized_col_name.empty()) {
+                sanitized_col_name = "col_" + std::to_string(i);
+            }
+
+            code.Add(sanitized_col_name + " = " + graphlet_name + "_col_" +
+                     std::to_string(col_id - 1) + "_data[" + tid_name + "];");
+            column_pos_to_name[col_pos] = sanitized_col_name;
         }
 
         if (scan_op->is_filter_pushdowned) {
@@ -1876,52 +1899,56 @@ void ProjectionCodeGenerator::GenerateCode(
     code.Add("// Projection operator");
 
     ExpressionCodeGenerator expr_gen(context);
-    
+
     std::unordered_map<uint64_t, std::string> column_map;
-    
+
     auto &columns_to_materialize =
         pipeline_ctx.columns_to_be_materialized
             [pipeline_ctx.current_sub_pipeline_index];
-    auto &column_types_to_materialize =
-        pipeline_ctx.column_types_to_be_materialized
-            [pipeline_ctx.current_sub_pipeline_index];
-    
-    if (pipeline_ctx.input_proj_vars_generated.find(pipeline_ctx.current_sub_pipeline_index) == 
+
+    if (pipeline_ctx.input_proj_vars_generated.find(
+            pipeline_ctx.current_sub_pipeline_index) ==
         pipeline_ctx.input_proj_vars_generated.end()) {
-        
+
         for (size_t i = 0; i < columns_to_materialize.size(); i++) {
-            std::string col_name = columns_to_materialize[i];
-            LogicalType col_type = column_types_to_materialize[i];
-            
+            std::string &col_name = columns_to_materialize[i].name;
+            LogicalType &col_type = columns_to_materialize[i].type;
+
             std::stringstream hex_stream;
             hex_stream << std::hex << (0x100000 + i);
             std::string hex_suffix = hex_stream.str().substr(1);
             std::string input_var_name = "input_proj_" + hex_suffix;
-            
+
             std::string sanitized_col_name;
             for (char c : col_name) {
                 if (std::isalnum(c) || c == '_') {
                     sanitized_col_name += c;
-                } else {
+                }
+                else {
                     sanitized_col_name += '_';
                 }
             }
-            
-            if (!sanitized_col_name.empty() && std::isdigit(sanitized_col_name[0])) {
+
+            if (!sanitized_col_name.empty() &&
+                std::isdigit(sanitized_col_name[0])) {
                 sanitized_col_name = "col_" + sanitized_col_name;
             }
-            
+
             if (sanitized_col_name.empty()) {
                 sanitized_col_name = "col_" + std::to_string(i);
             }
-            
-            std::string cuda_type = ConvertLogicalTypeToCUDAType(col_type);
-            code.Add(cuda_type + " " + input_var_name + " = " + sanitized_col_name + ";");
-            
+
+            std::string cuda_type =
+                code_gen->ConvertLogicalTypeToPrimitiveType(col_type);
+            code.Add(cuda_type + input_var_name + " = " + sanitized_col_name +
+                     ";");
+
             column_map[i] = input_var_name;
         }
-        pipeline_ctx.input_proj_vars_generated.insert(pipeline_ctx.current_sub_pipeline_index);
-    } else {
+        pipeline_ctx.input_proj_vars_generated.insert(
+            pipeline_ctx.current_sub_pipeline_index);
+    }
+    else {
         for (size_t i = 0; i < columns_to_materialize.size(); i++) {
             std::stringstream hex_stream;
             hex_stream << std::hex << (0x100000 + i);
@@ -1936,31 +1963,36 @@ void ProjectionCodeGenerator::GenerateCode(
     for (size_t expr_idx = 0; expr_idx < proj_op->expressions.size();
          expr_idx++) {
         auto &expr = proj_op->expressions[expr_idx];
-        
+
         std::stringstream hex_stream;
         hex_stream << std::hex << (0x100000 + output_var_counter);
         std::string hex_suffix = hex_stream.str().substr(1);
         std::string proj_var_name = "output_proj_" + hex_suffix;
-        
+
         std::string result_expr = expr_gen.GenerateExpressionCode(
             expr.get(), code, pipeline_ctx, column_map);
-        
+
         if (expr->expression_class == ExpressionClass::BOUND_REF) {
             pipeline_ctx.projection_variable_names[expr_idx] = result_expr;
-        } else {
-            std::string cuda_type = ConvertLogicalTypeToCUDAType(expr->return_type);
+        }
+        else {
+            std::string cuda_type =
+                code_gen->ConvertLogicalTypeToPrimitiveType(expr->return_type);
             code.Add(cuda_type + proj_var_name + " = " + result_expr + ";");
-            
+
             pipeline_ctx.projection_variable_names[expr_idx] = proj_var_name;
             output_var_counter++;
         }
-        
+
         if (expr_idx < pipeline_ctx.output_column_names.size()) {
-            std::string output_col_name = pipeline_ctx.output_column_names[expr_idx];
-            pipeline_ctx.column_materialized[output_col_name] = true;
-            
-            std::string final_var_name = pipeline_ctx.projection_variable_names[expr_idx];
-            column_map[pipeline_ctx.input_column_names.size() + expr_idx] = final_var_name;
+            std::string output_col_name =
+                pipeline_ctx.output_column_names[expr_idx];
+            // pipeline_ctx.column_materialized[output_col_name] = true;
+
+            std::string final_var_name =
+                pipeline_ctx.projection_variable_names[expr_idx];
+            column_map[pipeline_ctx.input_column_names.size() + expr_idx] =
+                final_var_name;
         }
     }
 }
@@ -2009,30 +2041,29 @@ void ProduceResultsCodeGenerator::GenerateCode(
     
     for (size_t col_idx = 0; col_idx < output_column_names.size(); col_idx++) {
         std::string orig_col_name = output_column_names[col_idx];
-        std::string col_name = orig_col_name;
-        std::string tid_name = pipeline_ctx.attribute_tid_mapping[col_name];
+        std::string tid_name = pipeline_ctx.attribute_tid_mapping[orig_col_name];
         // Replace '.' with '_' for valid C/C++ variable names
-        std::replace(col_name.begin(), col_name.end(), '.', '_');
-        // TODO merge
-        // std::cerr << "Processing output column: " << orig_col_name
-        //           << std::endl;
+        // std::replace(col_name.begin(), col_name.end(), '.', '_');
+
+        std::cerr << "Processing output column: " << orig_col_name
+                  << std::endl;
         
-        // std::string col_name;
-        // for (char c : orig_col_name) {
-        //     if (std::isalnum(c) || c == '_') {
-        //         col_name += c;
-        //     } else {
-        //         col_name += '_';
-        //     }
-        // }
+        std::string col_name;
+        for (char c : orig_col_name) {
+            if (std::isalnum(c) || c == '_') {
+                col_name += c;
+            } else {
+                col_name += '_';
+            }
+        }
         
-        // if (!col_name.empty() && std::isdigit(col_name[0])) {
-        //     col_name = "col_" + col_name;
-        // }
+        if (!col_name.empty() && std::isdigit(col_name[0])) {
+            col_name = "col_" + col_name;
+        }
         
-        // if (col_name.empty()) {
-        //     col_name = "col_" + std::to_string(col_idx);
-        // }
+        if (col_name.empty()) {
+            col_name = "col_" + std::to_string(col_idx);
+        }
 
         // type extract
         LogicalType type = pipeline_ctx.output_column_types[col_idx];
@@ -2198,41 +2229,31 @@ void ProduceResultsCodeGenerator::GenerateOutputKernelParameters(
     for (size_t col_idx = 0; col_idx < output_column_names.size(); col_idx++) {
         std::string col_name = output_column_names[col_idx];
         // Replace '.' with '_' for valid C/C++ variable names
-        std::replace(col_name.begin(), col_name.end(), '.', '_');
+        // std::replace(col_name.begin(), col_name.end(), '.', '_');
+
+        std::string sanitized_col_name;
+        for (char c : col_name) {
+            if (std::isalnum(c) || c == '_') {
+                sanitized_col_name += c;
+            } else {
+                sanitized_col_name += '_';
+            }
+        }
+        
+        if (!sanitized_col_name.empty() && std::isdigit(sanitized_col_name[0])) {
+            sanitized_col_name = "col_" + sanitized_col_name;
+        }
+        
+        if (sanitized_col_name.empty()) {
+            sanitized_col_name = "col_" + std::to_string(col_idx);
+        }
 
         // Generate output parameter names
         std::string output_param_name;
-        output_param_name = short_output_name + "_" + std::to_string(col_idx);
-
-        // TODO merge
-        // std::string sanitized_col_name;
-        // for (char c : col_name) {
-        //     if (std::isalnum(c) || c == '_') {
-        //         sanitized_col_name += c;
-        //     } else {
-        //         sanitized_col_name += '_';
-        //     }
-        // }
-        
-        // if (!sanitized_col_name.empty() && std::isdigit(sanitized_col_name[0])) {
-        //     sanitized_col_name = "col_" + sanitized_col_name;
-        // }
-        
-        // if (sanitized_col_name.empty()) {
-        //     sanitized_col_name = "col_" + std::to_string(col_idx);
-        // }
-
-        // // Generate output parameter names
-        // std::string output_param_name;
-        // if (this->GetVerboseMode()) {
-        //     output_param_name = output_table_name + "_" + sanitized_col_name;
-        // }
-        // else {
-        //     std::stringstream hex_stream;
-        //     hex_stream << std::hex << (0x100000 + col_idx);
-        //     std::string hex_suffix = hex_stream.str().substr(1);
-        //     output_param_name = "output_proj_" + hex_suffix;
-        // }
+        std::stringstream hex_stream;
+        hex_stream << std::hex << (0x100000 + col_idx);
+        std::string hex_suffix = hex_stream.str().substr(1);
+        output_param_name = "output_proj_" + hex_suffix;
 
         // Add output data buffer parameter
         KernelParam output_data_param;
@@ -2364,10 +2385,25 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
 
         std::vector<std::string> group_key_names;
         for (auto &group_key_idx : group_key_idxs) {
-            std::string col_name =
+            std::string &orig_col_name =
                 pipeline_ctx.input_column_names[group_key_idx];
+            std::string col_name = orig_col_name;
             std::replace(col_name.begin(), col_name.end(), '.', '_');
             group_key_names.push_back(col_name);
+
+            // Check whether the group keys are materialized
+            if (pipeline_ctx.column_materialized.find(orig_col_name) ==
+                pipeline_ctx.column_materialized.end()) {
+                code.Add("// Group key " + orig_col_name +
+                         " is not materialized, materializing it now");
+
+                std::string source_name =
+                    pipeline_ctx.attribute_source_mapping[orig_col_name];
+                std::string tid_name =
+                    pipeline_ctx.attribute_tid_mapping[orig_col_name];
+                code.Add(col_name + " = " + source_name + "[" + tid_name +
+                         "];");
+            }
         }
 
         for (size_t i = 0; i < group_key_idxs.size(); i++) {
@@ -2538,14 +2574,39 @@ void HashAggregateCodeGenerator::GenerateOutputKernelParameters(
     std::vector<KernelParam> &output_kernel_params)
 {
     auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
+    auto op_id = agg_op->GetOperatorId();
 
     // Add output parameters for the hash aggregate
     KernelParam output_param;
     output_param.name = "aht" + std::to_string(agg_op->GetOperatorId());
-    output_param.type = "agg_ht<Payload" + std::to_string(agg_op->GetOperatorId()) +
-                        "> *";
+    output_param.type =
+        "agg_ht<Payload" + std::to_string(agg_op->GetOperatorId()) + "> *";
     output_param.is_device_ptr = true;
     output_kernel_params.push_back(output_param);
+
+    for (size_t i = 0; i < agg_op->aggregates.size(); i++) {
+        auto &aggregate = agg_op->aggregates[i];
+        D_ASSERT(aggregate->GetExpressionType() ==
+                 ExpressionType::BOUND_AGGREGATE);
+        auto bound_agg =
+            dynamic_cast<BoundAggregateExpression *>(aggregate.get());
+        std::string func_name = bound_agg->function.name;
+
+        if (func_name == "count_star" || func_name == "count") {
+            // Add output parameter for this aggregate function
+            KernelParam agg_param;
+            agg_param.name = "aht" + std::to_string(op_id) + "_" + "agg_" +
+                             std::to_string(i);
+            agg_param.type = "int *";
+            agg_param.is_device_ptr = true;
+            output_kernel_params.push_back(agg_param);
+        }
+        else {
+            throw NotImplementedException(
+                "HashAggregate output parameter generation for " + func_name +
+                " not implemented yet");
+        }
+    }
 }
 
 void GpuCodeGenerator::GenerateCodeForAdaptiveWorkSharing(
@@ -2660,53 +2721,95 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPull(
     CypherPipeline &pipeline, CodeBuilder &code)
 {
     code.Add("switch (lowest_lvl) {");
-    // for spSeqId, spSeq in enumerate(pipe.subpipeSeqs):
-    //     code.Add("case {spSeqId}: ' + '{');
-    //     if spSeq.inputType == 0:
-    //         code.Add("Themis::PushedParts::PushedPartsAtZeroLvl* src_pparts = (Themis::PushedParts::PushedPartsAtZeroLvl*) stack->Top();')
-    //         code.Add("Themis::PullINodesFromPPartAtZeroLvl(thread_id, src_pparts, ts_0_range_cached, inodes_cnts);')
-    //         code.Add("if (thread_id == 0) stack->PopPartsAtZeroLvl();')
-    //     elif spSeq.inputType == 1:
-    //         code.Add("Themis::PushedParts::PushedPartsAtLoopLvl* src_pparts = (Themis::PushedParts::PushedPartsAtLoopLvl*) stack->Top();')
-    //         code.Add(f'Themis::PullINodesFromPPartAtLoopLvl(thread_id, {spSeqId}, src_pparts, ts_{spSeqId}_range_cached, ts_{spSeqId}_range, inodes_cnts);')
+    code.IncreaseNesting();
+    for (size_t i = 0; i < pipeline_context.sub_pipelines.size(); i++) {
+        std::string spid = std::to_string(i);
+        auto &sub_pipeline = pipeline_context.sub_pipelines[i];
+        PipeInputType input_type = GetPipeInputType(sub_pipeline);
+        code.Add("case " + spid + ": {");
+        code.IncreaseNesting();
+        if (input_type == PipeInputType::TYPE_0) {
+            code.Add(
+                "Themis::PushedParts::PushedPartsAtZeroLvl *src_pparts = "
+                "(Themis::PushedParts::PushedPartsAtZeroLvl*) stack->Top();");
+            code.Add(
+                "Themis::PullINodesFromPPartAtZeroLvl(thread_id, src_pparts, "
+                "ts_0_range_cached, inodes_cnts);");
+            code.Add("if (thread_id == 0) stack->PopPartsAtZeroLvl();");
+        }
+        else if (input_type == PipeInputType::TYPE_1) {
+            throw NotImplementedException(
+                "GenerateCopyCodeForAdaptiveWorkSharingPull for TYPE_1");
+            code.Add(
+                "Themis::PushedParts::PushedPartsAtLoopLvl* src_pparts = "
+                "(Themis::PushedParts::PushedPartsAtLoopLvl*) stack->Top();");
+            code.Add("Themis::PullINodesFromPPartAtLoopLvl(thread_id, " + spid +
+                     ", "
+                     "src_pparts, ts_" +
+                     spid + "_range_cached, ts_" + spid +
+                     "_range, "
+                     "inodes_cnts);");
 
-    //         attrs = {}
-    //         tid = spSeq.getTid()
-    //         lastOp = spSeq.pipe.subpipeSeqs[spSeq.id-1].subpipes[-1].operators[-1]
-    //         for attrId, attr in spSeq.inBoundaryAttrs.items():
-    //             if attrId == tid.id: continue
-    //             if attrId in lastOp.generatingAttrs: continue
-    //             attrs[attrId] = attr
+            // attrs = {}
+            // tid = spSeq.getTid()
+            // lastOp = spSeq.pipe.subpipeSeqs[spSeq.id-1].subpipes[-1].operators[-1]
+            // for attrId, attr in spSeq.inBoundaryAttrs.items():
+            //     if attrId == tid.id: continue
+            //     if attrId in lastOp.generatingAttrs: continue
+            //     attrs[attrId] = attr
 
-    //         speculated_size = 0
-    //         if len(attrs) > 0:
-    //             code.Add("volatile char* src_pparts_attrs = src_pparts->GetAttrsPtr();')
+            uint64_t speculated_size = 0;
+            // if len(attrs) > 0:
+            //     code.Add("volatile char* src_pparts_attrs = src_pparts->GetAttrsPtr();')
 
-    //             for attrId, attr in attrs.items():
-    //                 if attr.dataType == Type.STRING:
-    //                     code.Add(f'Themis::PullStrAttributesAtLoopLvl(thread_id, ts_{spSeqId}_{attr.id_name}_cached, ts_{spSeqId}_{attr.id_name}, (volatile str_t*) (src_pparts_attrs + {speculated_size}));')
-    //                 elif attr.dataType == Type.PTR_INT:
-    //                     code.Add(f'Themis::PullPtrIntAttributesAtLoopLvl(thread_id, ts_{spSeqId}_{attr.id_name}_cached, ts_{spSeqId}_{attr.id_name}, (volatile int**) (src_pparts_attrs + {speculated_size}));')
-    //                 else:
-    //                     code.Add(f'Themis::PullAttributesAtLoopLvl<{langType(attr.dataType)}>(thread_id, ts_{spSeqId}_{attr.id_name}_cached, ts_{spSeqId}_{attr.id_name}, ({langType(attr.dataType)}*) (src_pparts_attrs + {speculated_size}));')
-    //                 speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
-    //         code.Add(f'if (thread_id == 0) stack->PopPartsAtLoopLvl({speculated_size});')
-    //     elif spSeq.inputType == 2:
-    //         code.Add("Themis::PushedParts::PushedPartsAtIfLvl* src_pparts = (Themis::PushedParts::PushedPartsAtIfLvl*) stack->Top();')
-    //         code.Add(f'Themis::PullINodesFromPPartAtIfLvl(thread_id, {spSeqId}, src_pparts, inodes_cnts);')
-    //         if len(spSeq.inBoundaryAttrs) > 0:
-    //             code.Add("volatile char* src_pparts_attrs = src_pparts->GetAttrsPtr();')
-    //             speculated_size = 0
-    //             for attrId, attr in spSeq.inBoundaryAttrs.items():
-    //                 if attr.dataType == Type.STRING:
-    //                     code.Add(f'Themis::PullStrAttributesAtIfLvl(thread_id, ts_{spSeqId}_{attr.id_name}_flushed, (volatile str_t*) (src_pparts_attrs + {speculated_size}));')
-    //                 elif attr.dataType == Type.PTR_INT:
-    //                     code.Add(f'Themis::PullPtrIntAttributesAtIfLvl(thread_id, ts_{spSeqId}_{attr.id_name}_flushed, (int**) (src_pparts_attrs + {speculated_size}));')
-    //                 else:
-    //                     code.Add(f'Themis::PullAttributesAtIfLvl<{langType(attr.dataType)}>(thread_id, ts_{spSeqId}_{attr.id_name}_flushed, ({langType(attr.dataType)}*) (src_pparts_attrs + {speculated_size}));')
-    //                 speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
-    //             code.Add(f'if (thread_id == 0) stack->PopPartsAtIfLvl({speculated_size});')
-    //     code.Add("} break;')
+            //     for attrId, attr in attrs.items():
+            //         if attr.dataType == Type.STRING:
+            //             code.Add(f'Themis::PullStrAttributesAtLoopLvl(thread_id, ts_{spSeqId}_{attr.id_name}_cached, ts_{spSeqId}_{attr.id_name}, (volatile str_t*) (src_pparts_attrs + {speculated_size}));')
+            //         elif attr.dataType == Type.PTR_INT:
+            //             code.Add(f'Themis::PullPtrIntAttributesAtLoopLvl(thread_id, ts_{spSeqId}_{attr.id_name}_cached, ts_{spSeqId}_{attr.id_name}, (volatile int**) (src_pparts_attrs + {speculated_size}));')
+            //         else:
+            //             code.Add(f'Themis::PullAttributesAtLoopLvl<{langType(attr.dataType)}>(thread_id, ts_{spSeqId}_{attr.id_name}_cached, ts_{spSeqId}_{attr.id_name}, ({langType(attr.dataType)}*) (src_pparts_attrs + {speculated_size}));')
+            //         speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
+            code.Add("if (thread_id == 0) stack->PopPartsAtLoopLvl(" +
+                     std::to_string(speculated_size) + ");");
+        }
+        else if (input_type == PipeInputType::TYPE_2) {
+            code.Add(
+                "Themis::PushedParts::PushedPartsAtIfLvl* src_pparts = "
+                "(Themis::PushedParts::PushedPartsAtIfLvl*) stack->Top();");
+            code.Add("Themis::PullINodesFromPPartAtIfLvl(thread_id, " + spid +
+                     ", src_pparts, inodes_cnts);");
+            
+            D_ASSERT(i > 0);
+            auto &tids = pipeline_context.sub_pipeline_tids[i - 1];
+            if (tids.size() > 0) {
+                code.Add("volatile char *src_pparts_attrs = src_pparts->GetAttrsPtr();");
+                uint64_t speculated_size = 0;
+                uint64_t tsWidth = 32;
+                for (auto &tid : tids) {
+                    // TODO additional types
+                    // if attr.dataType == Type.STRING:
+                    //     code.Add(f'Themis::PullStrAttributesAtIfLvl(thread_id, ts_{spSeqId}_{attr.id_name}_flushed, (volatile str_t*) (src_pparts_attrs + {speculated_size}));')
+                    // elif attr.dataType == Type.PTR_INT:
+                    //     code.Add(f'Themis::PullPtrIntAttributesAtIfLvl(thread_id, ts_{spSeqId}_{attr.id_name}_flushed, (int**) (src_pparts_attrs + {speculated_size}));')
+                    // else:
+                    // code.Add("Themis::PullAttributesAtIfLvl<{langType(attr.dataType)}>(thread_id, ts_{spSeqId}_{attr.id_name}_flushed, ({langType(attr.dataType)}*) (src_pparts_attrs + {speculated_size}));");
+                    code.Add(
+                        "Themis::PullAttributesAtIfLvl<int>(thread_id, ts_" +
+                        spid + "_" + tid +
+                        "_flushed, (int *)(src_pparts_attrs + " +
+                        std::to_string(speculated_size) + "));");
+                    speculated_size += sizeof(int) * (2 * tsWidth);
+                }
+                code.Add("if (thread_id == 0) stack->PopPartsAtIfLvl(" +
+                         std::to_string(speculated_size) + ");");
+            }
+        }
+        code.DecreaseNesting();
+        code.Add("}");
+        code.Add("break;");
+    }
+    code.DecreaseNesting();
     code.Add("} // switch");
 }
 
@@ -2809,20 +2912,43 @@ void GpuCodeGenerator::GenerateCodeForAdaptiveWorkSharingPush(
     code.Add("if (new_num_nodes_at_locally_lowest_lvl == 0 && mask_1 != 0) {");
     code.IncreaseNesting();
     code.Add("new_local_lowest_lvl = __ffs(mask_1) - 1;");
-    // if len(pipe.subpipeSeqs) > 1:
-    //     code.Add("switch (new_local_lowest_lvl) {")
-    //     for spSeqId, spSeq in enumerate(pipe.subpipeSeqs):
-    //         if spSeqId == 0: continue
-    //         code.Add(f"case {spSeqId}:" + "{")
-    //         if spSeq.inputType == 1:
-    //             code.Add(f"Themis::CountINodesAtLoopLvl(thread_id, {spSeqId}, ts_{spSeqId}_range_cached, ts_{spSeqId}_range, inodes_cnts);")
-    //             code.Add(f"new_num_nodes_at_locally_lowest_lvl = __shfl_sync(ALL_LANES, inodes_cnts, {spSeqId});")
-    //             code.Add(f"new_local_max_order = Themis::CalculateOrder(new_num_nodes_at_locally_lowest_lvl);")
-    //         else:
-    //             code.Add(f"new_num_nodes_at_locally_lowest_lvl = __shfl_sync(ALL_LANES, inodes_cnts, {spSeqId});")
-    //             code.Add(f"new_local_max_order = 0;")
-    //         code.Add("} break;")
-    //     code.Add("}")
+    if (pipeline_context.sub_pipelines.size() > 1) {
+        code.Add("switch (new_local_lowest_lvl) {");
+        code.IncreaseNesting();
+        for (size_t i = 0; i < pipeline_context.sub_pipelines.size(); i++) {
+            if (i == 0) continue;
+            std::string spid = std::to_string(i);
+            auto &sub_pipeline = pipeline_context.sub_pipelines[i];
+            PipeInputType input_type = GetPipeInputType(sub_pipeline);
+            code.Add("case " + spid + ": {");
+            code.IncreaseNesting();
+            if (input_type == PipeInputType::TYPE_1) {
+                code.Add("Themis::CountINodesAtLoopLvl(thread_id, " + spid +
+                         ", ts_" + spid + "_range_cached, ts_" + spid +
+                         "_range, inodes_cnts);");
+                code.Add(
+                    "new_num_nodes_at_locally_lowest_lvl = "
+                    "__shfl_sync(ALL_LANES, inodes_cnts, " +
+                    spid + ");");
+                code.Add(
+                    "new_local_max_order = "
+                    "Themis::CalculateOrder(new_num_nodes_at_locally_"
+                    "lowest_lvl);");
+            }
+            else {
+                code.Add(
+                    "new_num_nodes_at_locally_lowest_lvl = "
+                    "__shfl_sync(ALL_LANES, inodes_cnts, " +
+                    spid + ");");
+                code.Add("new_local_max_order = 0;");
+            }
+            code.DecreaseNesting();
+            code.Add("}");
+            code.Add("break;");
+        }       
+        code.DecreaseNesting();     
+        code.Add("}");
+    }
     code.DecreaseNesting();
     code.Add("}");
     code.Add(
@@ -2851,87 +2977,126 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPush(
     int stepSize = KernelConstants::DEFAULT_BLOCK_SIZE *
                    KernelConstants::DEFAULT_GRID_SIZE;
 
-    code.Add("switch(lvl_to_push) {");
+    code.Add("switch (lvl_to_push) {");
+    code.IncreaseNesting();
+    for (size_t i = 0; i < pipeline_context.sub_pipelines.size(); i++) {
+        std::string spid = std::to_string(i);
+        auto &sub_pipeline = pipeline_context.sub_pipelines[i];
+        PipeInputType input_type = GetPipeInputType(sub_pipeline);
+        code.Add("case " + spid + ": {");
+        code.IncreaseNesting();
+        if (input_type == PipeInputType::TYPE_0) {
+            code.Add("if (thread_id == 0) stack->PushPartsAtZeroLvl();");
+            code.Add(
+                "Themis::PushedParts::PushedPartsAtZeroLvl* target_pparts = "
+                "(Themis::PushedParts::PushedPartsAtZeroLvl*) stack->Top();");
+            code.Add(
+                "num_to_push = Themis::PushINodesToPPartAtZeroLvl(thread_id, "
+                "target_pparts, ts_0_range_cached, " +
+                std::to_string(stepSize) + ");");
+            code.Add("num_remaining = num_nodes - num_to_push;");
+            code.Add(
+                "mask_32 = num_remaining >= 32 ? (m | mask_32) : ((~m) & "
+                "mask_32);");
+            code.Add(
+                "mask_1 = num_remaining > 0 ?  (m | mask_1) : ((~m) & "
+                "mask_1);");
+        }
+        else if (input_type == PipeInputType::TYPE_1) {
+            throw NotImplementedException(
+                "GenerateCopyCodeForAdaptiveWorkSharingPush for TYPE_1");
+            // attrs = {}
+            // tid = spSeq.getTid()
+            // lastOp = spSeq.pipe.subpipeSeqs[spSeq.id-1].subpipes[-1].operators[-1]
+            // for attrId, attr in spSeq.inBoundaryAttrs.items():
+            //     if attrId == tid.id: continue
+            //     if attrId in lastOp.generatingAttrs: continue
+            //     attrs[attrId] = attr
 
-    // for spSeqId, spSeq in enumerate(pipe.subpipeSeqs):
-    //     code.Add(f'case {spSeqId}: ' + '{')
-    //     if spSeq.inputType == 0:
-    //         code.Add(f'if (thread_id == 0) stack->PushPartsAtZeroLvl();')
-    //         code.Add("Themis::PushedParts::PushedPartsAtZeroLvl* target_pparts = (Themis::PushedParts::PushedPartsAtZeroLvl*) stack->Top();')
-    //         code.Add(f'num_to_push = Themis::PushINodesToPPartAtZeroLvl(thread_id, target_pparts, ts_0_range_cached, {stepSize});')
-    //         code.Add(f'num_remaining = num_nodes - num_to_push;')
-    //         code.Add(f'mask_32 = num_remaining >= 32 ? (m | mask_32) : ((~m) & mask_32);')
-    //         code.Add(f'mask_1 = num_remaining > 0 ?  (m | mask_1) : ((~m) & mask_1);')
-
-    //     elif spSeq.inputType == 1:
-
-    //         attrs = {}
-    //         tid = spSeq.getTid()
-    //         lastOp = spSeq.pipe.subpipeSeqs[spSeq.id-1].subpipes[-1].operators[-1]
-    //         for attrId, attr in spSeq.inBoundaryAttrs.items():
-    //             if attrId == tid.id: continue
-    //             if attrId in lastOp.generatingAttrs: continue
-    //             attrs[attrId] = attr
-
-    //         speculated_size = 0
-    //         for attrId, attr in attrs.items():
-    //             speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
-    //         code.Add(f'if (thread_id == 0) stack->PushPartsAtLoopLvl({spSeqId}, {speculated_size});')
-    //         code.Add("Themis::PushedParts::PushedPartsAtLoopLvl* target_pparts = (Themis::PushedParts::PushedPartsAtLoopLvl*) stack->Top();')
-    //         code.Add(f'num_to_push = Themis::PushINodesToPPartAtLoopLvl(thread_id, {spSeqId}, target_pparts, ts_{spSeqId}_range_cached, ts_{spSeqId}_range);')
-    //         code.Add(f'num_remaining = num_nodes - num_to_push;')
-    //         code.Add(f'mask_32 = num_remaining >= 32 ? (m | mask_32) : ((~m) & mask_32);')
-    //         code.Add(f'mask_1 = num_remaining > 0 ?  (m | mask_1) : ((~m) & mask_1);')
-    //         code.Add(f'int ts_src = 32;')
-    //         code.Add(f'Themis::DistributeFromPartToDPart(thread_id, {spSeqId}, ts_src, ts_{spSeqId}_range, ts_{spSeqId}_range_cached, mask_32, mask_1);')
-    //         if len(attrs) > 0:
-    //             speculated_size = 0
-    //             code.Add("volatile char* target_pparts_attrs = target_pparts->GetAttrsPtr();')
-    //             for attrId, attr in attrs.items():
-    //                 name = f'ts_{spSeqId}_{attr.id_name}'
-    //                 code.Add("{')
-    //                 if attr.dataType == Type.STRING:
-    //                     code.Add(f'Themis::PushStrAttributesAtLoopLvl(thread_id, (volatile str_t*) (target_pparts_attrs + {speculated_size}), {name}_cached, {name});')
-    //                     code.Add(f'char* start = (char*) __shfl_sync(ALL_LANES, (uint64_t) {name}.start, ts_src);')
-    //                     code.Add(f'char* end = (char*) __shfl_sync(ALL_LANES, (uint64_t) {name}.end, ts_src);')
-    //                     code.Add(f'if (ts_src < 32) {name}_cached.start = start;')
-    //                     code.Add(f'if (ts_src < 32) {name}_cached.end = end;')
-    //                 elif attr.dataType == Type.PTR_INT:
-    //                     code.Add(f'Themis::PushPtrIntAttributesAtLoopLvl(thread_id, (volatile int**) (target_pparts_attrs + {speculated_size}), {name}_cached, {name});')
-    //                     code.Add(f'uint64_t cache = __shfl_sync(ALL_LANES, (uint64_t){name}, ts_src);')
-    //                     code.Add(f'if (ts_src < 32) {name}_cached = (int*) cache;')
-    //                 else:
-    //                     dtype = langType(attr.dataType)
-    //                     code.Add(f'Themis::PushAttributesAtLoopLvl<{dtype}>(thread_id, (volatile {dtype}*) (target_pparts_attrs + {speculated_size}), {name}_cached, {name});')
-    //                     code.Add(f'{dtype} cache = __shfl_sync(ALL_LANES, {name}, ts_src);')
-    //                     code.Add(f'if (ts_src < 32) {name}_cached = cache;')
-    //                 code.Add("}')
-    //                 speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
-    //     else:
-    //         speculated_size = 0
-    //         for attrId, attr in spSeq.inBoundaryAttrs.items():
-    //             speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
-    //         code.Add(f'if (thread_id == 0) stack->PushPartsAtIfLvl({spSeqId}, {speculated_size});')
-    //         code.Add("Themis::PushedParts::PushedPartsAtIfLvl* target_pparts = (Themis::PushedParts::PushedPartsAtIfLvl*) stack->Top();')
-    //         code.Add(f'num_to_push = Themis::PushINodesToPPartAtIfLvl(thread_id, {spSeqId}, target_pparts, inodes_cnts);')
-    //         code.Add(f'mask_32 = ((~m) & mask_32);')
-    //         code.Add(f'mask_1 = ((~m) & mask_1);')
-    //         if len(spSeq.inBoundaryAttrs) > 0:
-    //             code.Add("volatile char* target_pparts_attrs = target_pparts->GetAttrsPtr();')
-    //             speculated_size = 0
-    //             for attrId, attr in spSeq.inBoundaryAttrs.items():
-    //                 name = f'ts_{spSeqId}_{attr.id_name}'
-    //                 code.Add("{')
-    //                 if attr.dataType == Type.STRING:
-    //                     code.Add(f'Themis::PushStrAttributesAtIfLvl(thread_id, (volatile str_t*) (target_pparts_attrs + {speculated_size}), {name}_flushed);')
-    //                 elif attr.dataType == Type.PTR_INT:
-    //                     code.Add(f'Themis::PushPtrIntAttributesAtIfLvl(thread_id, (volatile int**) (target_pparts_attrs + {speculated_size}), {name}_flushed);')
-    //                 else:
-    //                     dtype = langType(attr.dataType)
-    //                     code.Add(f'Themis::PushAttributesAtIfLvl<{dtype}>(thread_id, (volatile {dtype}*) (target_pparts_attrs + {speculated_size}), {name}_flushed);')
-    //                 code.Add("}')
-    //                 speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
-    //     code.Add("} break;')
+            // speculated_size = 0
+            // for attrId, attr in attrs.items():
+            //     speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
+            // code.Add(f'if (thread_id == 0) stack->PushPartsAtLoopLvl({spSeqId}, {speculated_size});')
+            // code.Add("Themis::PushedParts::PushedPartsAtLoopLvl* target_pparts = (Themis::PushedParts::PushedPartsAtLoopLvl*) stack->Top();')
+            // code.Add(f'num_to_push = Themis::PushINodesToPPartAtLoopLvl(thread_id, {spSeqId}, target_pparts, ts_{spSeqId}_range_cached, ts_{spSeqId}_range);')
+            // code.Add(f'num_remaining = num_nodes - num_to_push;')
+            // code.Add(f'mask_32 = num_remaining >= 32 ? (m | mask_32) : ((~m) & mask_32);')
+            // code.Add(f'mask_1 = num_remaining > 0 ?  (m | mask_1) : ((~m) & mask_1);')
+            // code.Add(f'int ts_src = 32;')
+            // code.Add(f'Themis::DistributeFromPartToDPart(thread_id, {spSeqId}, ts_src, ts_{spSeqId}_range, ts_{spSeqId}_range_cached, mask_32, mask_1);')
+            // if len(attrs) > 0:
+            //     speculated_size = 0
+            //     code.Add("volatile char* target_pparts_attrs = target_pparts->GetAttrsPtr();')
+            //     for attrId, attr in attrs.items():
+            //         name = f'ts_{spSeqId}_{attr.id_name}'
+            //         code.Add("{')
+            //         if attr.dataType == Type.STRING:
+            //             code.Add(f'Themis::PushStrAttributesAtLoopLvl(thread_id, (volatile str_t*) (target_pparts_attrs + {speculated_size}), {name}_cached, {name});')
+            //             code.Add(f'char* start = (char*) __shfl_sync(ALL_LANES, (uint64_t) {name}.start, ts_src);')
+            //             code.Add(f'char* end = (char*) __shfl_sync(ALL_LANES, (uint64_t) {name}.end, ts_src);')
+            //             code.Add(f'if (ts_src < 32) {name}_cached.start = start;')
+            //             code.Add(f'if (ts_src < 32) {name}_cached.end = end;')
+            //         elif attr.dataType == Type.PTR_INT:
+            //             code.Add(f'Themis::PushPtrIntAttributesAtLoopLvl(thread_id, (volatile int**) (target_pparts_attrs + {speculated_size}), {name}_cached, {name});')
+            //             code.Add(f'uint64_t cache = __shfl_sync(ALL_LANES, (uint64_t){name}, ts_src);')
+            //             code.Add(f'if (ts_src < 32) {name}_cached = (int*) cache;')
+            //         else:
+            //             dtype = langType(attr.dataType)
+            //             code.Add(f'Themis::PushAttributesAtLoopLvl<{dtype}>(thread_id, (volatile {dtype}*) (target_pparts_attrs + {speculated_size}), {name}_cached, {name});')
+            //             code.Add(f'{dtype} cache = __shfl_sync(ALL_LANES, {name}, ts_src);')
+            //             code.Add(f'if (ts_src < 32) {name}_cached = cache;')
+            //         code.Add("}')
+            //         speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
+        }
+        else if (input_type == PipeInputType::TYPE_2) {
+            uint64_t speculated_size = 0;
+            D_ASSERT(i > 0);
+            auto &tids = pipeline_context.sub_pipeline_tids[i - 1];
+            for (auto &tid : tids) {
+                // speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
+                speculated_size += sizeof(int) * (2 * tsWidth);
+            }
+            code.Add("if (thread_id == 0) stack->PushPartsAtIfLvl(" + spid +
+                     ", " + std::to_string(speculated_size) + ");");
+            code.Add(
+                "Themis::PushedParts::PushedPartsAtIfLvl* target_pparts = "
+                "(Themis::PushedParts::PushedPartsAtIfLvl*) stack->Top();");
+            code.Add(
+                "num_to_push = Themis::PushINodesToPPartAtIfLvl(thread_id, " +
+                spid + ", target_pparts, inodes_cnts);");
+            code.Add("mask_32 = ((~m) & mask_32);");
+            code.Add("mask_1 = ((~m) & mask_1);");
+            if (tids.size() > 0) {
+                code.Add("volatile char* target_pparts_attrs = target_pparts->GetAttrsPtr();");
+                speculated_size = 0;
+                for (auto &tid : tids) {
+                    std::string name = "ts_" + spid + "_" + tid;
+                    code.Add("{");
+                    code.IncreaseNesting();
+                    // if attr.dataType == Type.STRING:
+                    //     code.Add(f'Themis::PushStrAttributesAtIfLvl(thread_id, (volatile str_t*) (target_pparts_attrs + {speculated_size}), {name}_flushed);')
+                    // elif attr.dataType == Type.PTR_INT:
+                    //     code.Add(f'Themis::PushPtrIntAttributesAtIfLvl(thread_id, (volatile int**) (target_pparts_attrs + {speculated_size}), {name}_flushed);')
+                    // else:
+                    //     dtype = langType(attr.dataType)
+                    //     code.Add(f'Themis::PushAttributesAtIfLvl<{dtype}>(thread_id, (volatile {dtype}*) (target_pparts_attrs + {speculated_size}), {name}_flushed);')
+                    code.Add(
+                        "Themis::PushAttributesAtIfLvl<int>(thread_id, "
+                        "(volatile int*) (target_pparts_attrs + " +
+                        std::to_string(speculated_size) + "), " + name +
+                        "_flushed);");
+                    code.DecreaseNesting();
+                    code.Add("}");
+                    // speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
+                    speculated_size += sizeof(int) * (2 * tsWidth);
+                }
+            }
+        }
+        code.DecreaseNesting();
+        code.Add("}");
+        code.Add("break;");
+    }
+    code.DecreaseNesting();
     code.Add("}");
     int num_warps_per_block = int(KernelConstants::DEFAULT_BLOCK_SIZE / 32);
     code.Add("if ((target_warp_id / " + std::to_string(num_warps_per_block) +
