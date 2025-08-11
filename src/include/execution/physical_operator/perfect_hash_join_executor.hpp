@@ -28,7 +28,6 @@ struct PerfectHashJoinStats {
 	bool is_build_dense = false;
 	bool is_probe_in_domain = false;
 	idx_t build_range = 0;
-	idx_t estimated_cardinality = 0;
 };
 
 //! PhysicalHashJoin represents a hash loop join between two tables

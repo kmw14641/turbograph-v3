@@ -47,7 +47,6 @@ PhysicalHashJoin::PhysicalHashJoin(
     perfect_join_statistics.is_build_dense = true;
     perfect_join_statistics.is_probe_in_domain = true;
     perfect_join_statistics.build_range = 40;
-    perfect_join_statistics.estimated_cardinality = 5;
 	perfect_join_executor = make_unique<PerfectHashJoinExecutor>(*this, perfect_join_statistics);
 
     D_ASSERT(build_types.size() == right_projection_map.size());
