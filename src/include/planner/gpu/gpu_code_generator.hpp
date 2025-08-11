@@ -134,6 +134,23 @@ class OperatorCodeGenerator {
                                             GpuCodeGenerator *code_gen,
                                             ClientContext &context,
                                             PipelineContext &pipeline_ctx) = 0;
+    virtual void GenerateInputKernelParameters(
+        CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+        ClientContext &context, PipelineContext &pipeline_context,
+        std::vector<KernelParam> &input_kernel_params,
+        std::vector<ScanColumnInfo> &scan_column_infos)
+    {
+        throw NotImplementedException(
+            "GenerateInputKernelParameters not implemented for this operator");
+    }
+    virtual void GenerateOutputKernelParameters(
+        CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+        ClientContext &context, PipelineContext &pipeline_context,
+        std::vector<KernelParam> &output_kernel_params)
+    {
+        throw NotImplementedException(
+            "GenerateInputKernelParameters not implemented for this operator");
+    }
 };
 
 class NodeScanCodeGenerator : public OperatorCodeGenerator {
@@ -147,6 +164,11 @@ class NodeScanCodeGenerator : public OperatorCodeGenerator {
                                     GpuCodeGenerator *code_gen,
                                     ClientContext &context,
                                     PipelineContext &pipeline_ctx);
+    void GenerateInputKernelParameters(
+        CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+        ClientContext &context, PipelineContext &pipeline_context,
+        std::vector<KernelParam> &input_kernel_params,
+        std::vector<ScanColumnInfo> &scan_column_infos);
 };
 
 class ProjectionCodeGenerator : public OperatorCodeGenerator {
@@ -180,6 +202,10 @@ class ProduceResultsCodeGenerator : public OperatorCodeGenerator {
                                     GpuCodeGenerator *code_gen,
                                     ClientContext &context,
                                     PipelineContext &pipeline_ctx);
+    void GenerateOutputKernelParameters(
+        CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+        ClientContext &context, PipelineContext &pipeline_context,
+        std::vector<KernelParam> &output_kernel_params);
 };
 
 class FilterCodeGenerator : public OperatorCodeGenerator {
@@ -214,6 +240,15 @@ class HashAggregateCodeGenerator : public OperatorCodeGenerator {
                                     GpuCodeGenerator *code_gen,
                                     ClientContext &context,
                                     PipelineContext &pipeline_ctx);
+    void GenerateInputKernelParameters(
+        CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+        ClientContext &context, PipelineContext &pipeline_context,
+        std::vector<KernelParam> &input_kernel_params,
+        std::vector<ScanColumnInfo> &scan_column_infos);
+    void GenerateOutputKernelParameters(
+        CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+        ClientContext &context, PipelineContext &pipeline_context,
+        std::vector<KernelParam> &output_kernel_params);
 };
 
 class GpuCodeGenerator {

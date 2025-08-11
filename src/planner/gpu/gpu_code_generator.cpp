@@ -116,6 +116,7 @@ void GpuCodeGenerator::SplitPipelineIntoSubPipelines(CypherPipeline &pipeline)
 {
     CypherPhysicalOperatorGroups groups;
     CypherPhysicalOperatorGroups &pipeline_groups = pipeline.GetOperatorGroups();
+    pipeline_context.sub_pipelines.clear();
     
     for (int op_idx = 0; op_idx < pipeline.GetPipelineLength(); op_idx++) {
         auto op = pipeline.GetIdxOperator(op_idx);
@@ -154,6 +155,7 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
     auto &sub_pipeline_tids = pipeline_context.sub_pipeline_tids;
     sub_pipeline_tids.clear();
     sub_pipeline_tids.resize(num_sub_pipelines);
+    pipeline_context.attribute_tid_mapping.clear();
 
     // Analyze each sub-pipeline to determine which columns need to be
     // materialized
@@ -232,6 +234,17 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                     break;
                 }
                 case PhysicalOperatorType::HASH_AGGREGATE: {
+                    if (op_idx != 0) break;
+                    // Create tid mapping info
+                    std::string tid = "tid_" + std::to_string(sub_idx) + "_" +
+                                      std::to_string(op_idx);
+                    for (const auto &col_name : output_column_names) {
+                        D_ASSERT(pipeline_context.attribute_tid_mapping.find(
+                                     col_name) ==
+                                 pipeline_context.attribute_tid_mapping.end());
+                        pipeline_context.attribute_tid_mapping[col_name] = tid;
+                    }
+                    sub_pipeline_tids[sub_idx].push_back(tid);
                     break;
                 }
                 default:
@@ -762,198 +775,34 @@ void GpuCodeGenerator::GenerateKernelParams(const CypherPipeline &pipeline)
     input_kernel_params.clear();
     output_kernel_params.clear();
 
-    // Only process the first operator (assuming it's a scan)
     if (pipeline.GetPipelineLength() == 0) {
         return;
     }
 
-    auto first_op = pipeline.GetSource();
-
-    // Only handle scan operators for now
-    if (first_op->GetOperatorType() != PhysicalOperatorType::NODE_SCAN) {
-        throw std::runtime_error("Only scan operators are supported for now");
+    auto source_op = pipeline.GetSource();
+    auto source_it = operator_generators.find(source_op->GetOperatorType());
+    if (source_it != operator_generators.end()) {
+        source_it->second->GenerateInputKernelParameters(
+            source_op, this, context, pipeline_context, input_kernel_params,
+            scan_column_infos);
     }
-    auto scan_op = dynamic_cast<PhysicalNodeScan *>(first_op);
-
-    // Process oids to get table/column information
-    for (size_t oid_idx = 0; oid_idx < scan_op->oids.size(); oid_idx++) {
-        idx_t oid = scan_op->oids[oid_idx];
-        std::string graphlet_name = "gr" + std::to_string(oid);
-
-        // Get property schema catalog entry using oid
-        Catalog &catalog = context.db->GetCatalog();
-        PropertySchemaCatalogEntry *property_schema_cat_entry =
-            (PropertySchemaCatalogEntry *)catalog.GetEntry(context,
-                                                           DEFAULT_SCHEMA, oid);
-        D_ASSERT(property_schema_cat_entry != nullptr);
-
-        auto *column_names = property_schema_cat_entry->GetKeys();
-        auto *property_types_id = property_schema_cat_entry->GetTypes();
-        auto *extra_infos = property_schema_cat_entry->GetExtraTypeInfos();
-        scan_column_infos.push_back(ScanColumnInfo());
-        ScanColumnInfo &scan_column_info = scan_column_infos.back();
-        uint64_t num_extents = property_schema_cat_entry->extent_ids.size();
-        bool is_first_time_to_get_column_info = true;
-
-        scan_column_info.graphlet_id = oid;
-        scan_column_info.extent_ids.reserve(num_extents);
-        scan_column_info.num_tuples_per_extent.reserve(num_extents);
-
-        // Get extent IDs from the property schema
-        for (size_t extent_idx = 0; extent_idx < num_extents; extent_idx++) {
-            idx_t extent_id = property_schema_cat_entry->extent_ids[extent_idx];
-            scan_column_info.extent_ids.push_back((ExtentID)extent_id);
-
-            // Generate table name
-            std::string table_name =
-                "gr" + std::to_string(oid) + "_ext" + std::to_string(extent_id);
-
-            // Get extent catalog entry to access chunks (columns)
-            ExtentCatalogEntry *extent_cat_entry =
-                (ExtentCatalogEntry *)catalog.GetEntry(
-                    context, CatalogType::EXTENT_ENTRY, DEFAULT_SCHEMA,
-                    DEFAULT_EXTENT_PREFIX + std::to_string(extent_id));
-            D_ASSERT(extent_cat_entry != nullptr);
-
-            uint64_t num_tuples_in_extent =
-                extent_cat_entry->GetNumTuplesInExtent();
-            scan_column_info.num_tuples_per_extent.push_back(
-                num_tuples_in_extent);
-
-            if (is_first_time_to_get_column_info) {
-                scan_column_info.chunk_ids.resize(
-                    scan_op->scan_projection_mapping[oid_idx].size());
-            }
-
-            // Each chunk in the extent represents a column
-            for (size_t chunk_idx = 0;
-                 chunk_idx < scan_op->scan_projection_mapping[oid_idx].size();
-                 chunk_idx++) {
-                auto column_idx =
-                    scan_op->scan_projection_mapping[oid_idx][chunk_idx];
-                std::string col_name;
-                if (column_idx == 0) {  // _id column
-                    col_name = "col__id";
-                    scan_column_info.get_physical_id_column = true;
-                }
-                else {
-                    ChunkDefinitionID cdf_id =
-                        extent_cat_entry->chunks[column_idx - 1];
-                    // Generate column name based on chunk index
-                    col_name = "col_" + std::to_string(column_idx - 1);
-
-                    // Generate parameter names based on verbose mode
-                    std::string param_name;
-                    param_name = table_name + "_" + col_name;
-
-                    // // Add data buffer parameter for this column (chunk)
-                    // KernelParam data_param;
-                    // data_param.name = param_name + "_data";
-                    // data_param.type = "void *";
-                    // data_param.is_device_ptr = true;
-                    // input_kernel_params.push_back(data_param);
-
-                    // Add pointer mapping for this chunk (column)
-                    std::string chunk_name = "chunk_" + std::to_string(cdf_id);
-                    AddPointerMapping(chunk_name, nullptr, cdf_id);
-
-                    scan_column_info.chunk_ids[chunk_idx].push_back(cdf_id);
-                }
-
-                if (is_first_time_to_get_column_info) {
-                    // Store column information for the first time
-                    scan_column_info.col_position.push_back(column_idx);
-                    scan_column_info.col_name.push_back(col_name);
-
-                    KernelParam data_param;
-                    data_param.name = graphlet_name + "_" + col_name + "_data";
-
-                    if (column_idx == 0) {
-                        scan_column_info.col_type_size.push_back(
-                            GetTypeIdSize(PhysicalType::UINT64));
-                        pipeline_context
-                            .column_to_param_mapping["_id"] =
-                            graphlet_name + "_" + col_name;
-                        data_param.type = "unsigned long long *";
-                    }
-                    else {
-                        LogicalTypeId type_id =
-                            (LogicalTypeId)property_types_id->at(column_idx -
-                                                                 1);
-                        uint16_t extra_info = extra_infos->at(column_idx - 1);
-                        LogicalType type =
-                            GetLogicalTypeFromId(type_id, extra_info);
-                        uint64_t type_size = GetTypeIdSize(type.InternalType());
-                        scan_column_info.col_type_size.push_back(type_size);
-
-                        pipeline_context
-                            .column_to_param_mapping[column_names->at(
-                                column_idx - 1)] =
-                            graphlet_name + "_" + col_name;
-                        data_param.type =
-                            ConvertLogicalTypeToPrimitiveType(type) + "*";
-                    }
-
-                    // Add data buffer parameter for this column (chunk)
-                    data_param.is_device_ptr = true;
-                    input_kernel_params.push_back(data_param);
-                }
-            }
-
-            is_first_time_to_get_column_info = false;
-
-            // Add count parameter for this table
-            KernelParam count_param;
-            count_param.name = table_name + "_count";
-            count_param.type = "unsigned long long ";
-            count_param.value = std::to_string(num_tuples_in_extent);
-            count_param.is_device_ptr = false;
-            input_kernel_params.push_back(count_param);
-        }
+    else {
+        throw NotImplementedException(
+            "Source operator type not implemented: " +
+            std::to_string(static_cast<int>(source_op->GetOperatorType())));
     }
 
     // Add output parameters based on sink operator
     auto sink_op = pipeline.GetSink();
-    if (sink_op) {
-        // Generate output table name
-        std::string output_table_name = "output";
-        std::string short_output_name = "out";
-
-        // Add output count parameter
-        KernelParam output_count_param;
-        output_count_param.name = output_table_name + "_count";
-        output_count_param.type = "int ";
-        output_count_param.value = "0";
-        output_count_param.is_device_ptr = true;
-        output_kernel_params.push_back(output_count_param);
-
-        // Add output data parameters based on sink schema
-        auto &output_schema = sink_op->GetSchema();
-        auto &output_column_names = output_schema.getStoredColumnNamesRef();
-        for (size_t col_idx = 0; col_idx < output_column_names.size();
-             col_idx++) {
-            std::string col_name = output_column_names[col_idx];
-            // Replace '.' with '_' for valid C/C++ variable names
-            std::replace(col_name.begin(), col_name.end(), '.', '_');
-
-            // Generate output parameter names
-            std::string output_param_name;
-            if (this->GetVerboseMode()) {
-                output_param_name = output_table_name + "_" + col_name;
-            }
-            else {
-                output_param_name =
-                    short_output_name + "_" + std::to_string(col_idx);
-            }
-
-            // Add output data buffer parameter
-            KernelParam output_data_param;
-            output_data_param.name = output_param_name + "_data";
-            output_data_param.type =
-                "void *";  // Always void* for CUDA compatibility
-            output_data_param.is_device_ptr = true;
-            output_kernel_params.push_back(output_data_param);
-        }
+    auto sink_it = operator_generators.find(sink_op->GetOperatorType());
+    if (sink_it != operator_generators.end()) {
+        sink_it->second->GenerateOutputKernelParameters(
+            sink_op, this, context, pipeline_context, output_kernel_params);
+    }
+    else {
+        throw NotImplementedException(
+            "Sink operator type not implemented: " +
+            std::to_string(static_cast<int>(sink_op->GetOperatorType())));
     }
 }
 
@@ -1452,6 +1301,9 @@ PipeInputType GpuCodeGenerator::GetPipeInputType(CypherPipeline &sub_pipeline)
     else if (first_op->GetOperatorType() == PhysicalOperatorType::FILTER) {
         pipe_input_type = PipeInputType::TYPE_2;
     }
+    else if (first_op->GetOperatorType() == PhysicalOperatorType::HASH_AGGREGATE) {
+        pipe_input_type = PipeInputType::TYPE_0;
+    }
     else {
         throw NotImplementedException("Input type");
     }
@@ -1753,6 +1605,153 @@ void NodeScanCodeGenerator::GenerateGlobalDeclarations(
     return;
 }
 
+void NodeScanCodeGenerator::GenerateInputKernelParameters(
+    CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+    ClientContext &context, PipelineContext &pipeline_context,
+    std::vector<KernelParam> &input_kernel_params,
+    std::vector<ScanColumnInfo> &scan_column_infos)
+{
+    auto scan_op = dynamic_cast<PhysicalNodeScan *>(op);
+
+    // Process oids to get table/column information
+    for (size_t oid_idx = 0; oid_idx < scan_op->oids.size(); oid_idx++) {
+        idx_t oid = scan_op->oids[oid_idx];
+        std::string graphlet_name = "gr" + std::to_string(oid);
+
+        // Get property schema catalog entry using oid
+        Catalog &catalog = context.db->GetCatalog();
+        PropertySchemaCatalogEntry *property_schema_cat_entry =
+            (PropertySchemaCatalogEntry *)catalog.GetEntry(context,
+                                                           DEFAULT_SCHEMA, oid);
+        D_ASSERT(property_schema_cat_entry != nullptr);
+
+        auto *column_names = property_schema_cat_entry->GetKeys();
+        auto *property_types_id = property_schema_cat_entry->GetTypes();
+        auto *extra_infos = property_schema_cat_entry->GetExtraTypeInfos();
+        scan_column_infos.push_back(ScanColumnInfo());
+        ScanColumnInfo &scan_column_info = scan_column_infos.back();
+        uint64_t num_extents = property_schema_cat_entry->extent_ids.size();
+        bool is_first_time_to_get_column_info = true;
+
+        scan_column_info.graphlet_id = oid;
+        scan_column_info.extent_ids.reserve(num_extents);
+        scan_column_info.num_tuples_per_extent.reserve(num_extents);
+
+        // Get extent IDs from the property schema
+        for (size_t extent_idx = 0; extent_idx < num_extents; extent_idx++) {
+            idx_t extent_id = property_schema_cat_entry->extent_ids[extent_idx];
+            scan_column_info.extent_ids.push_back((ExtentID)extent_id);
+
+            // Generate table name
+            std::string table_name =
+                "gr" + std::to_string(oid) + "_ext" + std::to_string(extent_id);
+
+            // Get extent catalog entry to access chunks (columns)
+            ExtentCatalogEntry *extent_cat_entry =
+                (ExtentCatalogEntry *)catalog.GetEntry(
+                    context, CatalogType::EXTENT_ENTRY, DEFAULT_SCHEMA,
+                    DEFAULT_EXTENT_PREFIX + std::to_string(extent_id));
+            D_ASSERT(extent_cat_entry != nullptr);
+
+            uint64_t num_tuples_in_extent =
+                extent_cat_entry->GetNumTuplesInExtent();
+            scan_column_info.num_tuples_per_extent.push_back(
+                num_tuples_in_extent);
+
+            if (is_first_time_to_get_column_info) {
+                scan_column_info.chunk_ids.resize(
+                    scan_op->scan_projection_mapping[oid_idx].size());
+            }
+
+            // Each chunk in the extent represents a column
+            for (size_t chunk_idx = 0;
+                 chunk_idx < scan_op->scan_projection_mapping[oid_idx].size();
+                 chunk_idx++) {
+                auto column_idx =
+                    scan_op->scan_projection_mapping[oid_idx][chunk_idx];
+                std::string col_name;
+                if (column_idx == 0) {  // _id column
+                    col_name = "col__id";
+                    scan_column_info.get_physical_id_column = true;
+                }
+                else {
+                    ChunkDefinitionID cdf_id =
+                        extent_cat_entry->chunks[column_idx - 1];
+                    // Generate column name based on chunk index
+                    col_name = "col_" + std::to_string(column_idx - 1);
+
+                    // Generate parameter names based on verbose mode
+                    std::string param_name;
+                    param_name = table_name + "_" + col_name;
+
+                    // // Add data buffer parameter for this column (chunk)
+                    // KernelParam data_param;
+                    // data_param.name = param_name + "_data";
+                    // data_param.type = "void *";
+                    // data_param.is_device_ptr = true;
+                    // input_kernel_params.push_back(data_param);
+
+                    // Add pointer mapping for this chunk (column)
+                    std::string chunk_name = "chunk_" + std::to_string(cdf_id);
+                    code_gen->AddPointerMapping(chunk_name, nullptr, cdf_id);
+
+                    scan_column_info.chunk_ids[chunk_idx].push_back(cdf_id);
+                }
+
+                if (is_first_time_to_get_column_info) {
+                    // Store column information for the first time
+                    scan_column_info.col_position.push_back(column_idx);
+                    scan_column_info.col_name.push_back(col_name);
+
+                    KernelParam data_param;
+                    data_param.name = graphlet_name + "_" + col_name + "_data";
+
+                    if (column_idx == 0) {
+                        scan_column_info.col_type_size.push_back(
+                            GetTypeIdSize(PhysicalType::UINT64));
+                        pipeline_context
+                            .column_to_param_mapping["_id"] =
+                            graphlet_name + "_" + col_name;
+                        data_param.type = "unsigned long long *";
+                    }
+                    else {
+                        LogicalTypeId type_id =
+                            (LogicalTypeId)property_types_id->at(column_idx -
+                                                                 1);
+                        uint16_t extra_info = extra_infos->at(column_idx - 1);
+                        LogicalType type =
+                            code_gen->GetLogicalTypeFromId(type_id, extra_info);
+                        uint64_t type_size = GetTypeIdSize(type.InternalType());
+                        scan_column_info.col_type_size.push_back(type_size);
+
+                        pipeline_context
+                            .column_to_param_mapping[column_names->at(
+                                column_idx - 1)] =
+                            graphlet_name + "_" + col_name;
+                        data_param.type =
+                            code_gen->ConvertLogicalTypeToPrimitiveType(type) +
+                            "*";
+                    }
+
+                    // Add data buffer parameter for this column (chunk)
+                    data_param.is_device_ptr = true;
+                    input_kernel_params.push_back(data_param);
+                }
+            }
+
+            is_first_time_to_get_column_info = false;
+
+            // Add count parameter for this table
+            KernelParam count_param;
+            count_param.name = table_name + "_count";
+            count_param.type = "unsigned long long ";
+            count_param.value = std::to_string(num_tuples_in_extent);
+            count_param.is_device_ptr = false;
+            input_kernel_params.push_back(count_param);
+        }
+    }
+}
+
 void ProjectionCodeGenerator::GenerateCode(
     CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
     ClientContext &context, PipelineContext &pipeline_ctx, bool is_main_loop)
@@ -1925,6 +1924,46 @@ void ProduceResultsCodeGenerator::GenerateGlobalDeclarations(
     return;
 }
 
+void ProduceResultsCodeGenerator::GenerateOutputKernelParameters(
+    CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+    ClientContext &context, PipelineContext &pipeline_context,
+    std::vector<KernelParam> &output_kernel_params)
+{
+    auto sink_op = dynamic_cast<PhysicalProduceResults *>(op);
+    // Generate output table name
+    std::string output_table_name = "output";
+    std::string short_output_name = "out";
+
+    // Add output count parameter
+    KernelParam output_count_param;
+    output_count_param.name = output_table_name + "_count";
+    output_count_param.type = "int ";
+    output_count_param.value = "0";
+    output_count_param.is_device_ptr = true;
+    output_kernel_params.push_back(output_count_param);
+
+    // Add output data parameters based on sink schema
+    auto &output_schema = sink_op->GetSchema();
+    auto &output_column_names = output_schema.getStoredColumnNamesRef();
+    for (size_t col_idx = 0; col_idx < output_column_names.size(); col_idx++) {
+        std::string col_name = output_column_names[col_idx];
+        // Replace '.' with '_' for valid C/C++ variable names
+        std::replace(col_name.begin(), col_name.end(), '.', '_');
+
+        // Generate output parameter names
+        std::string output_param_name;
+        output_param_name = short_output_name + "_" + std::to_string(col_idx);
+
+        // Add output data buffer parameter
+        KernelParam output_data_param;
+        output_data_param.name = output_param_name + "_data";
+        output_data_param.type =
+            "void *";  // Always void* for CUDA compatibility
+        output_data_param.is_device_ptr = true;
+        output_kernel_params.push_back(output_data_param);
+    }
+}
+
 void FilterCodeGenerator::GenerateCode(
     CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
     ClientContext &context, PipelineContext &pipeline_ctx, bool is_main_loop)
@@ -1994,9 +2033,9 @@ void HashAggregateCodeGenerator::GenerateProbeSideCode(
     CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
     ClientContext &context, PipelineContext &pipeline_ctx)
 {
-    auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
-    throw NotImplementedException(
-        "HashAggregate probe side code generation not implemented yet");
+    // auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
+    // throw NotImplementedException(
+    //     "HashAggregate probe side code generation not implemented yet");
 }
 
 void HashAggregateCodeGenerator::GenerateBuildSideCode(
@@ -2194,6 +2233,39 @@ void HashAggregateCodeGenerator::GenerateGlobalDeclarations(
     code.DecreaseNesting();
     code.Add("}; // Payload" + std::to_string(op_id));
     return;
+}
+
+void HashAggregateCodeGenerator::GenerateInputKernelParameters(
+    CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+    ClientContext &context, PipelineContext &pipeline_context,
+    std::vector<KernelParam> &input_kernel_params,
+    std::vector<ScanColumnInfo> &scan_column_infos)
+{
+    auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
+
+    // Add input parameters for the hash aggregate
+    KernelParam input_param;
+    input_param.name = "aht" + std::to_string(agg_op->GetOperatorId());
+    input_param.type = "agg_ht<Payload" + std::to_string(agg_op->GetOperatorId()) +
+                       "> *";
+    input_param.is_device_ptr = true;
+    input_kernel_params.push_back(input_param);
+}
+
+void HashAggregateCodeGenerator::GenerateOutputKernelParameters(
+    CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+    ClientContext &context, PipelineContext &pipeline_context,
+    std::vector<KernelParam> &output_kernel_params)
+{
+    auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
+
+    // Add output parameters for the hash aggregate
+    KernelParam output_param;
+    output_param.name = "aht" + std::to_string(agg_op->GetOperatorId());
+    output_param.type = "agg_ht<Payload" + std::to_string(agg_op->GetOperatorId()) +
+                        "> *";
+    output_param.is_device_ptr = true;
+    output_kernel_params.push_back(output_param);
 }
 
 void GpuCodeGenerator::GenerateCodeForAdaptiveWorkSharing(
