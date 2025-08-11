@@ -154,6 +154,7 @@
 #include "execution/cypher_pipeline_executor.hpp"
 #include "execution/cypher_physical_operator_group.hpp"
 #include "execution/physical_operator/cypher_physical_operator.hpp"
+#include "execution/physical_operator/perfect_hash_join_executor.hpp"
 #include "common/enums/order_type.hpp"
 #include "common/enums/join_type.hpp"
 #include "planner/joinside.hpp"
@@ -578,6 +579,8 @@ private:
 
 	// scalar helper functions
 	void pTranslatePredicateToJoinCondition(CExpression* pred, vector<duckdb::JoinCondition>& out_conds, CColRefArray* lhs_cols, CColRefArray* rhs_cols);
+	duckdb::PerfectHashJoinStats pTranslateCStatToPHJStat(const IStatistics* stat, duckdb::JoinType join_type, vector<duckdb::JoinCondition>& join_conds, CColRefArray* lhs_cols, CColRefArray* rhs_cols);
+	bool pGetMinMaxFromColStat(const CStatistics* cstat, ULONG col_id, std::pair<int64_t, int64_t>& min_max);
 	static duckdb::OrderByNullType pTranslateNullType(COrderSpec::ENullTreatment ent);
 	static duckdb::ExpressionType pTranslateCmpType(IMDType::ECmpType cmp_type, bool contains_null = false);
 	static duckdb::ExpressionType pTranslateBoolOpType(CScalarBoolOp::EBoolOperator op_type);

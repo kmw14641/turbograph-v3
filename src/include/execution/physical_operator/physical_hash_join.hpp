@@ -33,7 +33,8 @@ class PhysicalHashJoin : public PhysicalComparisonJoin {
             &output_right_projection_map,  // s62 style projection map
         vector<LogicalType> &right_build_types,
         vector<idx_t>
-            &right_build_map  // duckdb style build map - what build types
+            &right_build_map,  // duckdb style build map - what build types
+        PerfectHashJoinStats perfect_join_stats
     );
 
     //! S62 style projection map. Indexes into the output.

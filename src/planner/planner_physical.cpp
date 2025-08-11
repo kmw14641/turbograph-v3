@@ -3268,9 +3268,13 @@ Planner::pTransformEopPhysicalHashJoinToHashJoin(CExpression *plan_expr)
     duckdb::Schema schema;
     schema.setStoredTypes(hash_output_types);
 
+    duckdb::PerfectHashJoinStats join_stat = pTranslateCStatToPHJStat(plan_expr->Pstats(), join_type, join_conds,
+                        left_cols,
+                        right_cols);
+
     duckdb::CypherPhysicalOperator *op = new duckdb::PhysicalHashJoin(
         schema, move(join_conds), join_type, left_col_map, right_col_map,
-        right_build_types, right_build_map);
+        right_build_types, right_build_map, join_stat);
 
     return pBuildSchemaflowGraphForBinaryJoin(plan_expr, op, schema);
 }
@@ -4939,6 +4943,97 @@ void Planner::pTranslatePredicateToJoinCondition(
         D_ASSERT(false);
     }
     return;
+}
+
+duckdb::PerfectHashJoinStats Planner::pTranslateCStatToPHJStat(const IStatistics* stat, duckdb::JoinType join_type, vector<duckdb::JoinCondition>& join_conds, CColRefArray* lhs_cols, CColRefArray* rhs_cols) {
+    duckdb::PerfectHashJoinStats join_stat;
+
+    const CStatistics *cstat = dynamic_cast<const CStatistics *>(stat);
+    D_ASSERT(cstat != NULL);
+
+	// we only do this optimization for inner joins
+	if (join_type != duckdb::JoinType::INNER) {
+		return join_stat;
+	}
+	// with one condition. multiple key perfect hash function is not supported yet
+	if (join_conds.size() != 1) {
+		return join_stat;
+	}
+	// with equality condition and null values not equal
+    for (const auto &cond: join_conds) {
+		if (cond.comparison != duckdb::ExpressionType::COMPARE_EQUAL) {
+			return join_stat;
+		}
+	}
+    // with integral internal types
+	for (const auto &cond: join_conds) {
+        // perfect join not possible for non-integral types or hugeint
+		if (!TypeIsInteger(cond.left->return_type.InternalType()) || cond.left->return_type.InternalType() == duckdb::PhysicalType::INT128) {
+			return join_stat;
+		}
+        if (!TypeIsInteger(cond.right->return_type.InternalType()) || cond.right->return_type.InternalType() == duckdb::PhysicalType::INT128) {
+			return join_stat;
+		}
+	}
+
+    for (const auto &cond: join_conds) {
+        // if hash join is selected, child should satisfy this
+        D_ASSERT(cond.left->expression_class == duckdb::ExpressionClass::BOUND_REF &&
+                (cond.right->expression_class == duckdb::ExpressionClass::BOUND_REF ||
+                cond.right->expression_class == duckdb::ExpressionClass::BOUND_CAST));
+        
+        ULONG left_col_id, right_col_id;
+        
+        auto left_expr = (duckdb::BoundReferenceExpression *)cond.left.get();
+        left_col_id = (*lhs_cols)[left_expr->index]->Id();
+        
+        duckdb::BoundReferenceExpression *right_ref_expr;
+        if (cond.right->expression_class == duckdb::ExpressionClass::BOUND_CAST) {
+            auto right_cast_expr = (duckdb::BoundCastExpression *)cond.right.get();
+            right_ref_expr = (duckdb::BoundReferenceExpression *)right_cast_expr->child.get();
+        }
+        else {
+            right_ref_expr = (duckdb::BoundReferenceExpression *)cond.right.get();
+        }
+        right_col_id = (*rhs_cols)[right_ref_expr->index]->Id();
+
+        std::pair<int64_t, int64_t> left_min_max, right_min_max;
+        if (!pGetMinMaxFromColStat(cstat, left_col_id, left_min_max) || !pGetMinMaxFromColStat(cstat, right_col_id, right_min_max)) {
+            return join_stat;
+        }
+
+        // The max size our build must have to run the perfect HJ
+        const int64_t MAX_BUILD_SIZE = 1000000;
+        join_stat.probe_min = left_min_max.first;
+        join_stat.probe_max = left_min_max.second;
+        join_stat.build_min = right_min_max.first;
+        join_stat.build_max = right_min_max.second;
+        join_stat.build_range = join_stat.build_max - join_stat.build_min;
+        if (join_stat.build_range > MAX_BUILD_SIZE) {
+            return join_stat;
+        }
+        if (join_stat.build_min <= join_stat.probe_min && join_stat.probe_max <= join_stat.build_max) {
+            join_stat.is_probe_in_domain = true;
+        }
+        join_stat.is_build_small = true;
+        return join_stat;
+    }
+}
+
+bool Planner::pGetMinMaxFromColStat(const CStatistics* cstat, ULONG col_id, std::pair<int64_t, int64_t>& min_max) {
+    const CBucketArray *buckets = (cstat->GetHistogram(col_id)->GetBuckets());
+    if (buckets->Size() == 0) return false;  // no data or only null (are you sure about that?)
+
+    // bucket is sorted. see histogram_generator.cpp
+    CBucket *min_bucket = (*buckets)[0];
+    CBucket *max_bucket = (*buckets)[buckets->Size() - 1];
+    IDatum *min_datum = min_bucket->GetLowerBound()->GetDatum();
+    IDatum *max_datum = max_bucket->GetUpperBound()->GetDatum();
+
+    D_ASSERT(min_datum->IsDatumMappableToLINT() && max_datum->IsDatumMappableToLINT());  // checked integer type before
+    min_max.first = min_datum->GetLINTMapping();
+    min_max.second = max_datum->GetLINTMapping();
+    return true;
 }
 
 bool Planner::pIsCartesianProduct(CExpression *expr)

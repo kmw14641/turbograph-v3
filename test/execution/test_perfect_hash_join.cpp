@@ -55,10 +55,21 @@ void TestPerfectHashJoin(std::vector<std::vector<int>> left_data,
     Schema schema;
     schema.setStoredTypes({LogicalType::INTEGER, LogicalType::INTEGER, LogicalType::INTEGER, LogicalType::INTEGER});  // output types
 
+    // Create Mocked Stat
+    PerfectHashJoinStats perfect_join_statistics;
+    perfect_join_statistics.build_min = 10;
+    perfect_join_statistics.build_max = 50;
+    perfect_join_statistics.probe_min = 10;
+    perfect_join_statistics.probe_max = 50;
+    perfect_join_statistics.is_build_small = true;
+    perfect_join_statistics.is_build_dense = true;
+    perfect_join_statistics.is_probe_in_domain = true;
+    perfect_join_statistics.build_range = 40;
+
     // Create operator
     PhysicalHashJoin perfect_hash_join(schema, std::move(conditions), JoinType::INNER,
                                               left_projection_map, right_projection_map,
-                                              right_build_types, right_build_map);
+                                              right_build_types, right_build_map, perfect_join_statistics);
 
     // Execution context/state
     string dbdir = "/data/ldbc/sf1";
@@ -156,10 +167,21 @@ void PHJProjectionTest(std::vector<std::vector<int>> left_data,
     Schema schema;
     schema.setStoredTypes({LogicalType::INTEGER, LogicalType::INTEGER, LogicalType::INTEGER, LogicalType::INTEGER});  // output types
 
+    // Create Mocked Stat
+    PerfectHashJoinStats perfect_join_statistics;
+    perfect_join_statistics.build_min = 10;
+    perfect_join_statistics.build_max = 50;
+    perfect_join_statistics.probe_min = 10;
+    perfect_join_statistics.probe_max = 50;
+    perfect_join_statistics.is_build_small = true;
+    perfect_join_statistics.is_build_dense = true;
+    perfect_join_statistics.is_probe_in_domain = true;
+    perfect_join_statistics.build_range = 40;
+
     // Create operator
     PhysicalHashJoin perfect_hash_join(schema, std::move(conditions), JoinType::INNER,
                                               left_projection_map, right_projection_map,
-                                              right_build_types, right_build_map);
+                                              right_build_types, right_build_map, perfect_join_statistics);
 
     // Execution context/state
     string dbdir = "/data/ldbc/sf1";

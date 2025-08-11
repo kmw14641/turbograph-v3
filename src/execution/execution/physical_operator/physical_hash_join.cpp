@@ -24,7 +24,8 @@ PhysicalHashJoin::PhysicalHashJoin(
     vector<uint32_t> &output_left_projection_map,  // s62 style projection map
     vector<uint32_t> &output_right_projection_map,  // s62 style projection map (not used due to right_build_map)
     vector<LogicalType> &right_build_types,
-    vector<idx_t> &right_build_map  // right column indexes to build (they should be in the output)
+    vector<idx_t> &right_build_map,  // right column indexes to build (they should be in the output)
+    PerfectHashJoinStats perfect_join_stats
     )
     : PhysicalComparisonJoin(sch, PhysicalOperatorType::HASH_JOIN, move(cond),
                              join_type),
@@ -38,16 +39,7 @@ PhysicalHashJoin::PhysicalHashJoin(
         condition_types.push_back(condition.left->return_type);
     }
 
-    PerfectHashJoinStats perfect_join_statistics;
-    perfect_join_statistics.build_min = 10;
-    perfect_join_statistics.build_max = 50;
-    perfect_join_statistics.probe_min = 10;
-    perfect_join_statistics.probe_max = 50;
-    perfect_join_statistics.is_build_small = true;
-    perfect_join_statistics.is_build_dense = true;
-    perfect_join_statistics.is_probe_in_domain = true;
-    perfect_join_statistics.build_range = 40;
-	perfect_join_executor = make_unique<PerfectHashJoinExecutor>(*this, perfect_join_statistics);
+	perfect_join_executor = make_unique<PerfectHashJoinExecutor>(*this, perfect_join_stats);
 
     D_ASSERT(build_types.size() == right_projection_map.size());
     if (join_type == JoinType::ANTI || join_type == JoinType::SEMI) {
