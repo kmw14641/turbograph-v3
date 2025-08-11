@@ -20,14 +20,14 @@ class HashJoinGlobalState;
 class PhysicalHashJoin;
 
 struct PerfectHashJoinStats {
-	Value build_min;
-	Value build_max;
-	Value probe_min;
-	Value probe_max;
+	int64_t build_min;
+	int64_t build_max;
+	int64_t probe_min;
+	int64_t probe_max;
 	bool is_build_small = false;
 	bool is_build_dense = false;
 	bool is_probe_in_domain = false;
-	idx_t build_range = 0;
+	int64_t build_range = 0;
 };
 
 //! PhysicalHashJoin represents a hash loop join between two tables

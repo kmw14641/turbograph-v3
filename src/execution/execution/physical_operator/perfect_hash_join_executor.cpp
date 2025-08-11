@@ -94,11 +94,8 @@ bool PerfectHashJoinExecutor::FillSelectionVectorSwitchBuild(Vector &source, Sel
 template <typename T>
 bool PerfectHashJoinExecutor::TemplatedFillSelectionVectorBuild(Vector &source, SelectionVector &sel_vec,
                                                                 SelectionVector &seq_sel_vec, idx_t count) {
-	if (perfect_join_statistics.build_min.IsNull() || perfect_join_statistics.build_max.IsNull()) {
-		return false;
-	}
-	auto min_value = perfect_join_statistics.build_min.GetValueUnsafe<T>();
-	auto max_value = perfect_join_statistics.build_max.GetValueUnsafe<T>();
+	auto min_value = perfect_join_statistics.build_min;
+	auto max_value = perfect_join_statistics.build_max;
 	VectorData vector_data;
 	source.Orrify(count, vector_data);
 	auto data = reinterpret_cast<T *>(vector_data.data);
@@ -234,8 +231,8 @@ template <typename T>
 void PerfectHashJoinExecutor::TemplatedFillSelectionVectorProbe(Vector &source, SelectionVector &build_sel_vec,
                                                                 SelectionVector &probe_sel_vec, idx_t count,
                                                                 idx_t &probe_sel_count) {
-	auto min_value = perfect_join_statistics.build_min.GetValueUnsafe<T>();
-	auto max_value = perfect_join_statistics.build_max.GetValueUnsafe<T>();
+	auto min_value = perfect_join_statistics.build_min;
+	auto max_value = perfect_join_statistics.build_max;
 
 	VectorData vector_data;
 	source.Orrify(count, vector_data);
