@@ -184,13 +184,18 @@ unique_ptr<OperatorState> PhysicalHashJoin::GetOperatorState(
     ExecutionContext &context) const
 {
     auto state = make_unique<PhysicalHashJoinState>();
-    if (use_perfect_hash) {
-    	state->perfect_hash_join_state = perfect_join_executor->GetOperatorState(context);
-    } else {
-        state->join_keys.Initialize(condition_types);
-        for (auto &cond : conditions) {
-            state->probe_executor.AddExpression(*cond.left);
-        }
+
+    // Initialize perfect hash join state regardless of use_perfect_hash_join
+    // S62 initializes all PipelineExecutors in once (which calls GetOperateState),
+    // while DuckDB does this step by step through pipeline dependencies, so that GlobalState can be refelected
+    // To eliminate this unnecessary call,
+    // 1. Initialize PipelineExecutors using dependencies
+    // 2. Get use_perfect_hash_join through GlobalSinkState (which is done by mutable member alternatively for now)
+    state->perfect_hash_join_state = perfect_join_executor->GetOperatorState(context);
+
+    state->join_keys.Initialize(condition_types);
+    for (auto &cond : conditions) {
+        state->probe_executor.AddExpression(*cond.left);
     }
     return move(state);
 }
