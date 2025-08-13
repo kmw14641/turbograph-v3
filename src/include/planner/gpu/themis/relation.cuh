@@ -14,12 +14,7 @@
 #ifndef __CUDACC_RTC__
 #include <stdint.h>
 #else
-typedef signed char int8_t;
-typedef unsigned char uint8_t;
-typedef int int32_t;
-typedef unsigned uint32_t;
-typedef long long int64_t;
-typedef unsigned long long uint64_t;
+#include "typedef.cuh"
 #endif
 
 #define ALL_LANES 0xffffffff
@@ -133,27 +128,6 @@ __device__ int dummyLoop(int a, int num)
     }
     return result;
 }
-
-struct str_t {
-    char *start;
-    char *end;
-
-    // bool operator==(const str_t &b)
-    // {
-    //     str_t &a = *this;
-    //     int lena = end - start;
-    //     int lenb = b.end - b.start;
-    //     if (lena != lenb)
-    //         return false;
-    //     char *c = a.start;
-    //     char *d = b.start;
-    //     for (; c < a.end; c++, d++) {
-    //         if (*c != *d)
-    //             return false;
-    //     }
-    //     return true;
-    // }
-};
 
 // void stringPrint(str_t str, FILE *fout = stdout, int nchars = 10)
 // {

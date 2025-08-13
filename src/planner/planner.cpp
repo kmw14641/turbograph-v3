@@ -632,6 +632,9 @@ vector<duckdb::BasePipelineExecutor *> Planner::genPipelineExecutors(bool enable
     }
 
     if (enable_gpu_processing) {
+        // Generate Host code
+        code_gen->GenerateCPUCode(pipelines);
+        
         // Compile generated code
         if (!code_gen->CompileGeneratedCode()) {
             throw std::runtime_error("Failed to compile GPU kernel code");

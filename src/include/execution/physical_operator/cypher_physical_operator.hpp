@@ -121,8 +121,9 @@ class CypherPhysicalOperator {
     const PhysicalOperatorType type;
     mutable Schema schema;           // TODO remove mutable
     mutable vector<Schema> schemas;  // TODO remove mutable
-    mutable vector<LogicalType>
-        types;  // schema(types) of operator output chunk
+     
+    // schema(types) of operator output chunk
+    mutable vector<LogicalType> types; 
     vector<CypherPhysicalOperator *> children;  // child operators
 
     // operator statistics

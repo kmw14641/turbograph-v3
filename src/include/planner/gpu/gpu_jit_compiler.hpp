@@ -20,9 +20,11 @@ class GpuJitCompiler {
 
     // Compile generated CUDA code using NVRTC
     bool CompileWithNVRTC(const std::string &src, const char *kernel_name,
-                          CUmodule &mod_out, CUfunction &fn_out);
+                          int num_pipelines_compiled, CUmodule &mod_out,
+                          std::vector<CUfunction> &kernels_out);
 
-    bool CompileWithORCLLJIT(const std::string &host_code, CUfunction &kernel_function);
+    bool CompileWithORCLLJIT(const std::string &host_code,
+                             std::vector<CUfunction> &kernels);
 
     // Compile and load CUDA code
     bool CompileAndLoad(const std::string &cuda_code);

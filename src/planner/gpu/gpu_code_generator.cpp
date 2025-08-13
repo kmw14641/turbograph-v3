@@ -30,12 +30,6 @@ GpuCodeGenerator::GpuCodeGenerator(ClientContext &context)
     InitializeLLVMTargets();
     jit_compiler = std::make_unique<GpuJitCompiler>();
     InitializeOperatorGenerators();
-
-    // for debugging
-    gpu_code_file.open("generated_gpu_code.cu", std::ios::out | std::ios::trunc);
-    cpu_code_file.open("generated_cpu_code.cpp", std::ios::out | std::ios::trunc);
-    gpu_code_file.close();
-    cpu_code_file.close();
 }
 
 GpuCodeGenerator::~GpuCodeGenerator()
@@ -77,19 +71,24 @@ void GpuCodeGenerator::GenerateGlobalDeclarations(
     std::vector<CypherPipeline *> &pipelines)
 {
     CodeBuilder code;
+
+    // include necessary headers
+    code.Add("#include \"range.cuh\"");
+    code.Add("#include \"themis.cuh\"");
+    code.Add("#include \"work_sharing.cuh\"");
+    code.Add("#include \"adaptive_work_sharing.cuh\"");
+    code.Add(""); // new line
+
+    // Generate global declarations for each operator
     for (auto &pipeline : pipelines) {
-        // Generate global declarations for each operator
         for (size_t i = 0; i < pipeline->GetPipelineLength(); i++) {
+            auto *prev_op = i == 0 ? nullptr : pipeline->GetIdxOperator(i - 1);
             auto *op = pipeline->GetIdxOperator(i);
-            GenerateGlobalDeclarations(op, i, code, pipeline_context);
+            GenerateGlobalDeclaration(op, prev_op, i, code, pipeline_context);
         }
     }
-    global_declarations = code.str();
 
-    // for debugging - write to file
-    gpu_code_file.open("generated_gpu_code.cu", std::ios::app);
-    gpu_code_file << global_declarations << std::endl;
-    gpu_code_file.close();
+    global_declarations = code.str();
 }
 
 void GpuCodeGenerator::GenerateGPUCode(CypherPipeline &pipeline)
@@ -102,15 +101,26 @@ void GpuCodeGenerator::GenerateGPUCode(CypherPipeline &pipeline)
     GenerateKernelCode(pipeline);
     SUBTIMER_STOP(GenerateGPUCode, "GenerateKernelCode");
 
-    // then, generate host code
-    SUBTIMER_START(GenerateGPUCode, "GenerateHostCode");
-    GenerateHostCode(pipeline);
-    SUBTIMER_STOP(GenerateGPUCode, "GenerateHostCode");
-
     // for debug - write to files
-    gpu_code_file.open("generated_gpu_code.cu", std::ios::app);
+    gpu_code_file.open("generated_gpu_code.cu");
+    gpu_code_file << global_declarations << std::endl;
     gpu_code_file << generated_gpu_code << std::endl;
     gpu_code_file.close();
+
+    num_pipelines_compiled++;
+}
+
+void GpuCodeGenerator::GenerateCPUCode(std::vector<CypherPipeline *> &pipelines)
+{
+    SCOPED_TIMER_SIMPLE(GenerateCPUCode, spdlog::level::info,
+                        spdlog::level::info);
+
+    // generate host code
+    SUBTIMER_START(GenerateCPUCode, "GenerateHostCode");
+    GenerateHostCode(*pipelines[0]);
+    SUBTIMER_STOP(GenerateCPUCode, "GenerateHostCode");
+
+    // for debug - write to files
     cpu_code_file.open("generated_cpu_code.cpp", std::ios::app);
     cpu_code_file << generated_cpu_code << std::endl;
     cpu_code_file.close();
@@ -119,34 +129,49 @@ void GpuCodeGenerator::GenerateGPUCode(CypherPipeline &pipeline)
 void GpuCodeGenerator::SplitPipelineIntoSubPipelines(CypherPipeline &pipeline)
 {
     CypherPhysicalOperatorGroups groups;
-    CypherPhysicalOperatorGroups &pipeline_groups = pipeline.GetOperatorGroups();
+    CypherPhysicalOperatorGroups &pipeline_groups =
+        pipeline.GetOperatorGroups();
     pipeline_context.sub_pipelines.clear();
-    
+    pipeline_context.do_lb.clear();
+
     for (int op_idx = 0; op_idx < pipeline.GetPipelineLength(); op_idx++) {
         auto op = pipeline.GetIdxOperator(op_idx);
-        if (!op) continue;
-        
+        D_ASSERT(op != nullptr);
+
         groups.GetGroups().push_back(pipeline_groups.GetGroups()[op_idx]);
-        
-        // TODO: implement other cases
+
         if (op->GetOperatorType() == PhysicalOperatorType::NODE_SCAN) {
             auto scan_op = dynamic_cast<PhysicalNodeScan *>(op);
             if (scan_op->is_filter_pushdowned) {
                 // If the scan operator has filter pushdown, we need to
                 // create a new sub-pipeline for the filter
                 pipeline_context.sub_pipelines.emplace_back(groups);
+                pipeline_context.do_lb.push_back(true);
                 groups.GetGroups().clear();
-                groups.GetGroups().push_back(pipeline_groups.GetGroups()[op_idx]);
+                groups.GetGroups().push_back(
+                    pipeline_groups.GetGroups()[op_idx]);
             }
         }
         else if (op->GetOperatorType() == PhysicalOperatorType::FILTER) {
             pipeline_context.sub_pipelines.emplace_back(groups);
+            pipeline_context.do_lb.push_back(true);
+            groups.GetGroups().clear();
+            groups.GetGroups().push_back(pipeline_groups.GetGroups()[op_idx]);
+        }
+        else if (op->GetOperatorType() ==
+                     PhysicalOperatorType::HASH_AGGREGATE &&
+                 op_idx == 0) {
+            pipeline_context.sub_pipelines.emplace_back(groups);
+            pipeline_context.do_lb.push_back(false);
             groups.GetGroups().clear();
             groups.GetGroups().push_back(pipeline_groups.GetGroups()[op_idx]);
         }
     }
-    
-    pipeline_context.sub_pipelines.emplace_back(groups);
+
+    if (groups.GetGroups().size() > 0) {
+        pipeline_context.sub_pipelines.emplace_back(groups);
+        pipeline_context.do_lb.push_back(true);
+    }
 }
 
 void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
@@ -254,7 +279,6 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                     for (const auto &col_idx : referenced_columns) {
                         D_ASSERT(col_idx >= 0 &&
                                  col_idx < output_column_names.size());
-                        // Mark the column as materialized
                         auto &col_name = output_column_names[col_idx];
                         columns_to_be_materialized[sub_idx].push_back(Attr{
                             col_name, output_column_types[col_idx], col_idx});
@@ -262,6 +286,7 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                     break;
                 }
                 case PhysicalOperatorType::HASH_AGGREGATE: {
+                    // If the operator is source
                     if (op_idx != 0)
                         break;
                     // Create tid mapping info
@@ -274,6 +299,87 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                         pipeline_context.attribute_tid_mapping[col_name] = tid;
                     }
                     sub_pipeline_tids[sub_idx].push_back(tid);
+
+                    // Create source mapping info
+                    auto *agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
+                    D_ASSERT(agg_op->children.size() == 1);
+                    auto &input_schema = agg_op->children[0]->GetSchema();
+                    auto &input_column_names =
+                        input_schema.getStoredColumnNamesRef();
+
+                    std::vector<uint64_t> group_key_idxs;
+                    for (auto &group : agg_op->groups) {
+                        GetReferencedColumns(group.get(), group_key_idxs);
+                    }
+                    for (auto &group_key_idx : group_key_idxs) {
+                        std::string &orig_col_name =
+                            input_column_names[group_key_idx];
+                        std::string col_name = orig_col_name;
+                        std::replace(col_name.begin(), col_name.end(), '.',
+                                     '_');
+                        pipeline_context
+                            .attribute_source_mapping[orig_col_name] =
+                            "aht" + std::to_string(agg_op->GetOperatorId()) +
+                            "[" + tid + "].payload." + col_name;
+                    }
+
+                    bool contain_count_func = false;
+                    std::string count_var_name = "";
+                    for (size_t i = 0; i < agg_op->aggregates.size(); i++) {
+                        auto &aggregate = agg_op->aggregates[i];
+                        D_ASSERT(aggregate->GetExpressionType() ==
+                                 ExpressionType::BOUND_AGGREGATE);
+                        auto bound_agg =
+                            dynamic_cast<BoundAggregateExpression *>(
+                                aggregate.get());
+                        if (bound_agg->function.name == "count_star" ||
+                            bound_agg->function.name == "count") {
+                            contain_count_func = true;
+                            count_var_name =
+                                "aht" +
+                                std::to_string(agg_op->GetOperatorId()) +
+                                "_agg_" + std::to_string(i) + "[" + tid + "]";
+                            break;
+                        }
+                    }
+
+                    for (size_t i = 0; i < agg_op->aggregates.size(); i++) {
+                        auto &aggregate = agg_op->aggregates[i];
+                        D_ASSERT(aggregate->GetExpressionType() ==
+                                 ExpressionType::BOUND_AGGREGATE);
+                        auto bound_agg =
+                            dynamic_cast<BoundAggregateExpression *>(
+                                aggregate.get());
+                        std::string agg_var_name = "agg_" + std::to_string(i);
+                        std::string col_name =
+                            output_column_names[group_key_idxs.size() + i];
+                        if (bound_agg->function.name == "avg") {
+                            if (contain_count_func) {
+                                pipeline_context
+                                    .attribute_source_mapping[col_name] =
+                                    "aht" +
+                                    std::to_string(agg_op->GetOperatorId()) +
+                                    "_" + agg_var_name + "[" + tid + "]/" +
+                                    count_var_name;
+                            }
+                            else {
+                                pipeline_context
+                                    .attribute_source_mapping[col_name] =
+                                    "aht" +
+                                    std::to_string(agg_op->GetOperatorId()) +
+                                    "_" + agg_var_name + "[" + tid + "]/aht" +
+                                    std::to_string(agg_op->GetOperatorId()) +
+                                    "_" + agg_var_name + "_cnt[" + tid + "]";
+                            }
+                        }
+                        else {
+                            pipeline_context
+                                .attribute_source_mapping[col_name] =
+                                "aht" +
+                                std::to_string(agg_op->GetOperatorId()) + "_" +
+                                agg_var_name + "[" + tid + "]";
+                        }
+                    }
                     break;
                 }
                 case PhysicalOperatorType::PROJECTION: {
@@ -301,6 +407,16 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                                          col_idx});
                             }
                         }
+                    }
+                    break;
+                }
+                case PhysicalOperatorType::PRODUCE_RESULTS: {
+                    for (size_t col_idx = 0;
+                         col_idx < output_column_names.size(); col_idx++) {
+                        auto &col_name = output_column_names[col_idx];
+                        auto &col_type = output_column_types[col_idx];
+                        columns_to_be_materialized[sub_idx].push_back(
+                            Attr{col_name, col_type, col_idx});
                     }
                     break;
                 }
@@ -409,21 +525,16 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     // Generate kernel parameters
     GenerateKernelParams(pipeline);
 
-    // include necessary headers
-    code.Add("#include \"range.cuh\"");
-    code.Add("#include \"themis.cuh\"");
-    code.Add("#include \"work_sharing.cuh\"");
-    code.Add("#include \"adaptive_work_sharing.cuh\"");
-    code.Add(""); // new line
-
     // kernel function declaration
     if (do_inter_warp_lb) {
         code.Add(
             "extern \"C\" __global__ void __launch_bounds__(128, 8) "
-            "gpu_kernel(");
+            "gpu_kernel" +
+            std::to_string(pipeline.GetPipelineId()) + "(");
     }
     else {
-        code.Add("extern \"C\" __global__ void gpu_kernel(");
+        code.Add("extern \"C\" __global__ void gpu_kernel" +
+                 std::to_string(pipeline.GetPipelineId()) + "(");
     }
     code.IncreaseNesting();
     code.Add("void **input_data, void **output_data, int *output_count,");
@@ -497,8 +608,9 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
 
     for (auto i = 0; i < pipeline_context.sub_pipelines.size(); i++) {
         auto &sub_pipeline = pipeline_context.sub_pipelines[i];
-        PipeInputType input_type = GetPipeInputType(sub_pipeline);
-        if (input_type == PipeInputType::TYPE_1) {
+        PipeInputType input_type = GetPipeInputType(sub_pipeline, i);
+        if (input_type == PipeInputType::TYPE_1_FALSE ||
+            input_type == PipeInputType::TYPE_1_TRUE) {
             code.Add("Range ts_" + std::to_string(i) + "_range;");
             code.Add("Range ts_" + std::to_string(i) + "_range_cached;");
             // tid = spSeq.getTid()
@@ -509,7 +621,8 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
             //     code.Add(f'{langType(attr.dataType)} ts_{spSeqId}_{attr.id_name};')
             //     code.Add(f'{langType(attr.dataType)} ts_{spSeqId}_{attr.id_name}_cached;')
         }
-        else if (input_type == PipeInputType::TYPE_2) {
+        else if (input_type == PipeInputType::TYPE_2_FALSE ||
+                 input_type == PipeInputType::TYPE_2_TRUE) {
             D_ASSERT(i > 0);
             auto &tids = pipeline_context.sub_pipeline_tids[i - 1];
             for (const auto &tid : tids) {
@@ -568,8 +681,6 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
         code.IncreaseNesting();
         GeneratePipelineCode(pipeline, code);
         GenerateCodeForAdaptiveWorkSharing(pipeline, code);
-        // code.DecreaseNesting();
-        // code.Add("}");
         code.DecreaseNesting();
         code.Add("} while (true); // while loop");
     }
@@ -578,9 +689,10 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     }
 
     code.DecreaseNesting();
-    code.Add("}");
+    code.Add("} // end of kernel");
+    code.Add("");
 
-    generated_gpu_code = code.str();
+    generated_gpu_code += code.str();
 }
 
 void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
@@ -601,7 +713,11 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
     code.Add("#include \"pushedparts.cuh\"");
     code.Add("");
 
-    code.Add("extern \"C\" CUfunction gpu_kernel;\n");
+    for (int i = 0; i < num_pipelines_compiled; i++) {
+        code.Add("extern \"C\" CUfunction gpu_kernel" + std::to_string(i) +
+                 ";");
+    }
+    code.Add("");
 
     // Define structure for pointer mapping
     code.Add("struct PointerMapping {");
@@ -794,8 +910,12 @@ bool GpuCodeGenerator::CompileGeneratedCode()
 
     // Compile the generated GPU code using nvrtc
     SUBTIMER_START(CompileGeneratedCode, "CompileWithNVRTC");
+    generated_gpu_code = global_declarations + generated_gpu_code;
+    CUmodule gpu_module = nullptr;
+    std::vector<CUfunction> kernels;
     auto success = jit_compiler->CompileWithNVRTC(
-        generated_gpu_code, "gpu_kernel", gpu_module, kernel_function);
+        generated_gpu_code, "gpu_kernel", num_pipelines_compiled, gpu_module,
+        kernels);
     SUBTIMER_STOP(CompileGeneratedCode, "CompileWithNVRTC");
 
     // Check if the GPU code compilation was successful
@@ -805,7 +925,7 @@ bool GpuCodeGenerator::CompileGeneratedCode()
     // Compile the generated CPU code using ORC JIT
     SUBTIMER_START(CompileGeneratedCode, "CompileWithORCLLJIT");
     auto success_orc =
-        jit_compiler->CompileWithORCLLJIT(generated_cpu_code, kernel_function);
+        jit_compiler->CompileWithORCLLJIT(generated_cpu_code, kernels);
     SUBTIMER_STOP(CompileGeneratedCode, "CompileWithORCLLJIT");
 
     // Check if the CPU code compilation was successful
@@ -913,6 +1033,8 @@ std::string GpuCodeGenerator::ConvertLogicalTypeToPrimitiveType(
             return "int ";
         case PhysicalType::INT64:
             return "long long ";
+        case PhysicalType::INT128:
+            return "hugeint_t ";
         case PhysicalType::UINT8:
             return "unsigned char ";
         case PhysicalType::UINT16:
@@ -929,9 +1051,33 @@ std::string GpuCodeGenerator::ConvertLogicalTypeToPrimitiveType(
             // return "char *";
             return "str_t "; // TODO string_t?
         default:
-            throw std::runtime_error("Unsupported logical type: " +
-                                     std::to_string((uint8_t)type.id()));
+            throw std::runtime_error("Unsupported physical type: " +
+                                     std::to_string((uint8_t)p_type));
     }
+}
+
+std::string GpuCodeGenerator::GetValidVariableName(const std::string &name,
+                                                   size_t col_idx)
+{
+    std::string col_name;
+    for (char c : name) {
+        if (std::isalnum(c) || c == '_') {
+            col_name += c;
+        }
+        else {
+            col_name += '_';
+        }
+    }
+
+    if (!col_name.empty() && std::isdigit(col_name[0])) {
+        col_name = "col_" + col_name;
+    }
+
+    if (col_name.empty()) {
+        col_name = "col_" + std::to_string(col_idx);
+    }
+
+    return col_name;
 }
 
 void GpuCodeGenerator::GenerateInputCode(CypherPipeline &sub_pipeline,
@@ -940,17 +1086,19 @@ void GpuCodeGenerator::GenerateInputCode(CypherPipeline &sub_pipeline,
                                          PipeInputType input_type)
 {
     switch (input_type) {
-        case PipeInputType::TYPE_0:
+        case PipeInputType::TYPE_0_FALSE:
+        case PipeInputType::TYPE_0_TRUE:
             GenerateInputCodeForType0(sub_pipeline, code, pipeline_ctx);
             break;
-        case PipeInputType::TYPE_1:
+        case PipeInputType::TYPE_1_FALSE:
+        case PipeInputType::TYPE_1_TRUE:
             GenerateInputCodeForType1(sub_pipeline, code, pipeline_ctx);
             break;
-        case PipeInputType::TYPE_2:
+        case PipeInputType::TYPE_2_TRUE:
             GenerateInputCodeForType2(sub_pipeline, code, pipeline_ctx);
             break;
         default:
-            throw std::runtime_error("Unsupported input type");
+            break;
     }
 }
 
@@ -1104,18 +1252,22 @@ void GpuCodeGenerator::GenerateOutputCode(CypherPipeline &sub_pipeline,
                                           PipelineContext &pipeline_ctx,
                                           PipeOutputType output_type)
 {
+    if (!pipeline_ctx.do_lb[pipeline_ctx.current_sub_pipeline_index]) {
+        return;
+    }
     switch (output_type) {
-        case PipeOutputType::TYPE_0:
+        case PipeOutputType::TYPE_0_TRUE:
+        case PipeOutputType::TYPE_0_FALSE:
             GenerateOutputCodeForType0(sub_pipeline, code, pipeline_ctx);
             break;
-        case PipeOutputType::TYPE_1:
+        case PipeOutputType::TYPE_1_TRUE:
             GenerateOutputCodeForType1(sub_pipeline, code, pipeline_ctx);
             break;
-        case PipeOutputType::TYPE_2:
+        case PipeOutputType::TYPE_2_TRUE:
             GenerateOutputCodeForType2(sub_pipeline, code, pipeline_ctx);
             break;
         default:
-            throw std::runtime_error("Unsupported output type");
+            break;
     }
 }
 
@@ -1346,17 +1498,20 @@ int GpuCodeGenerator::FindLowerLoopLvl(PipelineContext &pipeline_context)
 {
     int loop_lvl = pipeline_context.current_sub_pipeline_index;
     while (true) {
-        PipeInputType inputType =
-            GetPipeInputType(pipeline_context.sub_pipelines[loop_lvl]);
-        if (inputType == PipeInputType::TYPE_0 ||
-            inputType == PipeInputType::TYPE_1) {
+        PipeInputType inputType = GetPipeInputType(
+            pipeline_context.sub_pipelines[loop_lvl], loop_lvl);
+        if (inputType == PipeInputType::TYPE_0_FALSE ||
+            inputType == PipeInputType::TYPE_0_TRUE ||
+            inputType == PipeInputType::TYPE_1_FALSE ||
+            inputType == PipeInputType::TYPE_1_TRUE) {
             return loop_lvl;
         }
         loop_lvl--;
     }
 }
 
-PipeInputType GpuCodeGenerator::GetPipeInputType(CypherPipeline &sub_pipeline)
+PipeInputType GpuCodeGenerator::GetPipeInputType(CypherPipeline &sub_pipeline,
+                                                 int sub_pipe_idx)
 {
     PipeInputType pipe_input_type;
     auto first_op = sub_pipeline.GetSource();
@@ -1364,21 +1519,27 @@ PipeInputType GpuCodeGenerator::GetPipeInputType(CypherPipeline &sub_pipeline)
         auto scan_op = dynamic_cast<PhysicalNodeScan *>(first_op);
         if (scan_op->is_filter_pushdowned) {
             if (sub_pipeline.GetSink() == first_op) {
-                pipe_input_type = PipeInputType::TYPE_0;
+                pipe_input_type = PipeInputType::TYPE_0_FALSE;
             }
             else {
-                pipe_input_type = PipeInputType::TYPE_2;
+                pipe_input_type = PipeInputType::TYPE_2_TRUE;
             }
         }
         else {
-            pipe_input_type = PipeInputType::TYPE_0;
+            pipe_input_type = PipeInputType::TYPE_0_FALSE;
         }
     }
     else if (first_op->GetOperatorType() == PhysicalOperatorType::FILTER) {
-        pipe_input_type = PipeInputType::TYPE_2;
+        pipe_input_type = PipeInputType::TYPE_2_TRUE;
     }
-    else if (first_op->GetOperatorType() == PhysicalOperatorType::HASH_AGGREGATE) {
-        pipe_input_type = PipeInputType::TYPE_0;
+    else if (first_op->GetOperatorType() ==
+             PhysicalOperatorType::HASH_AGGREGATE) {
+        if (sub_pipe_idx == 0) {
+            pipe_input_type = PipeInputType::TYPE_0_FALSE;
+        }
+        else {
+            pipe_input_type = PipeInputType::TYPE_2_FALSE;
+        }
     }
     else {
         throw NotImplementedException("Input type");
@@ -1393,19 +1554,19 @@ PipeOutputType GpuCodeGenerator::GetPipeOutputType(CypherPipeline &sub_pipeline)
     switch (last_op->GetOperatorType()) {
         case PhysicalOperatorType::PRODUCE_RESULTS:
             // TODO correctness check
-            pipe_output_type = PipeOutputType::TYPE_0;
+            pipe_output_type = PipeOutputType::TYPE_0_FALSE;
             break;
         case PhysicalOperatorType::FILTER:
-            pipe_output_type = PipeOutputType::TYPE_2;
+            pipe_output_type = PipeOutputType::TYPE_2_TRUE;
             break;
         case PhysicalOperatorType::NODE_SCAN:
             // Filter pushdowned scan case
             D_ASSERT(dynamic_cast<PhysicalNodeScan *>(last_op)
                          ->is_filter_pushdowned);
-            pipe_output_type = PipeOutputType::TYPE_2;
+            pipe_output_type = PipeOutputType::TYPE_2_TRUE;
             break;
         case PhysicalOperatorType::HASH_AGGREGATE:
-            pipe_output_type = PipeOutputType::TYPE_0;
+            pipe_output_type = PipeOutputType::TYPE_0_FALSE;
             break;
         default:
             throw NotImplementedException("Output type");
@@ -1475,6 +1636,18 @@ void GpuCodeGenerator::GenerateCodeForMaterialization(
     // }
 }
 
+void GpuCodeGenerator::GenerateCodeForLocalVariable(
+    CodeBuilder &code, PipelineContext &pipeline_context)
+{
+    // Declaration only in this point
+    int cur_subpipe_idx = pipeline_context.current_sub_pipeline_index;
+    auto &sub_pipeline = pipeline_context.sub_pipelines[cur_subpipe_idx];
+    for (size_t i = 0; i < sub_pipeline.GetPipelineLength(); i++) {
+        auto *op = sub_pipeline.GetIdxOperator(i);
+        GenerateCodeForLocalVariable(op, i, code, pipeline_context);
+    }
+}
+
 void GpuCodeGenerator::GeneratePipelineCode(CypherPipeline &pipeline,
                                             CodeBuilder &code)
 {
@@ -1491,21 +1664,25 @@ void GpuCodeGenerator::GeneratePipelineCode(CypherPipeline &pipeline,
 void GpuCodeGenerator::GenerateSubPipelineCode(CypherPipeline &sub_pipeline,
                                                CodeBuilder &code)
 {
-    // Analyze pipeline input/output type
-    PipeInputType pipe_input_type = GetPipeInputType(sub_pipeline);
-    PipeOutputType pipe_output_type = GetPipeOutputType(sub_pipeline);
-    
     // Advance to the next operator
     AdvanceOperator();
+
+    // Analyze pipeline input/output type
+    PipeInputType pipe_input_type = GetPipeInputType(
+        sub_pipeline, pipeline_context.current_sub_pipeline_index);
+    PipeOutputType pipe_output_type = GetPipeOutputType(sub_pipeline);
 
     // Generate input code based on the source operator type
     GenerateInputCode(sub_pipeline, code, pipeline_context, pipe_input_type);
 
     // Generate code for materialization if needed
     GenerateCodeForMaterialization(code, pipeline_context);
+
+    // Generate code for local variable
+    GenerateCodeForLocalVariable(code, pipeline_context);
     
     // Generate code for sub-pipeline operators
-    if (pipe_input_type == PipeInputType::TYPE_0) {
+    if (pipe_input_type == PipeInputType::TYPE_0_FALSE) {
         auto first_op = sub_pipeline.GetSource();
         code.Add("if (active) {");
         code.IncreaseNesting();
@@ -1530,8 +1707,10 @@ void GpuCodeGenerator::GenerateSubPipelineCode(CypherPipeline &sub_pipeline,
     // Generate output code based on the sink operator type
     GenerateOutputCode(sub_pipeline, code, pipeline_context, pipe_output_type);
 
-    code.DecreaseNesting();
-    code.Add("}");
+    if (pipeline_context.do_lb[pipeline_context.current_sub_pipeline_index]) {
+        code.DecreaseNesting();
+        code.Add("}");
+    }
 }
 
 void GpuCodeGenerator::ProcessRemainingOperators(CypherPipeline &pipeline,
@@ -1568,15 +1747,30 @@ void GpuCodeGenerator::GenerateOperatorCode(CypherPhysicalOperator *op,
     }
 }
 
-void GpuCodeGenerator::GenerateGlobalDeclarations(CypherPhysicalOperator *op,
-                                                  size_t op_idx,
-                                                  CodeBuilder &code,
-                                                  PipelineContext &pipeline_ctx)
+void GpuCodeGenerator::GenerateGlobalDeclaration(
+    CypherPhysicalOperator *op, CypherPhysicalOperator *prev_op, size_t op_idx,
+    CodeBuilder &code, PipelineContext &pipeline_ctx)
 {
     auto it = operator_generators.find(op->GetOperatorType());
     if (it != operator_generators.end()) {
-        it->second->GenerateGlobalDeclarations(op, op_idx, code, this, context,
-                                               pipeline_ctx);
+        it->second->GenerateGlobalDeclaration(op, prev_op, op_idx, code, this,
+                                              context, pipeline_ctx);
+    }
+    else {
+        // Default handling for unknown operators
+        code.Add("// Unknown operator type: " +
+                 std::to_string(static_cast<int>(op->GetOperatorType())));
+    }
+}
+
+void GpuCodeGenerator::GenerateCodeForLocalVariable(
+    CypherPhysicalOperator *op, size_t op_idx, CodeBuilder &code,
+    PipelineContext &pipeline_ctx)
+{
+    auto it = operator_generators.find(op->GetOperatorType());
+    if (it != operator_generators.end()) {
+        it->second->GenerateCodeForLocalVariable(op, op_idx, code, this,
+                                                 pipeline_ctx);
     }
     else {
         // Default handling for unknown operators
@@ -1617,6 +1811,7 @@ void NodeScanCodeGenerator::GenerateCode(
             pipeline_ctx.columns_to_be_materialized
                 [pipeline_ctx.current_sub_pipeline_index];
         std::unordered_map<uint64_t, std::string> column_pos_to_name;
+        // TODO utilize attr to source mapping
         for (size_t i = 0; i < columns_to_materialize.size(); i++) {
             auto &col_name = columns_to_materialize[i].name;
             auto col_type = columns_to_materialize[i].type;
@@ -1627,25 +1822,8 @@ void NodeScanCodeGenerator::GenerateCode(
             D_ASSERT(pipeline_ctx.attribute_tid_mapping.find(col_name) !=
                      pipeline_ctx.attribute_tid_mapping.end());
             std::string tid_name = pipeline_ctx.attribute_tid_mapping[col_name];
-
-            std::string sanitized_col_name;
-            for (char c : col_name) {
-                if (std::isalnum(c) || c == '_') {
-                    sanitized_col_name += c;
-                }
-                else {
-                    sanitized_col_name += '_';
-                }
-            }
-
-            if (!sanitized_col_name.empty() &&
-                std::isdigit(sanitized_col_name[0])) {
-                sanitized_col_name = "col_" + sanitized_col_name;
-            }
-
-            if (sanitized_col_name.empty()) {
-                sanitized_col_name = "col_" + std::to_string(i);
-            }
+            std::string sanitized_col_name =
+                code_gen->GetValidVariableName(col_name, col_pos);
 
             code.Add(sanitized_col_name + " = " + graphlet_name + "_col_" +
                      std::to_string(col_id - 1) + "_data[" + tid_name + "];");
@@ -1728,14 +1906,6 @@ void NodeScanCodeGenerator::GenerateCode(
             code.Add("active = (" + predicate_string + ");");
         }
     }
-}
-
-void NodeScanCodeGenerator::GenerateGlobalDeclarations(
-    CypherPhysicalOperator *op, size_t op_idx, CodeBuilder &code,
-    GpuCodeGenerator *code_gen, ClientContext &context,
-    PipelineContext &pipeline_ctx)
-{
-    return;
 }
 
 void NodeScanCodeGenerator::GenerateInputKernelParameters(
@@ -1913,30 +2083,14 @@ void ProjectionCodeGenerator::GenerateCode(
         for (size_t i = 0; i < columns_to_materialize.size(); i++) {
             std::string &col_name = columns_to_materialize[i].name;
             LogicalType &col_type = columns_to_materialize[i].type;
+            auto &col_pos = columns_to_materialize[i].pos;
 
             std::stringstream hex_stream;
             hex_stream << std::hex << (0x100000 + i);
             std::string hex_suffix = hex_stream.str().substr(1);
             std::string input_var_name = "input_proj_" + hex_suffix;
-
-            std::string sanitized_col_name;
-            for (char c : col_name) {
-                if (std::isalnum(c) || c == '_') {
-                    sanitized_col_name += c;
-                }
-                else {
-                    sanitized_col_name += '_';
-                }
-            }
-
-            if (!sanitized_col_name.empty() &&
-                std::isdigit(sanitized_col_name[0])) {
-                sanitized_col_name = "col_" + sanitized_col_name;
-            }
-
-            if (sanitized_col_name.empty()) {
-                sanitized_col_name = "col_" + std::to_string(i);
-            }
+            std::string sanitized_col_name =
+                code_gen->GetValidVariableName(col_name, col_pos);
 
             std::string cuda_type =
                 code_gen->ConvertLogicalTypeToPrimitiveType(col_type);
@@ -2006,64 +2160,25 @@ void ProjectionCodeGenerator::GenerateProjectionExpressionCode(
         return;
 }
 
-void ProjectionCodeGenerator::GenerateGlobalDeclarations(
-    CypherPhysicalOperator *op, size_t op_idx, CodeBuilder &code,
-    GpuCodeGenerator *code_gen, ClientContext &context,
-    PipelineContext &pipeline_ctx)
-{
-    return;
-}
-
 void ProduceResultsCodeGenerator::GenerateCode(
     CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
     ClientContext &context, PipelineContext &pipeline_ctx, bool is_main_loop)
 {
     auto results_op = dynamic_cast<PhysicalProduceResults *>(op);
-    if (!results_op) {
-        return;
-    }
+    D_ASSERT(results_op != nullptr);
 
     code.Add("// Produce results operator");
-
-    // Declare output count pointer
-    code.Add("int output_idx = atomicAdd(output_count, 1);");
 
     // Get the output schema to determine what columns to write
     auto &output_schema = results_op->GetSchema();
     auto &output_column_names = output_schema.getStoredColumnNamesRef();
-
-    code.Add("// Write results to output buffers");
     
-    std::cerr << "Output column count: " << output_column_names.size() << std::endl;
-    for (size_t i = 0; i < output_column_names.size(); i++) {
-        std::cerr << "Output column " << i << ": " << output_column_names[i] << std::endl;
-    }
-    
+    // Materialize columns if needed
     for (size_t col_idx = 0; col_idx < output_column_names.size(); col_idx++) {
         std::string orig_col_name = output_column_names[col_idx];
         std::string tid_name = pipeline_ctx.attribute_tid_mapping[orig_col_name];
-        // Replace '.' with '_' for valid C/C++ variable names
-        // std::replace(col_name.begin(), col_name.end(), '.', '_');
-
-        std::cerr << "Processing output column: " << orig_col_name
-                  << std::endl;
-        
-        std::string col_name;
-        for (char c : orig_col_name) {
-            if (std::isalnum(c) || c == '_') {
-                col_name += c;
-            } else {
-                col_name += '_';
-            }
-        }
-        
-        if (!col_name.empty() && std::isdigit(col_name[0])) {
-            col_name = "col_" + col_name;
-        }
-        
-        if (col_name.empty()) {
-            col_name = "col_" + std::to_string(col_idx);
-        }
+        std::string col_name =
+            code_gen->GetValidVariableName(orig_col_name, col_idx);
 
         // type extract
         LogicalType type = pipeline_ctx.output_column_types[col_idx];
@@ -2071,138 +2186,71 @@ void ProduceResultsCodeGenerator::GenerateCode(
             code_gen->ConvertLogicalTypeToPrimitiveType(type);
 
         // Check if this column is materialized in the pipeline context
+        auto it = pipeline_ctx.column_materialized.find(orig_col_name);
         bool is_materialized =
-            pipeline_ctx.column_materialized.find(col_name) !=
-                pipeline_ctx.column_materialized.end() &&
-            pipeline_ctx.column_materialized[col_name];
+            it != pipeline_ctx.column_materialized.end() && it->second;
 
-        std::cerr << "Column " << col_name << " is_materialized: " << is_materialized << std::endl;
-        
-        // Debug: print projection variable names
-        std::cerr << "Projection variables available:" << std::endl;
-        for (const auto& pv : pipeline_ctx.projection_variable_names) {
-            std::cerr << "  [" << pv.first << "] = " << pv.second << std::endl;
-        }
-
-        std::string output_param_name;
-        if (code_gen->GetVerboseMode()) {
-            output_param_name = "output_" + col_name;
-        }
-        else {
-            std::stringstream hex_stream;
-            hex_stream << std::hex << (0x100000 + col_idx);
-            std::string hex_suffix = hex_stream.str().substr(1);
-            output_param_name = "output_proj_" + hex_suffix;
-        }
-        std::string output_data_name = output_param_name + "_data";
-        std::string output_ptr_name = output_param_name + "_ptr";
-
-        code.Add("// Write column " + std::to_string(col_idx) + " (" +
-                 col_name + ") to output");
-
-        if (is_materialized) {
-            // Column is already materialized, use the projection result
-            code.Add(ctype + "* " + output_ptr_name + " = static_cast<" +
-                     ctype + "*>(" + output_data_name + ");");
-            
-            auto proj_var_it = pipeline_ctx.projection_variable_names.find(col_idx);
-            if (proj_var_it != pipeline_ctx.projection_variable_names.end()) {
-                code.Add(output_data_name + "[output_idx] = " + proj_var_it->second + ";");
-            } else {
-                code.Add(output_data_name + "[output_idx] = proj_result_" +
-                         std::to_string(col_idx) + ";");
-            }
-        }
-        else {
+        if (!is_materialized) {
             // Column needs to be materialized from input
             // Find the corresponding input column
             std::string orig_col_name_wo_varname =
                 orig_col_name.substr(orig_col_name.find_last_of('.') + 1);
             if (orig_col_name_wo_varname == "_id") {
-                code.Add("// Special case for _id column, use tuple_id");
-                code.Add(ctype + "* " + output_ptr_name + " = static_cast<" +
-                         ctype + "*>(" + output_data_name + ");");
-                // code.Add(output_ptr_name + "[output_idx] = " + "tuple_id;");
+                throw NotImplementedException(
+                    "ProduceResultsCodeGenerator does not support _id column "
+                    "materialization yet.");
             }
             else {
-                auto it = pipeline_ctx.column_to_param_mapping.find(
-                    orig_col_name_wo_varname);
-                if (it != pipeline_ctx.column_to_param_mapping.end()) {
-                    std::string input_col_name = it->second;
-                    code.Add("// Materialize column from input: " +
-                             input_col_name);
-                    code.Add(ctype + "* " + output_ptr_name +
-                             " = static_cast<" + ctype + "*>(" +
-                             output_data_name + ");");
-                    code.Add(output_ptr_name + "[output_idx] = " +
-                             input_col_name + "_ptr" + "[" + tid_name + "];");
+                auto it =
+                    pipeline_ctx.attribute_source_mapping.find(orig_col_name);
+                if (it != pipeline_ctx.attribute_source_mapping.end()) {
+                    std::string source_var_name = it->second;
+                    code.Add("// " + orig_col_name +
+                             " is mapped to source variable " +
+                             source_var_name);
+                    code.Add(col_name + " = " + source_var_name + ";");
                 }
                 else {
-                    D_ASSERT(false); // TODO check
-                    // No mapping found, check if it's a direct input column
-                    auto input_it = std::find(
-                        pipeline_ctx.input_column_names.begin(),
-                        pipeline_ctx.input_column_names.end(), orig_col_name);
-                    if (input_it != pipeline_ctx.input_column_names.end()) {
-                        // Direct input column
-                        code.Add("// Direct input column: " + orig_col_name);
-                        code.Add(ctype + "* " + output_ptr_name +
-                                 " = static_cast<" + ctype + "*>(" +
-                                 output_data_name + ");");
-                        code.Add(output_ptr_name + "[output_idx] = " +
-                                 col_name + "_ptr[" + tid_name + "];");
-                    }
-                    else {
-                        // Fallback: use projection result
-                        code.Add(
-                            "// No mapping found, using projection result");
-                        code.Add(ctype + "* " + output_ptr_name +
-                                 " = static_cast<" + ctype + "*>(" +
-                                 output_data_name + ");");
-                        code.Add(output_ptr_name +
-                                 "[output_idx] = proj_result_" +
-                                 std::to_string(col_idx) + ";");
-                    }
+                    throw InvalidInputException(
+                        "Output column " + orig_col_name +
+                        " is not found in attribute source mapping.");
                 }
             }
         }
     }
-    
-    for (const auto& proj_var : pipeline_ctx.projection_variable_names) {
-        size_t var_idx = proj_var.first;
-        const std::string& var_name = proj_var.second;
-        
+
+    for (size_t col_idx = 0; col_idx < output_column_names.size(); col_idx++) {
+        std::string orig_col_name = output_column_names[col_idx];
+        std::string col_name =
+            code_gen->GetValidVariableName(orig_col_name, col_idx);
+        // type extract
+        LogicalType type = pipeline_ctx.output_column_types[col_idx];
+        std::string ctype =
+            code_gen->ConvertLogicalTypeToPrimitiveType(type);
+
         std::stringstream hex_stream;
-        hex_stream << std::hex << (0x100000 + var_idx);
+        hex_stream << std::hex << (0x100000 + col_idx);
         std::string hex_suffix = hex_stream.str().substr(1);
         std::string output_param_name = "output_proj_" + hex_suffix;
         std::string output_data_name = output_param_name + "_data";
         std::string output_ptr_name = output_param_name + "_ptr";
-        
-        if (var_idx < pipeline_ctx.output_column_types.size()) {
-            LogicalType type = pipeline_ctx.output_column_types[var_idx];
-            std::string ctype = code_gen->ConvertLogicalTypeToPrimitiveType(type);
-            code.Add(ctype + "* " + output_ptr_name + " = static_cast<" + ctype + "*>(" + output_data_name + ");");
-            code.Add(output_ptr_name + "[output_idx] = " + var_name + ";");
-        } else {
-            code.Add("double* " + output_ptr_name + " = static_cast<double*>(" + output_data_name + ");");
-            code.Add(output_ptr_name + "[output_idx] = " + var_name + ";");
-        }
+        code.Add(ctype + "* " + output_ptr_name + " = static_cast<" + ctype +
+                 "*>(" + output_data_name + ");");
+        code.Add(output_ptr_name + "[wp] = " + col_name + ";");
     }
-
-    // Update output count
-    code.Add("// Update output count atomically");
-    // code.Add("atomicAdd(output_count_ptr, 1);");
-
-    code.Add("// Results produced successfully");
 }
 
-void ProduceResultsCodeGenerator::GenerateGlobalDeclarations(
+void ProduceResultsCodeGenerator::GenerateCodeForLocalVariable(
     CypherPhysicalOperator *op, size_t op_idx, CodeBuilder &code,
-    GpuCodeGenerator *code_gen, ClientContext &context,
-    PipelineContext &pipeline_ctx)
+    GpuCodeGenerator *code_gen, PipelineContext &pipeline_ctx)
 {
-    return;
+    code.Add("int wp, writeMask, numProj;");
+    code.Add("writeMask = __ballot_sync(ALL_LANES, active);");
+    code.Add("numProj = __popc(writeMask);");
+    // TODO: nout_{self.tableName} -> output_count
+    code.Add("if (thread_id == 0) wp = atomicAdd(output_count, numProj);");
+    code.Add("wp = __shfl_sync(ALL_LANES, wp, 0);");
+    code.Add("wp = wp + __popc(writeMask & prefixlanes);");
 }
 
 void ProduceResultsCodeGenerator::GenerateOutputKernelParameters(
@@ -2228,25 +2276,8 @@ void ProduceResultsCodeGenerator::GenerateOutputKernelParameters(
     auto &output_column_names = output_schema.getStoredColumnNamesRef();
     for (size_t col_idx = 0; col_idx < output_column_names.size(); col_idx++) {
         std::string col_name = output_column_names[col_idx];
-        // Replace '.' with '_' for valid C/C++ variable names
-        // std::replace(col_name.begin(), col_name.end(), '.', '_');
-
-        std::string sanitized_col_name;
-        for (char c : col_name) {
-            if (std::isalnum(c) || c == '_') {
-                sanitized_col_name += c;
-            } else {
-                sanitized_col_name += '_';
-            }
-        }
-        
-        if (!sanitized_col_name.empty() && std::isdigit(sanitized_col_name[0])) {
-            sanitized_col_name = "col_" + sanitized_col_name;
-        }
-        
-        if (sanitized_col_name.empty()) {
-            sanitized_col_name = "col_" + std::to_string(col_idx);
-        }
+        std::string sanitized_col_name =
+            code_gen->GetValidVariableName(col_name, col_idx);
 
         // Generate output parameter names
         std::string output_param_name;
@@ -2303,14 +2334,6 @@ void FilterCodeGenerator::GenerateCode(
     code.Add("// Filter condition passed, continue processing");
 }
 
-void FilterCodeGenerator::GenerateGlobalDeclarations(
-    CypherPhysicalOperator *op, size_t op_idx, CodeBuilder &code,
-    GpuCodeGenerator *code_gen, ClientContext &context,
-    PipelineContext &pipeline_ctx)
-{
-    return;
-}
-
 void HashAggregateCodeGenerator::GenerateCode(
     CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
     ClientContext &context, PipelineContext &pipeline_ctx, bool is_main_loop)
@@ -2320,7 +2343,7 @@ void HashAggregateCodeGenerator::GenerateCode(
              pipeline_ctx.cur_op_idx == pipeline_ctx.total_operators - 1);
 
     if (pipeline_ctx.cur_op_idx == 0) {
-        GenerateProbeSideCode(op, code, code_gen, context, pipeline_ctx);
+        GenerateSourceSideCode(op, code, code_gen, context, pipeline_ctx);
     }
     else if (pipeline_ctx.cur_op_idx == pipeline_ctx.total_operators - 1) {
         GenerateBuildSideCode(op, code, code_gen, context, pipeline_ctx);
@@ -2330,13 +2353,21 @@ void HashAggregateCodeGenerator::GenerateCode(
     }
 }
 
-void HashAggregateCodeGenerator::GenerateProbeSideCode(
+void HashAggregateCodeGenerator::GenerateSourceSideCode(
     CypherPhysicalOperator *op, CodeBuilder &code, GpuCodeGenerator *code_gen,
     ClientContext &context, PipelineContext &pipeline_ctx)
 {
-    // auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
-    // throw NotImplementedException(
-    //     "HashAggregate probe side code generation not implemented yet");
+    auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
+    // TODO correctness check
+    D_ASSERT(
+        pipeline_ctx.sub_pipeline_tids[pipeline_ctx.current_sub_pipeline_index]
+            .size() == 1);
+    std::string tid_name =
+        pipeline_ctx
+            .sub_pipeline_tids[pipeline_ctx.current_sub_pipeline_index][0];
+    code.Add("// HashAggregate source side code");
+    code.Add("active = aht" + std::to_string(agg_op->GetOperatorId()) + "[" +
+             tid_name + "].lock.lock == OnceLock::LOCK_DONE;");
 }
 
 void HashAggregateCodeGenerator::GenerateBuildSideCode(
@@ -2437,7 +2468,8 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
         
         code.Add("while (!done) {");
         code.IncreaseNesting();
-        code.Add("bucketId = (hash_key + numLookups) % {int(self.size)};");
+        // TODO int(self.size) how can be determined?
+        code.Add("bucketId = (hash_key + numLookups) % 512;");
         code.Add("agg_ht<Payload" + op_id + ">& entry = aht" + op_id +
                  "[bucketId];");
         code.Add("numLookups++;");
@@ -2479,6 +2511,7 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
         code.DecreaseNesting();
         code.Add("}");
 
+        bool contain_count_func = false;
         std::vector<std::string> agg_function_names;
         for (auto &aggregate : agg_op->aggregates) {
             D_ASSERT(aggregate->GetExpressionType() ==
@@ -2486,38 +2519,70 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
             auto bound_agg =
                 dynamic_cast<BoundAggregateExpression *>(aggregate.get());
             agg_function_names.push_back(bound_agg->function.name);
+            if (bound_agg->function.name == "count_star" ||
+                bound_agg->function.name == "count") {
+                contain_count_func = true;
+            }
         }
 
-        for (size_t i = 0; i < agg_function_names.size(); i++) {
-            auto &agg_function_name = agg_function_names[i];
+        for (size_t i = 0; i < agg_op->aggregates.size(); i++) {
+            auto &aggregate = agg_op->aggregates[i];
+            D_ASSERT(aggregate->GetExpressionType() ==
+                     ExpressionType::BOUND_AGGREGATE);
+            auto bound_agg =
+                dynamic_cast<BoundAggregateExpression *>(aggregate.get());
+            auto &agg_function_name = bound_agg->function.name;
+
             std::string agg_var_name = "agg_" + std::to_string(i);
             std::string dst = "aht" + op_id + "_" + agg_var_name + "[bucketId]";
-            std::string inattr = "todo";  // TODO
+            std::string agg_type = code_gen->ConvertLogicalTypeToPrimitiveType(
+                bound_agg->return_type);
             if (agg_function_name == "count_star" ||
                 agg_function_name == "count") {
-                code.Add("atomicAdd(&" + dst + ", 1);");
-            }
-            else if (agg_function_name == "sum" || agg_function_name == "avg") {
-                code.Add("atomicAdd(&" + dst + ", " + inattr + ");");
-            }
-            else if (agg_function_name == "max") {
-                code.Add("atomicMax(&" + dst + ", " + inattr + ");");
-            }
-            else if (agg_function_name == "min") {
-                code.Add("atomicMin(&" + dst + ", " + inattr + ");");
+                code.Add("atomicAdd(&" + dst + ", (" + agg_type + ")1);");
             }
             else {
-                throw NotImplementedException(
-                    "HashAggregate build side code generation for " +
-                    agg_function_name + " not implemented yet");
+                // get ref idxs
+                std::vector<uint64_t> ref_idxs;
+                D_ASSERT(bound_agg->children.size() == 1);
+                code_gen->GetReferencedColumns(bound_agg->children[0].get(),
+                                               ref_idxs);
+                D_ASSERT(ref_idxs.size() == 1);
+                std::string inattr = code_gen->GetValidVariableName(
+                    pipeline_ctx.input_column_names[ref_idxs[0]], ref_idxs[0]);
+                if (agg_function_name == "sum") {
+                    code.Add("atomicAdd(&" + dst + ", " + inattr + ");");
+                }
+                else if (agg_function_name == "avg") {
+                    code.Add("atomicAdd(&" + dst + ", " + inattr + ");");
+                    if (!contain_count_func) {
+                        // If there is no count function, we need to add a count
+                        // variable for average calculation
+                        std::string dst_cnt = "aht" + op_id + "_" +
+                                              agg_var_name + "_cnt[bucketId]";
+                        code.Add("atomicAdd(&" + dst_cnt + ", (" + agg_type +
+                                 ")1);");
+                    }
+                }
+                else if (agg_function_name == "max") {
+                    code.Add("atomicMax(&" + dst + ", " + inattr + ");");
+                }
+                else if (agg_function_name == "min") {
+                    code.Add("atomicMin(&" + dst + ", " + inattr + ");");
+                }
+                else {
+                    throw NotImplementedException(
+                        "HashAggregate build side code generation for " +
+                        agg_function_name + " not implemented yet");
+                }
             }
         }
     }
 }
 
-void HashAggregateCodeGenerator::GenerateGlobalDeclarations(
-    CypherPhysicalOperator *op, size_t op_idx, CodeBuilder &code,
-    GpuCodeGenerator *code_gen, ClientContext &context,
+void HashAggregateCodeGenerator::GenerateGlobalDeclaration(
+    CypherPhysicalOperator *op, CypherPhysicalOperator *prev_op, size_t op_idx,
+    CodeBuilder &code, GpuCodeGenerator *code_gen, ClientContext &context,
     PipelineContext &pipeline_ctx)
 {
     // Hashaggregate appears twice in the pipelines, once for build side
@@ -2531,7 +2596,9 @@ void HashAggregateCodeGenerator::GenerateGlobalDeclarations(
     code.Add("struct Payload" + std::to_string(op_id) + " {");
     code.IncreaseNesting();
 
-    auto &input_schema = agg_op->GetSchema();
+    // Get the input schema from the previous operator
+    D_ASSERT(prev_op != nullptr);
+    auto &input_schema = prev_op->GetSchema();
     auto &input_column_names = input_schema.getStoredColumnNamesRef();
     auto &input_column_types = input_schema.getStoredTypesRef();
     vector<uint64_t> group_key_idxs;
@@ -2558,14 +2625,54 @@ void HashAggregateCodeGenerator::GenerateInputKernelParameters(
     std::vector<ScanColumnInfo> &scan_column_infos)
 {
     auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
+    auto op_id = agg_op->GetOperatorId();
 
     // Add input parameters for the hash aggregate
     KernelParam input_param;
-    input_param.name = "aht" + std::to_string(agg_op->GetOperatorId());
-    input_param.type = "agg_ht<Payload" + std::to_string(agg_op->GetOperatorId()) +
-                       "> *";
+    input_param.name = "aht" + std::to_string(op_id);
+    input_param.type = "agg_ht<Payload" + std::to_string(op_id) + "> *";
     input_param.is_device_ptr = true;
     input_kernel_params.push_back(input_param);
+
+    bool contain_count_func = false;
+    for (auto &aggregate : agg_op->aggregates) {
+        D_ASSERT(aggregate->GetExpressionType() ==
+                 ExpressionType::BOUND_AGGREGATE);
+        auto bound_agg =
+            dynamic_cast<BoundAggregateExpression *>(aggregate.get());
+        if (bound_agg->function.name == "count_star" ||
+            bound_agg->function.name == "count") {
+            contain_count_func = true;
+            break;
+        }
+    }
+
+    for (size_t i = 0; i < agg_op->aggregates.size(); i++) {
+        auto &aggregate = agg_op->aggregates[i];
+        D_ASSERT(aggregate->GetExpressionType() ==
+                 ExpressionType::BOUND_AGGREGATE);
+        auto bound_agg =
+            dynamic_cast<BoundAggregateExpression *>(aggregate.get());
+        std::string func_name = bound_agg->function.name;
+        std::string ctype =
+            code_gen->ConvertLogicalTypeToPrimitiveType(bound_agg->return_type);
+        KernelParam agg_param;
+        agg_param.name =
+            "aht" + std::to_string(op_id) + "_" + "agg_" + std::to_string(i);
+        agg_param.type = ctype + "*";
+        agg_param.is_device_ptr = true;
+        input_kernel_params.push_back(agg_param);
+        if (func_name == "avg" && !contain_count_func) {
+            // If there is no count function, we need to add a count variable
+            // for average calculation
+            KernelParam count_param;
+            count_param.name = "aht" + std::to_string(op_id) + "_" + "agg_" +
+                               std::to_string(i) + "_cnt";
+            count_param.type = "unsigned long long *";
+            count_param.is_device_ptr = true;
+            input_kernel_params.push_back(count_param);
+        }
+    }
 }
 
 void HashAggregateCodeGenerator::GenerateOutputKernelParameters(
@@ -2584,6 +2691,19 @@ void HashAggregateCodeGenerator::GenerateOutputKernelParameters(
     output_param.is_device_ptr = true;
     output_kernel_params.push_back(output_param);
 
+    bool contain_count_func = false;
+    for (auto &aggregate : agg_op->aggregates) {
+        D_ASSERT(aggregate->GetExpressionType() ==
+                 ExpressionType::BOUND_AGGREGATE);
+        auto bound_agg =
+            dynamic_cast<BoundAggregateExpression *>(aggregate.get());
+        if (bound_agg->function.name == "count_star" ||
+            bound_agg->function.name == "count") {
+            contain_count_func = true;
+            break;
+        }
+    }
+
     for (size_t i = 0; i < agg_op->aggregates.size(); i++) {
         auto &aggregate = agg_op->aggregates[i];
         D_ASSERT(aggregate->GetExpressionType() ==
@@ -2591,20 +2711,25 @@ void HashAggregateCodeGenerator::GenerateOutputKernelParameters(
         auto bound_agg =
             dynamic_cast<BoundAggregateExpression *>(aggregate.get());
         std::string func_name = bound_agg->function.name;
+        std::string ctype =
+            code_gen->ConvertLogicalTypeToPrimitiveType(bound_agg->return_type);
 
-        if (func_name == "count_star" || func_name == "count") {
-            // Add output parameter for this aggregate function
-            KernelParam agg_param;
-            agg_param.name = "aht" + std::to_string(op_id) + "_" + "agg_" +
-                             std::to_string(i);
-            agg_param.type = "int *";
-            agg_param.is_device_ptr = true;
-            output_kernel_params.push_back(agg_param);
-        }
-        else {
-            throw NotImplementedException(
-                "HashAggregate output parameter generation for " + func_name +
-                " not implemented yet");
+        KernelParam agg_param;
+        agg_param.name =
+            "aht" + std::to_string(op_id) + "_" + "agg_" + std::to_string(i);
+        agg_param.type = ctype + "*";
+        agg_param.is_device_ptr = true;
+        output_kernel_params.push_back(agg_param);
+
+        if (func_name == "avg" && !contain_count_func) {
+            // If there is no count function, we need to add a count variable
+            // for average calculation
+            KernelParam count_param;
+            count_param.name = "aht" + std::to_string(op_id) + "_" + "agg_" +
+                               std::to_string(i) + "_cnt";
+            count_param.type = "unsigned long long *";
+            count_param.is_device_ptr = true;
+            output_kernel_params.push_back(count_param);
         }
     }
 }
@@ -2725,10 +2850,10 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPull(
     for (size_t i = 0; i < pipeline_context.sub_pipelines.size(); i++) {
         std::string spid = std::to_string(i);
         auto &sub_pipeline = pipeline_context.sub_pipelines[i];
-        PipeInputType input_type = GetPipeInputType(sub_pipeline);
+        PipeInputType input_type = GetPipeInputType(sub_pipeline, i);
         code.Add("case " + spid + ": {");
         code.IncreaseNesting();
-        if (input_type == PipeInputType::TYPE_0) {
+        if (input_type == PipeInputType::TYPE_0_FALSE) {
             code.Add(
                 "Themis::PushedParts::PushedPartsAtZeroLvl *src_pparts = "
                 "(Themis::PushedParts::PushedPartsAtZeroLvl*) stack->Top();");
@@ -2737,7 +2862,7 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPull(
                 "ts_0_range_cached, inodes_cnts);");
             code.Add("if (thread_id == 0) stack->PopPartsAtZeroLvl();");
         }
-        else if (input_type == PipeInputType::TYPE_1) {
+        else if (input_type == PipeInputType::TYPE_1_FALSE) {
             throw NotImplementedException(
                 "GenerateCopyCodeForAdaptiveWorkSharingPull for TYPE_1");
             code.Add(
@@ -2773,7 +2898,7 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPull(
             code.Add("if (thread_id == 0) stack->PopPartsAtLoopLvl(" +
                      std::to_string(speculated_size) + ");");
         }
-        else if (input_type == PipeInputType::TYPE_2) {
+        else if (input_type == PipeInputType::TYPE_2_TRUE) {
             code.Add(
                 "Themis::PushedParts::PushedPartsAtIfLvl* src_pparts = "
                 "(Themis::PushedParts::PushedPartsAtIfLvl*) stack->Top();");
@@ -2785,7 +2910,6 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPull(
             if (tids.size() > 0) {
                 code.Add("volatile char *src_pparts_attrs = src_pparts->GetAttrsPtr();");
                 uint64_t speculated_size = 0;
-                uint64_t tsWidth = 32;
                 for (auto &tid : tids) {
                     // TODO additional types
                     // if attr.dataType == Type.STRING:
@@ -2919,10 +3043,11 @@ void GpuCodeGenerator::GenerateCodeForAdaptiveWorkSharingPush(
             if (i == 0) continue;
             std::string spid = std::to_string(i);
             auto &sub_pipeline = pipeline_context.sub_pipelines[i];
-            PipeInputType input_type = GetPipeInputType(sub_pipeline);
+            PipeInputType input_type = GetPipeInputType(sub_pipeline, i);
             code.Add("case " + spid + ": {");
             code.IncreaseNesting();
-            if (input_type == PipeInputType::TYPE_1) {
+            if (input_type == PipeInputType::TYPE_1_TRUE ||
+                input_type == PipeInputType::TYPE_1_FALSE) {
                 code.Add("Themis::CountINodesAtLoopLvl(thread_id, " + spid +
                          ", ts_" + spid + "_range_cached, ts_" + spid +
                          "_range, inodes_cnts);");
@@ -2982,10 +3107,11 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPush(
     for (size_t i = 0; i < pipeline_context.sub_pipelines.size(); i++) {
         std::string spid = std::to_string(i);
         auto &sub_pipeline = pipeline_context.sub_pipelines[i];
-        PipeInputType input_type = GetPipeInputType(sub_pipeline);
+        PipeInputType input_type = GetPipeInputType(sub_pipeline, i);
         code.Add("case " + spid + ": {");
         code.IncreaseNesting();
-        if (input_type == PipeInputType::TYPE_0) {
+        if (input_type == PipeInputType::TYPE_0_FALSE ||
+            input_type == PipeInputType::TYPE_0_TRUE) {
             code.Add("if (thread_id == 0) stack->PushPartsAtZeroLvl();");
             code.Add(
                 "Themis::PushedParts::PushedPartsAtZeroLvl* target_pparts = "
@@ -3002,7 +3128,8 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPush(
                 "mask_1 = num_remaining > 0 ?  (m | mask_1) : ((~m) & "
                 "mask_1);");
         }
-        else if (input_type == PipeInputType::TYPE_1) {
+        else if (input_type == PipeInputType::TYPE_1_FALSE ||
+                 input_type == PipeInputType::TYPE_1_TRUE) {
             throw NotImplementedException(
                 "GenerateCopyCodeForAdaptiveWorkSharingPush for TYPE_1");
             // attrs = {}
@@ -3048,7 +3175,8 @@ void GpuCodeGenerator::GenerateCopyCodeForAdaptiveWorkSharingPush(
             //         code.Add("}')
             //         speculated_size += CType.size[langType(attr.dataType)] * (2 * tsWidth)
         }
-        else if (input_type == PipeInputType::TYPE_2) {
+        else if (input_type == PipeInputType::TYPE_2_FALSE ||
+                 input_type == PipeInputType::TYPE_2_TRUE) {
             uint64_t speculated_size = 0;
             D_ASSERT(i > 0);
             auto &tids = pipeline_context.sub_pipeline_tids[i - 1];

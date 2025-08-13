@@ -65,6 +65,7 @@ struct PipelineContext {
     // Sub pipeline
     std::vector<CypherPipeline> sub_pipelines;
     std::vector<std::vector<std::string>> sub_pipeline_tids;
+    std::vector<bool> do_lb;
 
     std::unordered_map<std::string, std::string> attribute_tid_mapping;
     std::unordered_map<std::string, std::string> attribute_source_mapping;

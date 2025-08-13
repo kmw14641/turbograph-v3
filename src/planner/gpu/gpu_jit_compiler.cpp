@@ -260,11 +260,14 @@ bool GpuJitCompiler::AddCudaRuntimeSymbols()
 
 // Helper: compile src → PTX → load → return (mod, fn)
 bool GpuJitCompiler::CompileWithNVRTC(const std::string &src,
-                      const char *kernel_name,
-                      CUmodule &mod_out,
-                      CUfunction &fn_out) {
+                                      const char *kernel_name,
+                                      int num_pipelines_compiled,
+                                      CUmodule &mod_out,
+                                      std::vector<CUfunction> &fn_out)
+{
     nvrtcProgram prog;
-    if (nvrtcCreateProgram(&prog, src.c_str(), "jit_kernel.cu", 0, nullptr, nullptr) != NVRTC_SUCCESS)
+    if (nvrtcCreateProgram(&prog, src.c_str(), "jit_kernel.cu", 0, nullptr,
+                           nullptr) != NVRTC_SUCCESS)
         return false;
 
     // TODO: get themis include path from config or something
@@ -278,21 +281,25 @@ bool GpuJitCompiler::CompileWithNVRTC(const std::string &src,
     //     "-D__x86_64__=1",
     //     "-D__LP64__=1"};
     const char *opts[] = {
-        "--gpu-architecture=compute_75",
-        "--std=c++17",
+        "--gpu-architecture=compute_75", "--std=c++17",
         "--include-path=/usr/include/",
         "--include-path=/usr/include/x86_64-linux-gnu/",
-        "--include-path=/turbograph-v3/src/include/planner/gpu/themis/"};
-    nvrtcResult r = nvrtcCompileProgram(prog, 5, opts);
+        "--include-path=/turbograph-v3/src/include/planner/gpu/themis/",
+        "--disable-warnings"};
+    nvrtcResult r = nvrtcCompileProgram(prog, 6, opts);
     if (r != NVRTC_SUCCESS) {
-        size_t sz; nvrtcGetProgramLogSize(prog, &sz);
-        std::string log(sz, '\0'); nvrtcGetProgramLog(prog, log.data());
+        size_t sz;
+        nvrtcGetProgramLogSize(prog, &sz);
+        std::string log(sz, '\0');
+        nvrtcGetProgramLog(prog, log.data());
         std::cerr << log << std::endl;
         nvrtcDestroyProgram(&prog);
         return false;
     }
-    size_t ptxSize; nvrtcGetPTXSize(prog, &ptxSize);
-    std::string ptx(ptxSize, '\0'); nvrtcGetPTX(prog, ptx.data());
+    size_t ptxSize;
+    nvrtcGetPTXSize(prog, &ptxSize);
+    std::string ptx(ptxSize, '\0');
+    nvrtcGetPTX(prog, ptx.data());
     nvrtcDestroyProgram(&prog);
 
     if (!ensureCudaContext()) {
@@ -300,33 +307,46 @@ bool GpuJitCompiler::CompileWithNVRTC(const std::string &src,
         return false;
     }
 
-    CUresult loadResult = cuModuleLoadDataEx(&mod_out, ptx.data(), 0, nullptr, nullptr);
+    CUresult loadResult =
+        cuModuleLoadDataEx(&mod_out, ptx.data(), 0, nullptr, nullptr);
     if (loadResult != CUDA_SUCCESS) {
         const char *errName = nullptr, *errStr = nullptr;
         cuGetErrorName(loadResult, &errName);
         cuGetErrorString(loadResult, &errStr);
         std::cerr << "cuModuleLoadDataEx failed: ["
-                << (errName ? errName : "unknown") << "] "
-                << (errStr  ? errStr  : "") << '\n';
+                  << (errName ? errName : "unknown") << "] "
+                  << (errStr ? errStr : "") << '\n';
 
-        int drvVer = 0; cuDriverGetVersion(&drvVer);
-        std::cerr << "Driver version  : " << drvVer/1000 << '.' << (drvVer%1000)/10 << '\n';
+        int drvVer = 0;
+        cuDriverGetVersion(&drvVer);
+        std::cerr << "Driver version  : " << drvVer / 1000 << '.'
+                  << (drvVer % 1000) / 10 << '\n';
 
-        std::cerr << "PTX snippet:\n" 
-                << std::string(ptx.begin(), ptx.begin() + std::min<size_t>(200, ptx.size()))
-                << "\n----\n";
+        std::cerr << "PTX snippet:\n"
+                  << std::string(
+                         ptx.begin(),
+                         ptx.begin() + std::min<size_t>(200, ptx.size()))
+                  << "\n----\n";
 
         return false;
     }
 
-    if (cuModuleGetFunction(&fn_out, mod_out, kernel_name) != CUDA_SUCCESS) {
-        std::cerr << "Failed to get function" << std::endl;
-        return false;
+    for (int i = 0; i < num_pipelines_compiled; ++i) {
+        CUfunction fn;
+        std::string kernel_name_i =
+            std::string(kernel_name) + std::to_string(i);
+        if (cuModuleGetFunction(&fn, mod_out, kernel_name_i.c_str()) !=
+            CUDA_SUCCESS) {
+            std::cerr << "Failed to get function for pipeline " << i << " ("
+                      << kernel_name_i << "): " << std::endl;
+            return false;
+        }
+        fn_out.push_back(std::move(fn));
     }
     return true;
 }
 
-bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, CUfunction &kernel_function) {
+bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, std::vector<CUfunction> &kernels) {
     InitializeCompiler();
 
     auto realFS = llvm::vfs::getRealFileSystem();
@@ -426,10 +446,13 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, CUfunctio
 
     {
         llvm::orc::SymbolMap m;
-        m[jit->mangleAndIntern("gpu_kernel")] =
-            llvm::orc::ExecutorSymbolDef(
-                llvm::orc::ExecutorAddr::fromPtr(&kernel_function),
-                llvm::JITSymbolFlags::Exported);
+        for (int i = 0; i < kernels.size(); ++i) {
+            std::string kernel_name = "gpu_kernel_" + std::to_string(i);
+            m[jit->mangleAndIntern(kernel_name)] =
+                llvm::orc::ExecutorSymbolDef(
+                    llvm::orc::ExecutorAddr::fromPtr(kernels[i]),
+                    llvm::JITSymbolFlags::Exported);
+        }
 
         if (auto err = jit->getMainJITDylib().define(
                 llvm::orc::absoluteSymbols(m))) {
