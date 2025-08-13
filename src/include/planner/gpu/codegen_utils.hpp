@@ -83,7 +83,8 @@ struct PipelineContext {
     std::vector<LogicalType> output_column_types;
 
     // Materialization status for each column
-    std::unordered_map<std::string, bool> column_materialized;    
+    std::unordered_map<std::string, bool> column_materialized;
+    std::vector<std::unordered_set<std::string>> materialization_target_columns;
     std::vector<std::vector<Attr>> columns_to_be_materialized;
 
     // Track which columns are actually used in expressions
@@ -93,6 +94,10 @@ struct PipelineContext {
 
     std::unordered_map<size_t, std::string> projection_variable_names;
     std::unordered_set<size_t> input_proj_vars_generated;
+
+    std::unordered_map<std::string, std::string> column_to_var_map;
+    uint64_t input_column_count = 0;
+    uint64_t output_column_count = 0;
 
     PipelineContext() : total_operators(0), cur_op_idx(0) {}
 

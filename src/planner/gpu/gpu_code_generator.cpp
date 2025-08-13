@@ -181,6 +181,10 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
         pipeline_context.columns_to_be_materialized;
     columns_to_be_materialized.clear();
     columns_to_be_materialized.resize(num_sub_pipelines);
+    auto &materialization_target_columns =
+        pipeline_context.materialization_target_columns;
+    materialization_target_columns.clear();
+    materialization_target_columns.resize(num_sub_pipelines);
     auto &sub_pipeline_tids = pipeline_context.sub_pipeline_tids;
     sub_pipeline_tids.clear();
     sub_pipeline_tids.resize(num_sub_pipelines);
@@ -191,6 +195,7 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
     // materialized
     for (int sub_idx = 0; sub_idx < num_sub_pipelines; sub_idx++) {
         auto &sub_pipeline = pipeline_context.sub_pipelines[sub_idx];
+        auto &mat_target_columns = materialization_target_columns[sub_idx];
         // Iterate over each operator in the sub-pipeline
         int op_idx = sub_idx == 0 ? 0 : 1;
         for (; op_idx < sub_pipeline.GetPipelineLength(); op_idx++) {
@@ -226,7 +231,7 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                             std::string source_name =
                                 "gr" + std::to_string(oid) + "_col_" +
                                 std::to_string(scan_projection_mapping[j] - 1) +
-                                "_data";
+                                "_data[" + tid + "]";
                             D_ASSERT(
                                 pipeline_context.attribute_source_mapping.find(
                                     col_name) ==
@@ -264,10 +269,14 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                     for (const auto &col_idx : referenced_columns) {
                         D_ASSERT(col_idx >= 0 &&
                                  col_idx < output_column_names.size());
-                        // Mark the column as materialized
                         auto &col_name = output_column_names[col_idx];
-                        columns_to_be_materialized[sub_idx].push_back(
-                            Attr{col_name, output_column_types[col_idx], col_idx});
+                        if (mat_target_columns.find(col_name) ==
+                            mat_target_columns.end()) {
+                            mat_target_columns.insert(col_name);
+                            columns_to_be_materialized[sub_idx].push_back(
+                                Attr{col_name, output_column_types[col_idx],
+                                     col_idx});
+                        }
                     }
                     break;
                 }
@@ -280,8 +289,13 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                         D_ASSERT(col_idx >= 0 &&
                                  col_idx < output_column_names.size());
                         auto &col_name = output_column_names[col_idx];
-                        columns_to_be_materialized[sub_idx].push_back(Attr{
-                            col_name, output_column_types[col_idx], col_idx});
+                        if (mat_target_columns.find(col_name) ==
+                            mat_target_columns.end()) {
+                            mat_target_columns.insert(col_name);
+                            columns_to_be_materialized[sub_idx].push_back(
+                                Attr{col_name, output_column_types[col_idx],
+                                     col_idx});
+                        }
                     }
                     break;
                 }
@@ -306,6 +320,8 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                     auto &input_schema = agg_op->children[0]->GetSchema();
                     auto &input_column_names =
                         input_schema.getStoredColumnNamesRef();
+                    auto &input_column_types =
+                        input_schema.getStoredTypesRef();
 
                     std::vector<uint64_t> group_key_idxs;
                     for (auto &group : agg_op->groups) {
@@ -321,6 +337,14 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                             .attribute_source_mapping[orig_col_name] =
                             "aht" + std::to_string(agg_op->GetOperatorId()) +
                             "[" + tid + "].payload." + col_name;
+                        // if (mat_target_columns.find(orig_col_name) ==
+                        //     mat_target_columns.end()) {
+                        //     mat_target_columns.insert(orig_col_name);
+                        //     columns_to_be_materialized[sub_idx].push_back(
+                        //         Attr{orig_col_name,
+                        //              input_column_types[group_key_idx],
+                        //              group_key_idx});
+                        // }
                     }
 
                     bool contain_count_func = false;
@@ -379,12 +403,30 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                                 std::to_string(agg_op->GetOperatorId()) + "_" +
                                 agg_var_name + "[" + tid + "]";
                         }
+
+                        // std::vector<uint64_t> referenced_columns;
+                        // GetReferencedColumns(aggregate.get(),
+                        //                      referenced_columns);
+                        // for (const auto &col_idx : referenced_columns) {
+                        //     auto &input_col_name = input_column_names[col_idx];
+                        //     if (mat_target_columns.find(input_col_name) ==
+                        //         mat_target_columns.end()) {
+                        //         mat_target_columns.insert(input_col_name);
+                        //         columns_to_be_materialized[sub_idx].push_back(
+                        //             Attr{input_col_name,
+                        //                  input_column_types[col_idx], col_idx});
+                        //     }
+                        // }
                     }
                     break;
                 }
                 case PhysicalOperatorType::PROJECTION: {
                     auto *proj_op = dynamic_cast<PhysicalProjection *>(op);
                     for (const auto &expr : proj_op->expressions) {
+                        if (expr->GetExpressionClass() ==
+                            ExpressionClass::BOUND_REF) {
+                            continue;
+                        }
                         std::vector<uint64_t> referenced_columns;
                         GetReferencedColumns(expr.get(), referenced_columns);
                         for (const auto &col_idx : referenced_columns) {
@@ -400,8 +442,11 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                                     break;
                                 }
                             }
+                            if (!is_valid_column) continue;
 
-                            if (is_valid_column) {
+                            if (mat_target_columns.find(col_name) ==
+                                mat_target_columns.end()) {
+                                mat_target_columns.insert(col_name);
                                 columns_to_be_materialized[sub_idx].push_back(
                                     Attr{col_name, output_column_types[col_idx],
                                          col_idx});
@@ -415,8 +460,12 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                          col_idx < output_column_names.size(); col_idx++) {
                         auto &col_name = output_column_names[col_idx];
                         auto &col_type = output_column_types[col_idx];
-                        columns_to_be_materialized[sub_idx].push_back(
-                            Attr{col_name, col_type, col_idx});
+                        if (mat_target_columns.find(col_name) ==
+                            mat_target_columns.end()) {
+                            mat_target_columns.insert(col_name);
+                            columns_to_be_materialized[sub_idx].push_back(
+                                Attr{col_name, col_type, col_idx});
+                        }
                     }
                     break;
                 }
@@ -495,6 +544,13 @@ void GpuCodeGenerator::GetReferencedColumns(
             for (size_t i = 0; i < conj_expr->children.size(); i++) {
                 GetReferencedColumns(conj_expr->children[i].get(),
                                      referenced_columns);
+            }
+            break;
+        }
+        case ExpressionClass::BOUND_AGGREGATE: {
+            auto agg_expr = dynamic_cast<BoundAggregateExpression *>(expr);
+            for (auto &child : agg_expr->children) {
+                GetReferencedColumns(child.get(), referenced_columns);
             }
             break;
         }
@@ -1059,24 +1115,33 @@ std::string GpuCodeGenerator::ConvertLogicalTypeToPrimitiveType(
 std::string GpuCodeGenerator::GetValidVariableName(const std::string &name,
                                                    size_t col_idx)
 {
-    std::string col_name;
-    for (char c : name) {
-        if (std::isalnum(c) || c == '_') {
-            col_name += c;
-        }
-        else {
-            col_name += '_';
-        }
+    // std::string col_name;
+    // for (char c : name) {
+    //     if (std::isalnum(c) || c == '_') {
+    //         col_name += c;
+    //     }
+    //     else {
+    //         col_name += '_';
+    //     }
+    // }
+
+    // if (!col_name.empty() && std::isdigit(col_name[0])) {
+    //     col_name = "col_" + col_name;
+    // }
+
+    // if (col_name.empty()) {
+    //     col_name = "col_" + std::to_string(col_idx);
+    // }
+
+    // return col_name;
+    auto it = pipeline_context.column_to_var_map.find(name);
+    if (it != pipeline_context.column_to_var_map.end()) {
+        return it->second;
     }
 
-    if (!col_name.empty() && std::isdigit(col_name[0])) {
-        col_name = "col_" + col_name;
-    }
-
-    if (col_name.empty()) {
-        col_name = "col_" + std::to_string(col_idx);
-    }
-
+    std::string col_name =
+        "col_" + std::to_string(pipeline_context.input_column_count++);
+    pipeline_context.column_to_var_map[name] = col_name;
     return col_name;
 }
 
@@ -1589,51 +1654,12 @@ void GpuCodeGenerator::GenerateCodeForMaterialization(
             continue;
         }
         code.Add("// Materialize column: " + column);
-        std::string col_name = column;
-        std::replace(col_name.begin(), col_name.end(), '.', '_');
+        std::string col_name = GetValidVariableName(
+            column, cur_cols_to_be_materialized[i].pos);
         std::string ctype = ConvertLogicalTypeToPrimitiveType(
             cur_cols_to_be_materialized[i].type);
         code.Add(ctype + col_name + ";");
-        // pipeline_context.column_materialized[column] = true;
     }
-    // int cur_subpipe_idx = pipeline_context.current_sub_pipeline_index;
-    // auto &cur_cols_to_be_materialized =
-    //     pipeline_context.columns_to_be_materialized[cur_subpipe_idx];
-    // auto &cur_col_types_to_be_materialized =
-    //     pipeline_context.column_types_to_be_materialized[cur_subpipe_idx];
-    // for (auto i = 0; i < cur_cols_to_be_materialized.size();
-    //      i++) {
-    //     auto column = cur_cols_to_be_materialized[i];
-    //     if (pipeline_context.column_materialized.find(column) !=
-    //         pipeline_context.column_materialized.end()) {
-    //         // If the column is already materialized, skip it
-    //         continue;
-    //     }
-    //     code.Add("// Materialize column: " + column);
-    //     std::string col_name = column;
-        
-    //     std::string sanitized_col_name;
-    //     for (char c : col_name) {
-    //         if (std::isalnum(c) || c == '_') {
-    //             sanitized_col_name += c;
-    //         } else {
-    //             sanitized_col_name += '_';
-    //         }
-    //     }
-        
-    //     if (!sanitized_col_name.empty() && std::isdigit(sanitized_col_name[0])) {
-    //         sanitized_col_name = "col_" + sanitized_col_name;
-    //     }
-        
-    //     if (sanitized_col_name.empty()) {
-    //         sanitized_col_name = "col_unknown";
-    //     }
-        
-    //     std::string ctype = ConvertLogicalTypeToPrimitiveType(
-    //         cur_col_types_to_be_materialized[i]);
-    //     code.Add(ctype + sanitized_col_name + ";");
-    //     pipeline_context.column_materialized[column] = true;
-    // }
 }
 
 void GpuCodeGenerator::GenerateCodeForLocalVariable(
@@ -2062,19 +2088,18 @@ void ProjectionCodeGenerator::GenerateCode(
     ClientContext &context, PipelineContext &pipeline_ctx, bool is_main_loop)
 {
     auto proj_op = dynamic_cast<PhysicalProjection *>(op);
-    if (!proj_op) {
-        return;
-    }
+    D_ASSERT(proj_op != nullptr);
 
     code.Add("// Projection operator");
-
     ExpressionCodeGenerator expr_gen(context);
-
     std::unordered_map<uint64_t, std::string> column_map;
-
     auto &columns_to_materialize =
         pipeline_ctx.columns_to_be_materialized
             [pipeline_ctx.current_sub_pipeline_index];
+
+    auto &output_schema = proj_op->GetSchema();
+    auto &output_column_names = output_schema.getStoredColumnNamesRef();
+    auto &output_column_types = output_schema.getStoredTypesRef();
 
     if (pipeline_ctx.input_proj_vars_generated.find(
             pipeline_ctx.current_sub_pipeline_index) ==
@@ -2094,29 +2119,70 @@ void ProjectionCodeGenerator::GenerateCode(
 
             std::string cuda_type =
                 code_gen->ConvertLogicalTypeToPrimitiveType(col_type);
-            code.Add(cuda_type + input_var_name + " = " + sanitized_col_name +
-                     ";");
+            // code.Add(cuda_type + input_var_name + " = " + sanitized_col_name +
+            //          ";");
 
-            column_map[i] = input_var_name;
+            // column_map[i] = input_var_name;
+            column_map[i] = sanitized_col_name;
         }
         pipeline_ctx.input_proj_vars_generated.insert(
             pipeline_ctx.current_sub_pipeline_index);
     }
     else {
         for (size_t i = 0; i < columns_to_materialize.size(); i++) {
+            std::string &col_name = columns_to_materialize[i].name;
+            LogicalType &col_type = columns_to_materialize[i].type;
+            auto &col_pos = columns_to_materialize[i].pos;
             std::stringstream hex_stream;
             hex_stream << std::hex << (0x100000 + i);
             std::string hex_suffix = hex_stream.str().substr(1);
             std::string input_var_name = "input_proj_" + hex_suffix;
-            column_map[i] = input_var_name;
+            // column_map[i] = input_var_name;
+            std::string sanitized_col_name =
+                code_gen->GetValidVariableName(col_name, col_pos);
+            column_map[i] = sanitized_col_name;
         }
     }
 
     // Process each projection expression
     size_t output_var_counter = 0;
+    D_ASSERT(proj_op->expressions.size() == output_column_names.size());
+    auto &mat_target_columns = pipeline_ctx.materialization_target_columns
+                                   [pipeline_ctx.current_sub_pipeline_index];
     for (size_t expr_idx = 0; expr_idx < proj_op->expressions.size();
          expr_idx++) {
         auto &expr = proj_op->expressions[expr_idx];
+        if (expr->expression_class == ExpressionClass::BOUND_REF) {
+            // check if the expression required materialization
+            auto &col_name = output_column_names[expr_idx];
+            if (mat_target_columns.find(col_name) == mat_target_columns.end()) {
+                // This column need not be materialized, skip it
+                continue;
+            }
+
+            // check if the expression is already materialized
+            bool is_materialized =
+                pipeline_ctx.column_materialized.find(col_name) !=
+                    pipeline_ctx.column_materialized.end() &&
+                pipeline_ctx.column_materialized[col_name];
+            if (!is_materialized) {
+                // Column is not materialized, we need to generate code for it
+                // and mark it as materialized
+                auto it = pipeline_ctx.attribute_source_mapping.find(col_name);
+                if (it != pipeline_ctx.attribute_source_mapping.end()) {
+                    std::string source_var_name = it->second;
+                    code.Add("// " + col_name +
+                             " is mapped to source variable " +
+                             source_var_name);
+                    std::string sanitized_col_name =
+                        code_gen->GetValidVariableName(col_name, expr_idx);
+                    code.Add(sanitized_col_name + " = " + source_var_name +
+                             ";");
+                }
+                pipeline_ctx.column_materialized[col_name] = true;
+            }
+            continue;
+        }
 
         std::stringstream hex_stream;
         hex_stream << std::hex << (0x100000 + output_var_counter);
@@ -2126,28 +2192,28 @@ void ProjectionCodeGenerator::GenerateCode(
         std::string result_expr = expr_gen.GenerateExpressionCode(
             expr.get(), code, pipeline_ctx, column_map);
 
-        if (expr->expression_class == ExpressionClass::BOUND_REF) {
-            pipeline_ctx.projection_variable_names[expr_idx] = result_expr;
-        }
-        else {
+        // if (expr->expression_class == ExpressionClass::BOUND_REF) {
+        //     pipeline_ctx.projection_variable_names[expr_idx] = result_expr;
+        // }
+        // else {
             std::string cuda_type =
                 code_gen->ConvertLogicalTypeToPrimitiveType(expr->return_type);
             code.Add(cuda_type + proj_var_name + " = " + result_expr + ";");
 
             pipeline_ctx.projection_variable_names[expr_idx] = proj_var_name;
             output_var_counter++;
-        }
+        // }
 
-        if (expr_idx < pipeline_ctx.output_column_names.size()) {
-            std::string output_col_name =
-                pipeline_ctx.output_column_names[expr_idx];
-            // pipeline_ctx.column_materialized[output_col_name] = true;
+        // if (expr_idx < pipeline_ctx.output_column_names.size()) {
+        //     std::string output_col_name =
+        //         pipeline_ctx.output_column_names[expr_idx];
+        //     // pipeline_ctx.column_materialized[output_col_name] = true;
 
-            std::string final_var_name =
-                pipeline_ctx.projection_variable_names[expr_idx];
-            column_map[pipeline_ctx.input_column_names.size() + expr_idx] =
-                final_var_name;
-        }
+        //     std::string final_var_name =
+        //         pipeline_ctx.projection_variable_names[expr_idx];
+        //     column_map[pipeline_ctx.input_column_names.size() + expr_idx] =
+        //         final_var_name;
+        // }
     }
 }
 
@@ -2211,9 +2277,11 @@ void ProduceResultsCodeGenerator::GenerateCode(
                     code.Add(col_name + " = " + source_var_name + ";");
                 }
                 else {
-                    throw InvalidInputException(
-                        "Output column " + orig_col_name +
-                        " is not found in attribute source mapping.");
+                    code.Add("// " + orig_col_name +
+                             " is not found in attribute source mapping.");
+                    // throw InvalidInputException(
+                    //     "Output column " + orig_col_name +
+                    //     " is not found in attribute source mapping.");
                 }
             }
         }
@@ -2415,10 +2483,14 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
         }
 
         std::vector<std::string> group_key_names;
+        std::vector<std::string> group_key_sanitized_names;
         for (auto &group_key_idx : group_key_idxs) {
             std::string &orig_col_name =
                 pipeline_ctx.input_column_names[group_key_idx];
             std::string col_name = orig_col_name;
+            std::string sanitized_col_name =
+                code_gen->GetValidVariableName(orig_col_name, group_key_idx);
+            group_key_sanitized_names.push_back(sanitized_col_name);
             std::replace(col_name.begin(), col_name.end(), '.', '_');
             group_key_names.push_back(col_name);
 
@@ -2432,28 +2504,30 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
                     pipeline_ctx.attribute_source_mapping[orig_col_name];
                 std::string tid_name =
                     pipeline_ctx.attribute_tid_mapping[orig_col_name];
-                code.Add(col_name + " = " + source_name + "[" + tid_name +
-                         "];");
+                code.Add(sanitized_col_name + " = " + source_name + "[" +
+                         tid_name + "];");
             }
         }
 
         for (size_t i = 0; i < group_key_idxs.size(); i++) {
             auto group_key_idx = group_key_idxs[i];
             std::string col_name = group_key_names[i];
-            code.Add("buf_payl." + col_name + " = " + col_name + ";");
+            std::string sanitized_col_name = group_key_sanitized_names[i];
+            code.Add("buf_payl." + col_name + " = " + sanitized_col_name + ";");
         }
 
         for (size_t i = 0; i < group_key_idxs.size(); i++) {
             auto group_key_idx = group_key_idxs[i];
             std::string col_name = group_key_names[i];
+            std::string sanitized_col_name = group_key_sanitized_names[i];
             if (pipeline_ctx.input_column_types[group_key_idx].id() ==
                 LogicalTypeId::VARCHAR) {
-                code.Add("hash_key = hash(hash_key + stringHash(" + col_name +
-                         "));");
+                code.Add("hash_key = hash(hash_key + stringHash(" +
+                         sanitized_col_name + "));");
             }
             else {
-                code.Add("hash_key = hash(hash_key + ((uint64_t) " + col_name +
-                         "));");
+                code.Add("hash_key = hash(hash_key + ((uint64_t) " +
+                         sanitized_col_name + "));");
             }
         }
 
@@ -2497,14 +2571,15 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
         for (size_t i = 0; i < group_key_idxs.size(); i++) {
             auto group_key_idx = group_key_idxs[i];
             std::string col_name = group_key_names[i];
+            std::string sanitized_col_name = group_key_sanitized_names[i];
             if (pipeline_ctx.input_column_types[group_key_idx].id() ==
                 LogicalTypeId::VARCHAR) {
                 code.Add("bucketFound &= stringEquals(entry." + col_name +
-                         ", " + col_name + ");");
+                         ", " + sanitized_col_name + ");");
             }
             else {
                 code.Add("bucketFound &= entry." + col_name +
-                         " == " + col_name + ";");
+                         " == " + sanitized_col_name + ";");
             }
         }
 
