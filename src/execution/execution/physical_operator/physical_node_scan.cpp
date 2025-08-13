@@ -55,6 +55,7 @@ PhysicalNodeScan::PhysicalNodeScan(
     filter_pushdown_type = FilterPushdownType::FP_EQ;
     filter_pushdown_key_idxs.push_back(filterKeyIndex);
     eq_filter_pushdown_values.push_back(filterValue);
+    ConvertFilterPushdownKeyIdxs();
 }
 
 PhysicalNodeScan::PhysicalNodeScan(
@@ -72,6 +73,7 @@ PhysicalNodeScan::PhysicalNodeScan(
     filter_pushdown_key_idxs.push_back(filterKeyIndex);
     range_filter_pushdown_values.push_back(
         {l_filterValue, r_filterValue, l_inclusive, r_inclusive});
+    ConvertFilterPushdownKeyIdxs();
 }
 
 PhysicalNodeScan::PhysicalNodeScan(
@@ -132,6 +134,7 @@ PhysicalNodeScan::PhysicalNodeScan(
     filter_pushdown_type = FilterPushdownType::FP_EQ;
     filter_pushdown_key_idxs = move(filterKeyIndexes);
     eq_filter_pushdown_values = move(filterValues);
+    ConvertFilterPushdownKeyIdxs();
 }
 
 /* Schemaless Range Filter Pushdown */
@@ -148,6 +151,7 @@ PhysicalNodeScan::PhysicalNodeScan(
     filter_pushdown_type = FilterPushdownType::FP_RANGE;
     filter_pushdown_key_idxs = move(filterKeyIndexes);
     range_filter_pushdown_values = move(rangeFilterValues);
+    ConvertFilterPushdownKeyIdxs();
 }
 
 /* Schemaless Complex Filter Pushdown */
@@ -177,6 +181,25 @@ PhysicalNodeScan::PhysicalNodeScan(
 }
 
 PhysicalNodeScan::~PhysicalNodeScan() {}
+
+void PhysicalNodeScan::ConvertFilterPushdownKeyIdxs()
+{
+    // TODO multi-schema support
+    D_ASSERT(scan_projection_mapping.size() == 1);
+    if (filter_pushdown_key_idxs.size() == 0) {
+        return;
+    }
+    filter_pushdown_key_idxs_in_output.resize(filter_pushdown_key_idxs.size(),
+                                              -1);
+    for (auto i = 0; i < filter_pushdown_key_idxs.size(); i++) {
+        for (auto j = 0; j < scan_projection_mapping[0].size(); j++) {
+            if (scan_projection_mapping[0][j] == filter_pushdown_key_idxs[i]) {
+                filter_pushdown_key_idxs_in_output[i] = j;
+                break;
+            }
+        }
+    }
+}
 
 //===--------------------------------------------------------------------===//
 // Source

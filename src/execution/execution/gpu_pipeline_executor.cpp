@@ -10,14 +10,12 @@
 namespace duckdb {
 
 GPUPipelineExecutor::GPUPipelineExecutor(ExecutionContext *context,
-                                         CypherPipeline *pipeline,
                                          void *main_function)
     : BasePipelineExecutor(),
       main_function(main_function),
       cuda_stream(nullptr),
       is_initialized(false)
 {
-    this->pipeline = pipeline;
     this->context = context;
     this->sfg = nullptr;
     // Initialize GPU resources
@@ -27,7 +25,6 @@ GPUPipelineExecutor::GPUPipelineExecutor(ExecutionContext *context,
 }
 
 GPUPipelineExecutor::GPUPipelineExecutor(ExecutionContext *context,
-                                         CypherPipeline *pipeline,
                                          SchemaFlowGraph &sfg,
                                          void *main_function)
     : BasePipelineExecutor(),
@@ -35,7 +32,6 @@ GPUPipelineExecutor::GPUPipelineExecutor(ExecutionContext *context,
       cuda_stream(nullptr),
       is_initialized(false)
 {
-    this->pipeline = pipeline;
     this->context = context;
     this->sfg = std::make_unique<SchemaFlowGraph>(sfg);
     // Initialize GPU resources
@@ -45,7 +41,7 @@ GPUPipelineExecutor::GPUPipelineExecutor(ExecutionContext *context,
 }
 
 GPUPipelineExecutor::GPUPipelineExecutor(
-    ExecutionContext *context, CypherPipeline *pipeline, void *main_function,
+    ExecutionContext *context, void *main_function,
     const std::vector<PointerMapping> &pointer_mappings,
     const std::vector<ScanColumnInfo> &scan_column_infos)
     : BasePipelineExecutor(),
@@ -55,7 +51,6 @@ GPUPipelineExecutor::GPUPipelineExecutor(
       cuda_stream(nullptr),
       is_initialized(false)
 {
-    this->pipeline = pipeline;
     this->context = context;
     this->sfg = nullptr;
     // Initialize GPU resources
@@ -65,8 +60,8 @@ GPUPipelineExecutor::GPUPipelineExecutor(
 }
 
 GPUPipelineExecutor::GPUPipelineExecutor(
-    ExecutionContext *context, CypherPipeline *pipeline, SchemaFlowGraph &sfg,
-    void *main_function, const std::vector<PointerMapping> &pointer_mappings,
+    ExecutionContext *context, SchemaFlowGraph &sfg, void *main_function,
+    const std::vector<PointerMapping> &pointer_mappings,
     const std::vector<ScanColumnInfo> &scan_column_infos)
     : BasePipelineExecutor(),
       main_function(main_function),
@@ -75,7 +70,6 @@ GPUPipelineExecutor::GPUPipelineExecutor(
       cuda_stream(nullptr),
       is_initialized(false)
 {
-    this->pipeline = pipeline;
     this->context = context;
     this->sfg = std::make_unique<SchemaFlowGraph>(sfg);
     // Initialize GPU resources

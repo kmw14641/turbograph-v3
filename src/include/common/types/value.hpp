@@ -191,6 +191,8 @@ public:
 	DUCKDB_API string ToString() const;
 	//! Convert this value to a SQL-parseable string
 	DUCKDB_API string ToSQLString() const;
+	//! Convert this value to a physical type string
+	DUCKDB_API string ToPhysicalTypeString() const;
 
 	DUCKDB_API uintptr_t GetPointer() const;
 

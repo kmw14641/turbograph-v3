@@ -1465,6 +1465,44 @@ string Value::ToSQLString() const {
 	}
 }
 
+string Value::ToPhysicalTypeString() const {
+	if (!IsNull()) {
+		switch (type_.InternalType()) {
+		case PhysicalType::BOOL:
+			return value_.boolean ? "true" : "false";
+		case PhysicalType::INT8:
+			return to_string(value_.tinyint);
+		case PhysicalType::INT16:
+			return to_string(value_.smallint);
+		case PhysicalType::INT32:
+			return to_string(value_.integer);
+		case PhysicalType::INT64:
+			return to_string(value_.bigint);
+		case PhysicalType::UINT8:
+			return to_string(value_.utinyint);
+		case PhysicalType::UINT16:
+			return to_string(value_.usmallint);
+		case PhysicalType::UINT32:
+			return to_string(value_.uinteger);
+		case PhysicalType::UINT64:
+			return to_string(value_.ubigint);
+		// case PhysicalType::INT128:
+		// 	break;
+		case PhysicalType::FLOAT:
+			return to_string(value_.float_);
+		case PhysicalType::DOUBLE:
+			return to_string(value_.double_);
+		// case PhysicalType::INTERVAL:
+		// 	break;
+		case PhysicalType::VARCHAR:
+			return str_value;
+		default: {
+			throw NotImplementedException("Unimplemented type for printing: %s", type_.ToString());
+		}
+		}
+	}
+}
+
 //===--------------------------------------------------------------------===//
 // Type-specific getters
 //===--------------------------------------------------------------------===//

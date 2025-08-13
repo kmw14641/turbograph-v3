@@ -401,7 +401,7 @@ std::string ExpressionCodeGenerator::ConvertLogicalTypeToCUDAType(
         case LogicalTypeId::DOUBLE:
             return "double";
         case LogicalTypeId::VARCHAR:
-            return "char*";
+            return "str_t";
         case LogicalTypeId::DECIMAL: {
             PhysicalType p_type = type.InternalType();
             switch (p_type) {

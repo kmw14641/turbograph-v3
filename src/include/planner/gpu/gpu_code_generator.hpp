@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <fstream>
 #include "common/constants.hpp"
 #include "common/types.hpp"
 #include "common/types/value.hpp"
@@ -108,9 +109,21 @@ struct ScanColumnInfo {
 };
 
 enum class PipeInputType : uint8_t {
-    TYPE_0, // scan
-    TYPE_1, // multi
-    TYPE_2 // filter
+    TYPE_0_FALSE, // scan
+    TYPE_0_TRUE, // scan
+    TYPE_1_FALSE, // multi
+    TYPE_1_TRUE, // multi
+    TYPE_2_FALSE, // filter
+    TYPE_2_TRUE // filter
+};
+
+enum class PipeOutputType : uint8_t {
+    TYPE_0_FALSE, // materialize, do not lb
+    TYPE_0_TRUE, // materialize, do lb
+    TYPE_1_FALSE, // multi, do not lb
+    TYPE_1_TRUE, // multi, do lb
+    TYPE_2_FALSE, // filter, do not lb
+    TYPE_2_TRUE // filter, do lb
 };
 
 // Strategy pattern for operator-specific code generation
@@ -122,6 +135,39 @@ class OperatorCodeGenerator {
                               ClientContext &context,
                               PipelineContext &pipeline_ctx,
                               bool is_main_loop = false) = 0;
+    virtual void GenerateGlobalDeclaration(CypherPhysicalOperator *op,
+                                           CypherPhysicalOperator *prev_op,
+                                           size_t op_idx, CodeBuilder &code,
+                                           GpuCodeGenerator *code_gen,
+                                           ClientContext &context,
+                                           PipelineContext &pipeline_ctx)
+    {
+        return;
+    }
+    virtual void GenerateCodeForLocalVariable(CypherPhysicalOperator *op,
+                                              size_t op_idx, CodeBuilder &code,
+                                              GpuCodeGenerator *code_gen,
+                                              PipelineContext &pipeline_ctx)
+    {
+        return;  // Default implementation does nothing
+    }
+    virtual void GenerateInputKernelParameters(
+        CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+        ClientContext &context, PipelineContext &pipeline_context,
+        std::vector<KernelParam> &input_kernel_params,
+        std::vector<ScanColumnInfo> &scan_column_infos)
+    {
+        throw NotImplementedException(
+            "GenerateInputKernelParameters not implemented for this operator");
+    }
+    virtual void GenerateOutputKernelParameters(
+        CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+        ClientContext &context, PipelineContext &pipeline_context,
+        std::vector<KernelParam> &output_kernel_params)
+    {
+        throw NotImplementedException(
+            "GenerateInputKernelParameters not implemented for this operator");
+    }
 };
 
 class NodeScanCodeGenerator : public OperatorCodeGenerator {
@@ -130,6 +176,11 @@ class NodeScanCodeGenerator : public OperatorCodeGenerator {
                       GpuCodeGenerator *code_gen, ClientContext &context,
                       PipelineContext &pipeline_ctx,
                       bool is_main_loop = false) override;
+    void GenerateInputKernelParameters(
+        CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+        ClientContext &context, PipelineContext &pipeline_context,
+        std::vector<KernelParam> &input_kernel_params,
+        std::vector<ScanColumnInfo> &scan_column_infos);
 };
 
 class ProjectionCodeGenerator : public OperatorCodeGenerator {
@@ -138,26 +189,12 @@ class ProjectionCodeGenerator : public OperatorCodeGenerator {
                       GpuCodeGenerator *code_gen, ClientContext &context,
                       PipelineContext &pipeline_ctx,
                       bool is_main_loop = false) override;
-
    private:
     void GenerateProjectionExpressionCode(Expression *expr, size_t expr_idx,
                                           CodeBuilder &code,
                                           GpuCodeGenerator *code_gen,
                                           ClientContext &context,
                                           PipelineContext &pipeline_ctx);
-    std::string ConvertLogicalTypeToCUDAType(LogicalType type);
-    std::string ConvertValueToCUDALiteral(const Value &value);
-    std::string ExpressionTypeToString(ExpressionType type);
-    void GenerateFunctionCallCode(BoundFunctionExpression *func_expr,
-                                  const std::string &output_var,
-                                  CodeBuilder &code, GpuCodeGenerator *code_gen,
-                                  ClientContext &context,
-                                  PipelineContext &pipeline_ctx);
-    void GenerateOperatorCode(BoundOperatorExpression *op_expr,
-                              const std::string &output_var, CodeBuilder &code,
-                              GpuCodeGenerator *code_gen,
-                              ClientContext &context,
-                              PipelineContext &pipeline_ctx);
 };
 
 class ProduceResultsCodeGenerator : public OperatorCodeGenerator {
@@ -166,6 +203,14 @@ class ProduceResultsCodeGenerator : public OperatorCodeGenerator {
                       GpuCodeGenerator *code_gen, ClientContext &context,
                       PipelineContext &pipeline_ctx,
                       bool is_main_loop = false) override;
+    void GenerateCodeForLocalVariable(CypherPhysicalOperator *op, size_t op_idx,
+                                      CodeBuilder &code,
+                                      GpuCodeGenerator *code_gen,
+                                      PipelineContext &pipeline_ctx);
+    void GenerateOutputKernelParameters(
+        CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+        ClientContext &context, PipelineContext &pipeline_context,
+        std::vector<KernelParam> &output_kernel_params);
 };
 
 class FilterCodeGenerator : public OperatorCodeGenerator {
@@ -176,6 +221,37 @@ class FilterCodeGenerator : public OperatorCodeGenerator {
                       bool is_main_loop = false) override;
 };
 
+class HashAggregateCodeGenerator : public OperatorCodeGenerator {
+   public:
+    void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
+                      GpuCodeGenerator *code_gen, ClientContext &context,
+                      PipelineContext &pipeline_ctx,
+                      bool is_main_loop = false) override;
+    void GenerateBuildSideCode(CypherPhysicalOperator *op, CodeBuilder &code,
+                               GpuCodeGenerator *code_gen,
+                               ClientContext &context,
+                               PipelineContext &pipeline_ctx);
+    void GenerateSourceSideCode(CypherPhysicalOperator *op, CodeBuilder &code,
+                                GpuCodeGenerator *code_gen,
+                                ClientContext &context,
+                                PipelineContext &pipeline_ctx);
+    void GenerateGlobalDeclaration(CypherPhysicalOperator *op,
+                                   CypherPhysicalOperator *prev_op,
+                                   size_t op_idx, CodeBuilder &code,
+                                   GpuCodeGenerator *code_gen,
+                                   ClientContext &context,
+                                   PipelineContext &pipeline_ctx);
+    void GenerateInputKernelParameters(
+        CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+        ClientContext &context, PipelineContext &pipeline_context,
+        std::vector<KernelParam> &input_kernel_params,
+        std::vector<ScanColumnInfo> &scan_column_infos);
+    void GenerateOutputKernelParameters(
+        CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
+        ClientContext &context, PipelineContext &pipeline_context,
+        std::vector<KernelParam> &output_kernel_params);
+};
+
 class GpuCodeGenerator {
    public:
     GpuCodeGenerator(ClientContext &context);
@@ -183,20 +259,20 @@ class GpuCodeGenerator {
 
     void InitializeLLVMTargets();
 
+    // Generate global declarations for the query
+    void GenerateGlobalDeclarations(std::vector<CypherPipeline *> &pipelines);
+
     // Generate GPU code
     void GenerateGPUCode(CypherPipeline &pipeline);
+
+    // Generate CPU code
+    void GenerateCPUCode(std::vector<CypherPipeline *> &pipelines);
 
     // Generate GPU kernel code
     void GenerateKernelCode(CypherPipeline &pipeline);
 
     // Generate GPU host code
     void GenerateHostCode(CypherPipeline &pipeline);
-
-    // Analyze pipeline dependencies
-    void AnalyzeDependencies(const CypherPipeline &pipeline);
-
-    // Analyze memory access patterns
-    void AnalyzeMemoryAccess(const CypherPipeline &pipeline);
 
     // Generate kernel parameters
     void GenerateKernelParams(const CypherPipeline &pipeline);
@@ -223,6 +299,7 @@ class GpuCodeGenerator {
     std::string ConvertLogicalTypeToPrimitiveType(LogicalType &type);
     std::string ConvertLogicalTypeIdToPrimitiveType(LogicalTypeId type_id,
                                                     uint16_t extra_info);
+    std::string GetValidVariableName(const std::string &name, size_t col_idx);
 
     std::pair<uint8_t, uint8_t> GetDecimalProperties(const LogicalType &type);
     std::string GetDecimalTypeSuffix(const LogicalType &type);
@@ -264,6 +341,15 @@ class GpuCodeGenerator {
     void GenerateOperatorCode(CypherPhysicalOperator *op, CodeBuilder &code,
                               PipelineContext &pipeline_ctx, bool is_main_loop);
 
+    // Generate global declaration code for a specific operator
+    void GenerateGlobalDeclaration(CypherPhysicalOperator *op,
+                                   CypherPhysicalOperator *prev_op,
+                                   size_t op_idx, CodeBuilder &code,
+                                   PipelineContext &pipeline_ctx);
+    void GenerateCodeForLocalVariable(CypherPhysicalOperator *op, size_t op_idx,
+                                      CodeBuilder &code,
+                                      PipelineContext &pipeline_ctx);
+
     // Generate pipeline code
     void GeneratePipelineCode(CypherPipeline &pipeline, CodeBuilder &code);
 
@@ -287,6 +373,26 @@ class GpuCodeGenerator {
     void GenerateInputCodeForType2(CypherPipeline &sub_pipeline,
                                    CodeBuilder &code,
                                    PipelineContext &pipeline_ctx);
+    
+    // Generate output code for a specific type
+    void GenerateOutputCode(CypherPipeline &sub_pipeline, CodeBuilder &code,
+                            PipelineContext &pipeline_ctx,
+                            PipeOutputType output_type);
+    void GenerateOutputCodeForType0(CypherPipeline &sub_pipeline,
+                                    CodeBuilder &code,
+                                    PipelineContext &pipeline_ctx);
+    void GenerateOutputCodeForType1(CypherPipeline &sub_pipeline,
+                                    CodeBuilder &code,
+                                    PipelineContext &pipeline_ctx);
+    void GenerateOutputCodeForType2(CypherPipeline &sub_pipeline,
+                                    CodeBuilder &code,
+                                    PipelineContext &pipeline_ctx);
+    int FindLowerLoopLvl(PipelineContext &pipeline_context);
+
+    // Helper code for get pipe input/output type
+    PipeInputType GetPipeInputType(CypherPipeline &sub_pipeline,
+                                   int sub_pipe_idx);
+    PipeOutputType GetPipeOutputType(CypherPipeline &sub_pipeline);
 
     // Generate code for adaptive work sharing
     void GenerateCodeForAdaptiveWorkSharing(
@@ -302,6 +408,8 @@ class GpuCodeGenerator {
 
     void GenerateCodeForMaterialization(CodeBuilder &code,
                                         PipelineContext &pipeline_context);
+    void GenerateCodeForLocalVariable(CodeBuilder &code,
+                                      PipelineContext &pipeline_context);
 
     void GenerateDeclarationInHostCode(CodeBuilder &code);
     void GenerateKernelCallInHostCode(CodeBuilder &code);
@@ -310,18 +418,27 @@ class GpuCodeGenerator {
     void InitializePipelineContext(CypherPipeline &pipeline);
     void AdvanceOperator();
 
-    // Schema analysis
-    void ExtractInputSchema(CypherPhysicalOperator *op);
-    void ExtractOutputSchema(CypherPhysicalOperator *op);
-    void TrackColumnUsage(Expression *expr);
-
     void GetReferencedColumns(Expression *expr,
                               std::vector<uint64_t> &referenced_columns);
+
+    // Initialize operator generators
+    void InitializeOperatorGenerators();
+
+    // Split pipeline into sub-pipelines
+    void SplitPipelineIntoSubPipelines(CypherPipeline &pipeline);
+
+    // Analyze sub-pipelines for materialization
+    void AnalyzeSubPipelinesForMaterialization();
+
+    void ResolveAttributes();
+
+    void ResolveBoundaryAttributes();
 
    private:
     ClientContext &context;
     GpuKernelArgs kernel_args;  // GPU kernel configuration
 
+    std::string global_declarations;
     std::string generated_gpu_code;
     std::string generated_cpu_code;
     std::string current_code_hash;
@@ -331,16 +448,13 @@ class GpuCodeGenerator {
     std::vector<MemoryTransferInfo> memory_transfers;
     std::map<std::string, size_t> device_memory_sizes;
 
-    CUmodule gpu_module = nullptr;
-    CUfunction kernel_function = nullptr;
-
     std::unique_ptr<GpuJitCompiler> jit_compiler;
 
     bool is_compiled;
     bool is_repeatable;
     bool verbose_mode = false;  // Control parameter naming style
     bool do_inter_warp_lb = true;
-    bool doWorkoadSizeTracking = false;
+    bool doWorkoadSizeTracking = true;
     bool generateInputPtrMapping = true;
     int tsWidth = 32;
     std::string idleWarpDetectionType = "twolvlbitmaps";  // twolvlbitmaps / idqueue
@@ -353,30 +467,13 @@ class GpuCodeGenerator {
                        std::unique_ptr<OperatorCodeGenerator>>
         operator_generators;
 
-    // Single pipeline context for the entire pipeline
+    // Pipeline context for the entire pipeline
     PipelineContext pipeline_context;
+    int num_pipelines_compiled = 0;
 
-    // Initialize operator generators
-    void InitializeOperatorGenerators();
-
-    // Pipeline context management
-    PipelineContext CreatePipelineContext(const CypherPipeline &pipeline,
-                                          int op_idx);
-    void UpdatePipelineContext(PipelineContext &ctx,
-                               CypherPhysicalOperator *op);
-    void AnalyzeOperatorDependencies(CypherPhysicalOperator *op,
-                                     PipelineContext &ctx);
-
-    // Split pipeline into sub-pipelines
-    void SplitPipelineIntoSubPipelines(CypherPipeline &pipeline);
-
-    // Analyze sub-pipelines for materialization
-    void AnalyzeSubPipelinesForMaterialization();
-
-    // Schema analysis
-    void ExtractInputSchema(CypherPhysicalOperator *op, PipelineContext &ctx);
-    void ExtractOutputSchema(CypherPhysicalOperator *op, PipelineContext &ctx);
-    void TrackColumnUsage(Expression *expr, PipelineContext &ctx);
+    // for debugging
+    std::ofstream gpu_code_file;
+    std::ofstream cpu_code_file;
 };
 
 }  // namespace duckdb
