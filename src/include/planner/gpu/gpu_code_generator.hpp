@@ -224,6 +224,14 @@ class GpuCodeGenerator {
     std::string ConvertLogicalTypeIdToPrimitiveType(LogicalTypeId type_id,
                                                     uint16_t extra_info);
 
+    std::pair<uint8_t, uint8_t> GetDecimalProperties(const LogicalType &type);
+    std::string GetDecimalTypeSuffix(const LogicalType &type);
+    std::string GenerateDecimalMetadata(const LogicalType &type);
+    std::string GenerateDecimalOperation(const std::string &operation,
+                                         const std::string &left_operand,
+                                         const std::string &right_operand,
+                                         const LogicalType &result_type);
+
     // Set whether this kernel needs to be repeatable
     void SetRepeatable(bool repeatable) { is_repeatable = repeatable; }
 

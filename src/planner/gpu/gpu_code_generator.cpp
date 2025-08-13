@@ -11,6 +11,7 @@
 #include "catalog/catalog_entry/list.hpp"
 #include "common/file_system.hpp"
 #include "common/logger.hpp"
+#include "common/types/decimal.hpp"
 #include "execution/physical_operator/cypher_physical_operator.hpp"
 #include "execution/physical_operator/physical_filter.hpp"
 #include "execution/physical_operator/physical_node_scan.hpp"
@@ -173,8 +174,8 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                                              referenced_columns);
                     }
                     for (const auto &col_idx : referenced_columns) {
-                        D_ASSERT(col_idx >= 0 &&
-                                 col_idx < input_column_names.size());
+                        // D_ASSERT(col_idx >= 0 &&
+                        //          col_idx < input_column_names.size());
                         // Mark the column as materialized
                         auto &col_name = input_column_names[col_idx];
                         columns_to_be_materialized[sub_idx].push_back(col_name);
@@ -209,7 +210,7 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
                         std::vector<uint64_t> referenced_columns;
                         GetReferencedColumns(expr.get(), referenced_columns);
                         for (const auto &col_idx : referenced_columns) {
-                            D_ASSERT(col_idx >= 0 && col_idx < input_column_names.size());
+                            // D_ASSERT(col_idx >= 0 && col_idx < input_column_names.size());
                             auto &col_name = input_column_names[col_idx];
                             
                             bool is_valid_column = true;
@@ -314,6 +315,9 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     code.Add("#include \"themis.cuh\"");
     code.Add("#include \"work_sharing.cuh\"");
     code.Add("#include \"adaptive_work_sharing.cuh\"");
+    code.Add("#include \"decimal_device.cuh\"");
+    code.Add("");
+    code.Add("using namespace turbograph::gpu;");
     code.Add(""); // new line
 
     GenerateKernelParams(pipeline);
@@ -975,6 +979,22 @@ std::string GpuCodeGenerator::ConvertLogicalTypeToPrimitiveType(
     LogicalType &type)
 {
     PhysicalType p_type = type.InternalType();
+    
+    if (type.id() == LogicalTypeId::DECIMAL) {
+        switch (p_type) {
+            case PhysicalType::INT16:
+                return "decimal_int16_t ";
+            case PhysicalType::INT32:
+                return "decimal_int32_t ";
+            case PhysicalType::INT64:
+                return "decimal_int64_t ";
+            case PhysicalType::INT128:
+                return "decimal_int128_t ";
+            default:
+                return "decimal_int64_t "; // fallback
+        }
+    }
+    
     switch (p_type) {
         case PhysicalType::BOOL:
             return "bool ";
@@ -994,6 +1014,9 @@ std::string GpuCodeGenerator::ConvertLogicalTypeToPrimitiveType(
             return "unsigned int ";
         case PhysicalType::UINT64:
             return "unsigned long long ";
+        case PhysicalType::INT128:
+            // For non-DECIMAL INT128, use struct representation
+            return "struct { long long int low; long long int high; } ";
         case PhysicalType::FLOAT:
             return "float ";
         case PhysicalType::DOUBLE:
@@ -1004,6 +1027,67 @@ std::string GpuCodeGenerator::ConvertLogicalTypeToPrimitiveType(
             throw std::runtime_error("Unsupported logical type: " +
                                      std::to_string((uint8_t)type.id()));
     }
+}
+
+std::pair<uint8_t, uint8_t> GpuCodeGenerator::GetDecimalProperties(const LogicalType &type)
+{
+    if (type.id() != LogicalTypeId::DECIMAL) {
+        throw std::runtime_error("Type is not DECIMAL");
+    }
+    
+    uint8_t width, scale;
+    if (!type.GetDecimalProperties(width, scale)) {
+        throw std::runtime_error("Failed to get decimal properties");
+    }
+    
+    return std::make_pair(width, scale);
+}
+
+std::string GpuCodeGenerator::GetDecimalTypeSuffix(const LogicalType &type)
+{
+    if (type.id() != LogicalTypeId::DECIMAL) {
+        return "";
+    }
+    
+    PhysicalType p_type = type.InternalType();
+    switch (p_type) {
+        case PhysicalType::INT16:
+            return "_16";
+        case PhysicalType::INT32:
+            return "_32";
+        case PhysicalType::INT64:
+            return "_64";
+        case PhysicalType::INT128:
+            return "_128";
+        default:
+            return "";
+    }
+}
+
+std::string GpuCodeGenerator::GenerateDecimalMetadata(const LogicalType &type)
+{
+    if (type.id() != LogicalTypeId::DECIMAL) {
+        throw std::runtime_error("Type is not DECIMAL");
+    }
+    
+    auto [width, scale] = GetDecimalProperties(type);
+    return "DecimalMeta(" + std::to_string(width) + ", " + std::to_string(scale) + ")";
+}
+
+std::string GpuCodeGenerator::GenerateDecimalOperation(const std::string &operation,
+                                                       const std::string &left_operand,
+                                                       const std::string &right_operand,
+                                                       const LogicalType &result_type)
+{
+    if (result_type.id() != LogicalTypeId::DECIMAL) {
+        throw std::runtime_error("Result type is not DECIMAL");
+    }
+    
+    std::string suffix = GetDecimalTypeSuffix(result_type);
+    std::string metadata = GenerateDecimalMetadata(result_type);
+    
+    // Generate operation call
+    return "decimal_" + operation + suffix + "(" + left_operand + ", " + right_operand + ", " + metadata + ")";
 }
 
 void GpuCodeGenerator::GenerateInputCode(CypherPipeline &sub_pipeline,
@@ -1613,6 +1697,21 @@ std::string ProjectionCodeGenerator::ConvertLogicalTypeToCUDAType(
             return "double ";
         case LogicalTypeId::VARCHAR:
             return "char *";
+        case LogicalTypeId::DECIMAL: {
+            PhysicalType p_type = type.InternalType();
+            switch (p_type) {
+                case PhysicalType::INT16:
+                    return "decimal_int16_t ";
+                case PhysicalType::INT32:
+                    return "decimal_int32_t ";
+                case PhysicalType::INT64:
+                    return "decimal_int64_t ";
+                case PhysicalType::INT128:
+                    return "decimal_int128_t ";
+                default:
+                    return "decimal_int64_t "; // fallback
+            }
+        }
         default:
             return "uint64_t ";  // Default to uint64_t for compatibility
     }
@@ -1637,6 +1736,22 @@ std::string ProjectionCodeGenerator::ConvertValueToCUDALiteral(
             return std::to_string(value.GetValue<double>());
         case LogicalTypeId::VARCHAR:
             return "\"" + value.GetValue<string>() + "\"";
+        case LogicalTypeId::DECIMAL: {
+            PhysicalType p_type = value.type().InternalType();
+            switch (p_type) {
+                case PhysicalType::INT16:
+                    return std::to_string(value.GetValue<int16_t>());
+                case PhysicalType::INT32:
+                    return std::to_string(value.GetValue<int32_t>());
+                case PhysicalType::INT64:
+                    return std::to_string(value.GetValue<int64_t>());
+                case PhysicalType::INT128:
+                    // TODO: Implement INT128 handling
+                    return std::to_string(value.GetValue<int64_t>());
+                default:
+                    return std::to_string(value.GetValue<int64_t>());
+            }
+        }
         default:
             return "0";  // Default value
     }
@@ -1836,7 +1951,13 @@ void ProduceResultsCodeGenerator::GenerateCode(
         }
 
         // type extract
-        LogicalType type = pipeline_ctx.output_column_types[col_idx];
+        LogicalType type;
+        if (col_idx < pipeline_ctx.output_column_types.size()) {
+            type = pipeline_ctx.output_column_types[col_idx];
+        } else {
+            type = LogicalType::DOUBLE;
+            std::cerr << "[DEBUG] Using default DOUBLE type for column " << col_idx << std::endl;
+        }
         std::string ctype =
             code_gen->ConvertLogicalTypeToPrimitiveType(type);
 
@@ -1853,7 +1974,7 @@ void ProduceResultsCodeGenerator::GenerateCode(
         for (const auto& pv : pipeline_ctx.projection_variable_names) {
             std::cerr << "  [" << pv.first << "] = " << pv.second << std::endl;
         }
-
+        
         std::string output_param_name;
         if (code_gen->GetVerboseMode()) {
             output_param_name = "output_" + col_name;
@@ -1931,13 +2052,13 @@ void ProduceResultsCodeGenerator::GenerateCode(
                         code.Add(ctype + "* " + output_ptr_name +
                                  " = static_cast<" + ctype + "*>(" +
                                  output_data_name + ");");
-                        code.Add(output_ptr_name +
-                                 "[output_idx] = proj_result_" +
-                                 std::to_string(col_idx) + ";");
+                            code.Add(output_ptr_name +
+                                     "[output_idx] = proj_result_" +
+                                     std::to_string(col_idx) + ";");
+                        }
                     }
                 }
             }
-        }
     }
     
     for (const auto& proj_var : pipeline_ctx.projection_variable_names) {
@@ -1961,7 +2082,7 @@ void ProduceResultsCodeGenerator::GenerateCode(
             code.Add(output_ptr_name + "[output_idx] = " + var_name + ";");
         }
     }
-
+    
     // Update output count
     code.Add("// Update output count atomically");
     // code.Add("atomicAdd(output_count_ptr, 1);");

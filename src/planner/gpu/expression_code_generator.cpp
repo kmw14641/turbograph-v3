@@ -1,6 +1,7 @@
 #include "planner/gpu/expression_code_generator.hpp"
 #include <algorithm>
 #include "common/string_util.hpp"
+#include "common/types/decimal.hpp"
 #include "main/client_context.hpp"
 
 namespace duckdb {
@@ -168,11 +169,47 @@ std::string ExpressionCodeGenerator::GenerateComparisonExpression(
     std::string right_var = GenerateExpressionCode(
         comp_expr->right.get(), code, pipeline_ctx, column_map);
 
-    // Generate comparison
-    std::string operator_str = GetComparisonOperator(comp_expr->type);
-    std::string result_code = (left_var + " " + operator_str + " " + right_var);
+    bool is_decimal_comparison = (comp_expr->left->return_type.id() == LogicalTypeId::DECIMAL) ||
+                                (comp_expr->right->return_type.id() == LogicalTypeId::DECIMAL);
 
-    return result_code;
+    if (is_decimal_comparison) {
+        LogicalType decimal_type = (comp_expr->left->return_type.id() == LogicalTypeId::DECIMAL) 
+                                    ? comp_expr->left->return_type 
+                                    : comp_expr->right->return_type;
+        std::string suffix = GetDecimalTypeSuffix(decimal_type);
+        std::string metadata = GenerateDecimalMetadata(decimal_type);
+        
+        std::string operation;
+        switch (comp_expr->type) {
+            case ExpressionType::COMPARE_EQUAL:
+                operation = "decimal_eq";
+                break;
+            case ExpressionType::COMPARE_NOTEQUAL:
+                operation = "decimal_neq";
+                break;
+            case ExpressionType::COMPARE_LESSTHAN:
+                operation = "decimal_lt";
+                break;
+            case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+                operation = "decimal_lte";
+                break;
+            case ExpressionType::COMPARE_GREATERTHAN:
+                operation = "decimal_gt";
+                break;
+            case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+                operation = "decimal_gte";
+                break;
+            default:
+                operation = "decimal_eq"; // fallback
+                break;
+        }
+        
+        return operation + suffix + "(" + left_var + ", " + right_var + ", " + metadata + ")";
+    } else {
+        std::string operator_str = GetComparisonOperator(comp_expr->type);
+        std::string result_code = (left_var + " " + operator_str + " " + right_var);
+        return result_code;
+    }
 }
 
 std::string ExpressionCodeGenerator::GenerateCastExpression(
@@ -212,28 +249,56 @@ std::string ExpressionCodeGenerator::GenerateFunctionExpression(
             func_expr->children[0].get(), code, pipeline_ctx, column_map);
         std::string right_var = GenerateExpressionCode(
             func_expr->children[1].get(), code, pipeline_ctx, column_map);
-        return "(" + left_var + " - " + right_var + ")";
+        
+        if (func_expr->return_type.id() == LogicalTypeId::DECIMAL) {
+            std::string suffix = GetDecimalTypeSuffix(func_expr->return_type);
+            std::string metadata = GenerateDecimalMetadata(func_expr->return_type);
+            return "decimal_sub" + suffix + "(" + left_var + ", " + right_var + ", " + metadata + ")";
+        } else {
+            return "(" + left_var + " - " + right_var + ")";
+        }
     }
     else if (func_name == "+" && func_expr->children.size() == 2) {
         std::string left_var = GenerateExpressionCode(
             func_expr->children[0].get(), code, pipeline_ctx, column_map);
         std::string right_var = GenerateExpressionCode(
             func_expr->children[1].get(), code, pipeline_ctx, column_map);
-        return "(" + left_var + " + " + right_var + ")";
+        
+        if (func_expr->return_type.id() == LogicalTypeId::DECIMAL) {
+            std::string suffix = GetDecimalTypeSuffix(func_expr->return_type);
+            std::string metadata = GenerateDecimalMetadata(func_expr->return_type);
+            return "decimal_add" + suffix + "(" + left_var + ", " + right_var + ", " + metadata + ")";
+        } else {
+            return "(" + left_var + " + " + right_var + ")";
+        }
     }
     else if (func_name == "*" && func_expr->children.size() == 2) {
         std::string left_var = GenerateExpressionCode(
             func_expr->children[0].get(), code, pipeline_ctx, column_map);
         std::string right_var = GenerateExpressionCode(
             func_expr->children[1].get(), code, pipeline_ctx, column_map);
-        return "(" + left_var + " * " + right_var + ")";
+        
+        if (func_expr->return_type.id() == LogicalTypeId::DECIMAL) {
+            std::string suffix = GetDecimalTypeSuffix(func_expr->return_type);
+            std::string metadata = GenerateDecimalMetadata(func_expr->return_type);
+            return "decimal_mul" + suffix + "(" + left_var + ", " + right_var + ", " + metadata + ")";
+        } else {
+            return "(" + left_var + " * " + right_var + ")";
+        }
     }
     else if (func_name == "/" && func_expr->children.size() == 2) {
         std::string left_var = GenerateExpressionCode(
             func_expr->children[0].get(), code, pipeline_ctx, column_map);
         std::string right_var = GenerateExpressionCode(
             func_expr->children[1].get(), code, pipeline_ctx, column_map);
-        return "(" + left_var + " / " + right_var + ")";
+        
+        if (func_expr->return_type.id() == LogicalTypeId::DECIMAL) {
+            std::string suffix = GetDecimalTypeSuffix(func_expr->return_type);
+            std::string metadata = GenerateDecimalMetadata(func_expr->return_type);
+            return "decimal_div" + suffix + "(" + left_var + ", " + right_var + ", " + metadata + ")";
+        } else {
+            return "(" + left_var + " / " + right_var + ")";
+        }
     }
     else if (func_name == "-" && func_expr->children.size() == 1) {
         std::string operand_var = GenerateExpressionCode(
@@ -337,6 +402,21 @@ std::string ExpressionCodeGenerator::ConvertLogicalTypeToCUDAType(
             return "double";
         case LogicalTypeId::VARCHAR:
             return "char*";
+        case LogicalTypeId::DECIMAL: {
+            PhysicalType p_type = type.InternalType();
+            switch (p_type) {
+                case PhysicalType::INT16:
+                    return "decimal_int16_t";
+                case PhysicalType::INT32:
+                    return "decimal_int32_t";
+                case PhysicalType::INT64:
+                    return "decimal_int64_t";
+                case PhysicalType::INT128:
+                    return "decimal_int128_t";
+                default:
+                    return "decimal_int64_t"; // fallback
+            }
+        }
         default:
             return "uint64_t";
     }
@@ -361,6 +441,22 @@ std::string ExpressionCodeGenerator::ConvertValueToCUDALiteral(
             return std::to_string(value.GetValue<double>());
         case LogicalTypeId::VARCHAR:
             return "\"" + value.GetValue<string>() + "\"";
+        case LogicalTypeId::DECIMAL: {
+            PhysicalType p_type = value.type().InternalType();
+            switch (p_type) {
+                case PhysicalType::INT16:
+                    return std::to_string(value.GetValue<int16_t>());
+                case PhysicalType::INT32:
+                    return std::to_string(value.GetValue<int32_t>());
+                case PhysicalType::INT64:
+                    return std::to_string(value.GetValue<int64_t>());
+                case PhysicalType::INT128:
+                    // TODO: Implement INT128 handling
+                    return std::to_string(value.GetValue<int64_t>());
+                default:
+                    return std::to_string(value.GetValue<int64_t>());
+            }
+        }
         default:
             throw NotImplementedException(
                 "Unsupported value type for CUDA literal: " +
@@ -431,6 +527,51 @@ void ExpressionCodeGenerator::EnsureColumnMaterialized(
     pipeline_ctx.column_materialized[column_name] = true;
 
     // code.Add("// Column " + column_name + " materialized");
+}
+
+std::pair<uint8_t, uint8_t> ExpressionCodeGenerator::GetDecimalProperties(const LogicalType &type)
+{
+    if (type.id() != LogicalTypeId::DECIMAL) {
+        throw std::runtime_error("Type is not DECIMAL");
+    }
+    
+    uint8_t width, scale;
+    if (!type.GetDecimalProperties(width, scale)) {
+        throw std::runtime_error("Failed to get decimal properties");
+    }
+    
+    return std::make_pair(width, scale);
+}
+
+std::string ExpressionCodeGenerator::GetDecimalTypeSuffix(const LogicalType &type)
+{
+    if (type.id() != LogicalTypeId::DECIMAL) {
+        return "";
+    }
+    
+    PhysicalType p_type = type.InternalType();
+    switch (p_type) {
+        case PhysicalType::INT16:
+            return "_16";
+        case PhysicalType::INT32:
+            return "_32";
+        case PhysicalType::INT64:
+            return "_64";
+        case PhysicalType::INT128:
+            return "_128";
+        default:
+            return "";
+    }
+}
+
+std::string ExpressionCodeGenerator::GenerateDecimalMetadata(const LogicalType &type)
+{
+    if (type.id() != LogicalTypeId::DECIMAL) {
+        throw std::runtime_error("Type is not DECIMAL");
+    }
+    
+    auto [width, scale] = GetDecimalProperties(type);
+    return "DecimalMeta(" + std::to_string(width) + ", " + std::to_string(scale) + ")";
 }
 
 }  // namespace duckdb
