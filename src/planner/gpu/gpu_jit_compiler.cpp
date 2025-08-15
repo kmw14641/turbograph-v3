@@ -289,13 +289,15 @@ bool GpuJitCompiler::CompileWithNVRTC(
     }
 
     const char *opts[] = {
-        "--gpu-architecture=compute_75", "--std=c++17",
+        "--gpu-architecture=compute_75",
+        "--std=c++17",
         "--include-path=/usr/include/",
         "--include-path=/usr/include/x86_64-linux-gnu/",
         "--include-path=/turbograph-v3/src/include/planner/gpu/themis/",
-        "--disable-warnings"};
-        
-    nvrtcResult r = nvrtcCompileProgram(prog, 6, opts);
+        "--include-path=/usr/local/cuda/include",
+        "--disable-warnings"
+    };
+    nvrtcResult r = nvrtcCompileProgram(prog, 7, opts);
     if (r != NVRTC_SUCCESS) {
         size_t sz;
         nvrtcGetProgramLogSize(prog, &sz);

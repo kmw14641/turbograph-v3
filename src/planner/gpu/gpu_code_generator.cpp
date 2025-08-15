@@ -10,6 +10,7 @@
 #include "catalog/catalog_entry/list.hpp"
 #include "common/file_system.hpp"
 #include "common/logger.hpp"
+#include "common/types/decimal.hpp"
 #include "execution/physical_operator/cypher_physical_operator.hpp"
 #include "execution/physical_operator/physical_filter.hpp"
 #include "execution/physical_operator/physical_node_scan.hpp"
@@ -75,6 +76,7 @@ void GpuCodeGenerator::GenerateGlobalDeclarations(
     gpu_include_header += "#include \"themis.cuh\"\n";
     gpu_include_header += "#include \"work_sharing.cuh\"\n";
     gpu_include_header += "#include \"adaptive_work_sharing.cuh\"\n";
+    gpu_include_header += "#include \"decimal_device.cuh\"\n";
     gpu_include_header += "\n";
 
     // Generate global declarations for each operator
@@ -932,51 +934,72 @@ std::string GpuCodeGenerator::ConvertLogicalTypeToPrimitiveType(
         }
     }
     else {
-        switch (p_type) {
-            case PhysicalType::BOOL:
-                type_name = "bool ";
-                break;
-            case PhysicalType::INT8:
-                type_name = "char ";
-                break;
-            case PhysicalType::INT16:
-                type_name = "short ";
-                break;
-            case PhysicalType::INT32:
-                type_name = "int ";
-                break;
-            case PhysicalType::INT64:
-                type_name = "long long ";
-                break;
-            case PhysicalType::INT128:
-                type_name = "hugeint_t ";
-                break;
-            case PhysicalType::UINT8:
-                type_name = "unsigned char ";
-                break;
-            case PhysicalType::UINT16:
-                type_name = "unsigned short ";
-                break;
-            case PhysicalType::UINT32:
-                type_name = "unsigned int ";
-                break;
-            case PhysicalType::UINT64:
-                type_name = "unsigned long long ";
-                break;
-            case PhysicalType::FLOAT:
-                type_name = "float ";
-                break;
-            case PhysicalType::DOUBLE:
-                type_name = "double ";
-                break;
-            case PhysicalType::VARCHAR:
-                type_name = "str_t ";  // TODO string_t?
-                break;
-            default:
-                throw std::runtime_error("Unsupported physical type: " +
-                                         std::to_string((uint8_t)p_type));
+        if (type.id() == LogicalTypeId::DECIMAL) {
+            switch (p_type) {
+                case PhysicalType::INT16:
+                    type_name = "decimal_int16_t ";
+                    break;
+                case PhysicalType::INT32:
+                    type_name = "decimal_int32_t ";
+                    break;
+                case PhysicalType::INT64:
+                    type_name = "decimal_int64_t ";
+                    break;
+                case PhysicalType::INT128:
+                    type_name = "decimal_int128_t ";
+                    break;
+                default:
+                    type_name = "decimal_int64_t ";  // fallback
+            }
+        }
+        else {
+            switch (p_type) {
+                case PhysicalType::BOOL:
+                    type_name = "bool ";
+                    break;
+                case PhysicalType::INT8:
+                    type_name = "char ";
+                    break;
+                case PhysicalType::INT16:
+                    type_name = "short ";
+                    break;
+                case PhysicalType::INT32:
+                    type_name = "int ";
+                    break;
+                case PhysicalType::INT64:
+                    type_name = "long long ";
+                    break;
+                case PhysicalType::INT128:
+                    type_name = "hugeint_t ";
+                    break;
+                case PhysicalType::UINT8:
+                    type_name = "unsigned char ";
+                    break;
+                case PhysicalType::UINT16:
+                    type_name = "unsigned short ";
+                    break;
+                case PhysicalType::UINT32:
+                    type_name = "unsigned int ";
+                    break;
+                case PhysicalType::UINT64:
+                    type_name = "unsigned long long ";
+                    break;
+                case PhysicalType::FLOAT:
+                    type_name = "float ";
+                    break;
+                case PhysicalType::DOUBLE:
+                    type_name = "double ";
+                    break;
+                case PhysicalType::VARCHAR:
+                    type_name = "str_t ";  // TODO string_t?
+                    break;
+                default:
+                    throw std::runtime_error("Unsupported physical type: " +
+                                             std::to_string((uint8_t)p_type));
+            }
         }
     }
+    
     if (do_strip) {
         // Strip the trailing space
         if (!type_name.empty() && type_name.back() == ' ') {
@@ -2250,7 +2273,13 @@ void ProduceResultsCodeGenerator::GenerateCode(
             code_gen->GetValidVariableName(orig_col_name, col_idx);
 
         // type extract
-        LogicalType type = pipeline_ctx.output_column_types[col_idx];
+        LogicalType type;
+        if (col_idx < pipeline_ctx.output_column_types.size()) {
+            type = pipeline_ctx.output_column_types[col_idx];
+        } else {
+            type = LogicalType::DOUBLE;
+            std::cerr << "[DEBUG] Using default DOUBLE type for column " << col_idx << std::endl;
+        }
         std::string ctype =
             code_gen->ConvertLogicalTypeToPrimitiveType(type);
 

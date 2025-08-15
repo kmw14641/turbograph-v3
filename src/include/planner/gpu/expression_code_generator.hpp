@@ -82,6 +82,10 @@ class ExpressionCodeGenerator {
     std::string GetArithmeticOperator(ExpressionType type);
     std::string GetLogicalOperator(ExpressionType type);
 
+    std::pair<uint8_t, uint8_t> GetDecimalProperties(const LogicalType &type);
+    std::string GetDecimalTypeSuffix(const LogicalType &type);
+    std::string GenerateDecimalMetadata(const LogicalType &type);
+
     // Lazy materialization helper
     void EnsureColumnMaterialized(const std::string &column_name,
                                   CodeBuilder &code,
