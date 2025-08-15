@@ -107,7 +107,7 @@ public:
 				case DataTypeID::STRING: {
 					uint32_t num_strings = kuzu_literal->listVal.size();
 					out_length += sizeof(uint32_t);
-					for (auto i = 0; i < num_strings; i++) {
+					for (uint32_t i = 0; i < num_strings; i++) {
 						out_length += sizeof(uint32_t);
 						out_length += kuzu_literal->listVal[i].strVal.size();
 					}
@@ -116,7 +116,7 @@ public:
 					uint32_t accm_bytes = 0;
 					memcpy(mem_ptr, &num_strings, sizeof(uint32_t));
 					accm_bytes += sizeof(uint32_t);
-					for (auto i = 0; i < num_strings; i++) {
+					for (uint32_t i = 0; i < num_strings; i++) {
 						uint32_t str_size = kuzu_literal->listVal[i].strVal.size();
 						memcpy(mem_ptr + accm_bytes, &str_size, sizeof(uint32_t));
 						accm_bytes += sizeof(uint32_t);
@@ -247,7 +247,7 @@ public:
 						uint32_t num_strings = *((uint32_t *)str_ptr);
 						vector<duckdb::Value> list_values;
 						uint32_t accm_bytes = sizeof(uint32_t);
-						for (auto i = 0; i < num_strings; i++) {
+						for (uint32_t i = 0; i < num_strings; i++) {
 							uint32_t str_size = *((uint32_t*)(str_ptr + accm_bytes));
 							accm_bytes += sizeof(uint32_t);
 							string str_value((char*)(str_ptr + accm_bytes), str_size);

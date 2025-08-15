@@ -135,10 +135,8 @@ json S62SocketServer::handleQuery(const std::string& query) {
     response["columns"] = columns;
 
     s62_resultset_wrapper* result_set_wrp;
-    s62_num_rows rows = s62_execute(prep_stmt, &result_set_wrp);
 
     s62_num_properties num_columns = result_set_wrp->result_set->num_properties;
-    s62_result* result = result_set_wrp->result_set->result;
 
     json data;
     while (s62_fetch_next(result_set_wrp) != S62_END_OF_RESULT) {

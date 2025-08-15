@@ -123,7 +123,7 @@ class LogicalSchema {
     {
         bool found = false;
         CColRef *found_colref = NULL;
-        for (int idx = 0; idx < schema.size(); idx++) {
+        for (size_t idx = 0; idx < schema.size(); idx++) {
             auto &col = schema[idx];
             if (std::get<0>(col) == k1 && std::get<1>(col) == k2) {
                 found = true;
@@ -145,7 +145,7 @@ class LogicalSchema {
                     std::all_of(numericPart.begin(), numericPart.end(),
                                  ::isdigit)) {
                     k2 = std::stoul(k1_temp.substr(pos + 1, std::string::npos));
-                    for (int idx = 0; idx < schema.size(); idx++) {
+                    for (size_t idx = 0; idx < schema.size(); idx++) {
                         auto &col = schema[idx];
                         if (std::get<0>(col) == k1 && std::get<1>(col) == k2) {
                             found = true;
@@ -161,7 +161,7 @@ class LogicalSchema {
         if (!found) {
             k1 = k1 + "." + std::to_string(k2);
             k2 = std::numeric_limits<uint64_t>::max();
-            for (int idx = 0; idx < schema.size(); idx++) {
+            for (size_t idx = 0; idx < schema.size(); idx++) {
                 auto &col = schema[idx];
                 if (std::get<0>(col) == k1 && std::get<1>(col) == k2) {
                     found = true;
@@ -187,7 +187,7 @@ class LogicalSchema {
     vector<CColRef *> getAllColRefsOfKey(string k1)
     {
         vector<CColRef *> result;
-        for (int idx = 0; idx < schema.size(); idx++) {
+        for (size_t idx = 0; idx < schema.size(); idx++) {
             auto &col = schema[idx];
             if (std::get<0>(col) == k1) {
                 // in order to change colref from unsed to used
@@ -203,7 +203,7 @@ class LogicalSchema {
 	// not name, id
     uint64_t getPropertyNameOfColRef(string k1, const CColRef *colref)
     {
-        for (int idx = 0; idx < schema.size(); idx++) {
+        for (size_t idx = 0; idx < schema.size(); idx++) {
             auto &col = schema[idx];
             if (std::get<0>(col) == k1 && std::get<2>(col) == colref) {
                 D_ASSERT(std::get<1>(col) != std::numeric_limits<uint64_t>::max());
@@ -215,7 +215,7 @@ class LogicalSchema {
 
     void getOutputNames(vector<string> &result)
     {
-        for (int idx = 0; idx < schema.size(); idx++) {
+        for (size_t idx = 0; idx < schema.size(); idx++) {
             auto &col = schema[idx];
             if (std::get<1>(col) != std::numeric_limits<uint64_t>::max()) {
                 result.push_back(std::get<0>(col) + "." + std::to_string(std::get<1>(col)));
@@ -252,7 +252,7 @@ class LogicalSchema {
     std::string toString()
     {
         std::string output = "SCHEMA => \n";
-        for (int idx = 0; idx < schema.size(); idx++) {
+        for (size_t idx = 0; idx < schema.size(); idx++) {
             auto &sch = schema[idx];
             output += " - [" + std::to_string(idx) + "]" + std::get<0>(sch);
             if (std::get<1>(sch) != std::numeric_limits<uint64_t>::max()) {
@@ -300,10 +300,10 @@ class LogicalSchema {
 
     int getIdxOfColRef(CColRef *colref)
     {
-        for (int i = 0; i < schema.size(); i++) {
+        for (size_t i = 0; i < schema.size(); i++) {
             auto &col = schema[i];
             if (std::get<2>(col) == colref) {
-                return i;
+                return (int)i;
             }
         }
         D_ASSERT(false);

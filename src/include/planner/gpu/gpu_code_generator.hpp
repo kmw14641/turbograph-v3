@@ -222,6 +222,10 @@ class ProduceResultsCodeGenerator : public OperatorCodeGenerator {
                       GpuCodeGenerator *code_gen, ClientContext &context,
                       PipelineContext &pipeline_ctx,
                       bool is_main_loop = false) override;
+    void GenerateDeclarationInHostCode(CypherPhysicalOperator *op,
+                                       size_t op_idx, CodeBuilder &code,
+                                       GpuCodeGenerator *code_gen,
+                                       PipelineContext &pipeline_ctx) override;
     void GenerateCodeForLocalVariable(CypherPhysicalOperator *op, size_t op_idx,
                                       CodeBuilder &code,
                                       GpuCodeGenerator *code_gen,
@@ -318,12 +322,6 @@ class GpuCodeGenerator {
     // Get compiled host function
     void *GetCompiledHost();
 
-    // Get kernel parameters
-    const std::vector<KernelParam> &GetKernelParams() const
-    {
-        return input_kernel_params;
-    }
-
     GpuKernelArgs &GetKernelArgs()
     {
         return kernel_args;
@@ -331,7 +329,9 @@ class GpuCodeGenerator {
 
     LogicalType GetLogicalTypeFromId(LogicalTypeId type_id,
                                      uint16_t extra_info = 0);
-    std::string ConvertLogicalTypeToPrimitiveType(LogicalType &type);
+    std::string ConvertLogicalTypeToPrimitiveType(LogicalType &type,
+                                                  bool do_strip = false,
+                                                  bool get_short_name = false);
     std::string ConvertLogicalTypeIdToPrimitiveType(LogicalTypeId type_id,
                                                     uint16_t extra_info);
     std::string GetValidVariableName(const std::string &name, size_t col_idx);
@@ -350,6 +350,11 @@ class GpuCodeGenerator {
     // Add pointer mapping
     void AddPointerMapping(const std::string &name, void *address,
                            ChunkDefinitionID cid);
+    
+    void AddInitFunctionName(const std::string &name)
+    {
+        initfn_names.push_back(name);
+    }
 
     // Get pointer mappings
     const std::vector<PointerMapping> &GetPointerMappings() const
@@ -442,7 +447,8 @@ class GpuCodeGenerator {
 
     void GenerateDeclarationInHostCode(std::vector<CypherPipeline *> &pipelines,
                                        CodeBuilder &code);
-    void GenerateKernelCallInHostCode(CodeBuilder &code);
+    void GenerateKernelCallInHostCode(std::vector<CypherPipeline *> &pipelines,
+                                      CodeBuilder &code);
 
     // Pipeline context management
     void InitializePipelineContext(CypherPipeline &pipeline);
@@ -474,9 +480,10 @@ class GpuCodeGenerator {
     std::string generated_gpu_code;
     std::string generated_cpu_code;
     std::string current_code_hash;
+    std::vector<std::string> initfn_names;
 
-    std::vector<KernelParam> input_kernel_params;
-    std::vector<KernelParam> output_kernel_params;
+    std::vector<std::vector<KernelParam>> input_kernel_params;
+    std::vector<std::vector<KernelParam>> output_kernel_params;
     std::vector<MemoryTransferInfo> memory_transfers;
     std::map<std::string, size_t> device_memory_sizes;
 

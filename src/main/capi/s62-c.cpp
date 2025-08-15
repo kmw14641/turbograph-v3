@@ -170,7 +170,7 @@ s62_num_metadata s62_get_metadata_from_catalog(s62_label_name label, bool like_f
 	// Get labels and types
 	vector<string> labels;
 	idx_t_vector *vertex_partitions = graph_cat->GetVertexPartitionOids();
-	for (int i = 0; i < vertex_partitions->size(); i++) {
+	for (size_t i = 0; i < vertex_partitions->size(); i++) {
         PartitionCatalogEntry *part_cat =
             (PartitionCatalogEntry *)client->db->GetCatalog().GetEntry(
                 *client.get(), DEFAULT_SCHEMA, vertex_partitions->at(i));
@@ -179,7 +179,7 @@ s62_num_metadata s62_get_metadata_from_catalog(s62_label_name label, bool like_f
 
 	vector<string> types;
 	idx_t_vector *edge_partitions = graph_cat->GetEdgePartitionOids();
-	for (int i = 0; i < edge_partitions->size(); i++) {
+	for (size_t i = 0; i < edge_partitions->size(); i++) {
         PartitionCatalogEntry *part_cat =
             (PartitionCatalogEntry *)client->db->GetCatalog().GetEntry(
                 *client.get(), DEFAULT_SCHEMA, edge_partitions->at(i));
@@ -189,7 +189,7 @@ s62_num_metadata s62_get_metadata_from_catalog(s62_label_name label, bool like_f
 	// Create s62_metadata linked list with labels
 	s62_metadata *metadata = NULL;
 	s62_metadata *prev = NULL;
-	for(int i = 0; i < labels.size(); i++) {
+	for(size_t i = 0; i < labels.size(); i++) {
 		s62_metadata *new_metadata = (s62_metadata*)malloc(sizeof(s62_metadata));
 		new_metadata->label_name = strdup(labels[i].c_str());
 		new_metadata->type = S62_METADATA_TYPE::S62_NODE;
@@ -203,7 +203,7 @@ s62_num_metadata s62_get_metadata_from_catalog(s62_label_name label, bool like_f
 	}
 
 	// Concat types
-	for(int i = 0; i < types.size(); i++) {
+	for(size_t i = 0; i < types.size(); i++) {
 		s62_metadata *new_metadata = (s62_metadata*)malloc(sizeof(s62_metadata));
 		new_metadata->label_name = strdup(types[i].c_str());
 		new_metadata->type = S62_METADATA_TYPE::S62_EDGE;
@@ -262,7 +262,6 @@ s62_num_properties s62_get_property_from_catalog(s62_label_name label, s62_metad
 		return S62_ERROR;
 	}
 
-	auto graph_cat_entry = s62_get_graph_catalog_entry();
 	vector<idx_t> partition_indexes;
 	s62_property *property = NULL;
 	s62_property *prev = NULL;
@@ -287,7 +286,7 @@ s62_num_properties s62_get_property_from_catalog(s62_label_name label, s62_metad
 		return S62_ERROR;
 	}
 
-	for (s62_property_order i = 0; i < num_properties; i++) {
+	for (unsigned long i = 0; i < num_properties; i++) {
 		auto property_name = partition_cat_entry->global_property_key_names[i];
 		auto property_logical_type_id = partition_cat_entry->global_property_typesid[i];
 		auto property_logical_type = LogicalType(property_logical_type_id);
@@ -398,7 +397,7 @@ static void s62_extract_query_metadata(s62_prepared_statement* prepared_statemen
 		s62_property *property = NULL;
 		s62_property *prev = NULL;
 		
-		for (s62_property_order i = 0; i < col_names.size(); i++) {
+		for (size_t i = 0; i < col_names.size(); i++) {
 			s62_property *new_property = (s62_property*)malloc(sizeof(s62_property));
 
 			auto property_name = col_names[i];
@@ -636,7 +635,7 @@ static void s62_register_resultset(s62_prepared_statement* prepared_statement, s
 			s62_result *prev_result = NULL;
 			s62_property *property = prepared_statement->property;
 
-			for (int i = 0; i < prepared_statement->num_properties; i++) {
+			for (size_t i = 0; i < prepared_statement->num_properties; i++) {
 				s62_result *new_result = (s62_result*)malloc(sizeof(s62_result));
 				new_result->data_type = property->property_type;
 				new_result->data_sql_type = property->property_sql_type;
@@ -704,7 +703,6 @@ s62_state s62_close_resultset(s62_resultset_wrapper* result_set_wrp) {
 	s62_resultset *result_set = result_set_wrp->result_set;
 	while (result_set != NULL && result_set != &empty_result_set) {
 		next_result_set = result_set->next;
-		s62_result *next_result = NULL;
 		s62_result *result = result_set->result;
 		while (result != NULL) {
 			auto next_result = result->next;
@@ -761,7 +759,7 @@ static s62_result* s62_move_to_cursored_result(s62_resultset_wrapper* result_set
 	}
 
 	auto result = result_set->result;
-	for (int i = 0; i < col_idx; i++) {
+	for (uint64_t i = 0; i < col_idx; i++) {
 		result = result->next;
 	}
 

@@ -649,17 +649,17 @@ vector<duckdb::BasePipelineExecutor *> Planner::genPipelineExecutors(bool enable
         // Create pipeline executor
         duckdb::BasePipelineExecutor *pipe_exec;
         auto *new_ctxt = new duckdb::ExecutionContext(context);
-        if (generate_sfg) {
-            D_ASSERT(false);
-            // pipe_exec = new duckdb::GPUPipelineExecutor(
-            //     new_ctxt, pipe, *sfg, main_function,
-            //     code_gen->GetPointerMappings(), code_gen->GetScanColumnInfos());
-        }
-        else {
-            pipe_exec = new duckdb::GPUPipelineExecutor(
-                new_ctxt, main_function, code_gen->GetPointerMappings(),
-                code_gen->GetScanColumnInfos());
-        }
+        pipe_exec = new duckdb::GPUPipelineExecutor(
+            new_ctxt, main_function, code_gen->GetPointerMappings(),
+            code_gen->GetScanColumnInfos());
+        // if (generate_sfg) {
+        //     D_ASSERT(false);
+        //     // pipe_exec = new duckdb::GPUPipelineExecutor(
+        //     //     new_ctxt, pipe, *sfg, main_function,
+        //     //     code_gen->GetPointerMappings(), code_gen->GetScanColumnInfos());
+        // }
+        // else {
+        // }
         executors.push_back(pipe_exec);
     }
 

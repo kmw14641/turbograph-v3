@@ -17,6 +17,9 @@
 #include "llvm/Support/Host.h"
 #include "llvm/Support/VirtualFileSystem.h"
 
+extern "C" CUfunction initAggHT = nullptr;
+extern "C" CUfunction initArray = nullptr;
+
 namespace duckdb {
 
 extern "C" {
@@ -227,7 +230,6 @@ bool GpuJitCompiler::AddCudaRuntimeSymbols()
     using FnFree = cudaError_t (*)(void *);
     using FnSync = cudaError_t (*)();
     using FnErrStr = const char *(*)(cudaError_t);
-    // using FnCfg = cudaError_t (*)(...);
     using FnMemcpy =
         cudaError_t (*)(void *, const void *, size_t, cudaMemcpyKind);
     using FnMemset = cudaError_t (*)(void *, int, size_t);
@@ -245,10 +247,18 @@ bool GpuJitCompiler::AddCudaRuntimeSymbols()
                {"cudaMemset", to_void(static_cast<FnMemset>(&cudaMemset))}};
 
     llvm::orc::SymbolMap smap;
-    for (auto &p : tbl)
+    for (auto &p : tbl) {
         smap[jit->mangleAndIntern(p.name)] = llvm::orc::ExecutorSymbolDef(
             llvm::orc::ExecutorAddr::fromPtr(p.addr),
             llvm::JITSymbolFlags::Exported);
+    }
+
+    smap[jit->mangleAndIntern("initAggHT")] = llvm::orc::ExecutorSymbolDef(
+        llvm::orc::ExecutorAddr::fromPtr(&initAggHT),
+        llvm::JITSymbolFlags::Exported);
+    smap[jit->mangleAndIntern("initArray")] = llvm::orc::ExecutorSymbolDef(
+        llvm::orc::ExecutorAddr::fromPtr(&initArray),
+        llvm::JITSymbolFlags::Exported);
 
     if (auto err =
             jit->getMainJITDylib().define(llvm::orc::absoluteSymbols(smap))) {
@@ -268,6 +278,15 @@ bool GpuJitCompiler::CompileWithNVRTC(
     if (nvrtcCreateProgram(&prog, src.c_str(), "jit_kernel.cu", 0, nullptr,
                            nullptr) != NVRTC_SUCCESS)
         return false;
+
+    for (auto &name : initfn_names) {
+        if (nvrtcAddNameExpression(prog, name.c_str()) != NVRTC_SUCCESS) {
+            std::cerr << "Failed to add init function name: " << name
+                      << std::endl;
+            nvrtcDestroyProgram(&prog);
+            return false;
+        }
+    }
 
     const char *opts[] = {
         "--gpu-architecture=compute_75", "--std=c++17",
@@ -290,10 +309,10 @@ bool GpuJitCompiler::CompileWithNVRTC(
     nvrtcGetPTXSize(prog, &ptxSize);
     std::string ptx(ptxSize, '\0');
     nvrtcGetPTX(prog, ptx.data());
-    nvrtcDestroyProgram(&prog);
 
     if (!ensureCudaContext()) {
         std::cerr << "CUDA Driver/context init failed\n";
+        nvrtcDestroyProgram(&prog);
         return false;
     }
 
@@ -317,7 +336,7 @@ bool GpuJitCompiler::CompileWithNVRTC(
                          ptx.begin(),
                          ptx.begin() + std::min<size_t>(200, ptx.size()))
                   << "\n----\n";
-
+        nvrtcDestroyProgram(&prog);
         return false;
     }
 
@@ -335,8 +354,16 @@ bool GpuJitCompiler::CompileWithNVRTC(
     }
 
     for (int i = 0; i < initfn_names.size(); ++i) {
+        const char *lowered_name;
+        if (nvrtcGetLoweredName(prog, initfn_names[i].c_str(), &lowered_name) !=
+            NVRTC_SUCCESS) {
+            std::cerr << "Failed to get lowered name for init function: "
+                      << initfn_names[i] << std::endl;
+            continue;
+        }
+
         CUfunction init_fn;
-        if (cuModuleGetFunction(&init_fn, mod_out, initfn_names[i].c_str()) !=
+        if (cuModuleGetFunction(&init_fn, mod_out, lowered_name) !=
             CUDA_SUCCESS) {
             std::cerr << "Failed to get init function: " << initfn_names[i]
                       << std::endl;
@@ -344,6 +371,7 @@ bool GpuJitCompiler::CompileWithNVRTC(
         }
         initfns.push_back(std::move(init_fn));
     }
+    nvrtcDestroyProgram(&prog);
     return true;
 }
 
@@ -446,13 +474,17 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code,
 
     {
         llvm::orc::SymbolMap m;
-        for (int i = 0; i < initfn_names.size(); ++i) {
-            m[jit->mangleAndIntern(initfn_names[i])] = llvm::orc::ExecutorSymbolDef(
-                llvm::orc::ExecutorAddr::fromPtr(initfns[i]),
-                llvm::JITSymbolFlags::Exported);
+        for (int i = 0; i < initfns.size(); ++i) {
+            m[jit->mangleAndIntern(initfn_names[i])] =
+                llvm::orc::ExecutorSymbolDef(
+                    llvm::orc::ExecutorAddr::fromPtr(initfns[i]),
+                    llvm::JITSymbolFlags::Exported);
+            if (i == 0) {
+                initAggHT = initfns[i];
+            }
         }
         for (int i = 0; i < kernels.size(); ++i) {
-            std::string kernel_name = "gpu_kernel_" + std::to_string(i);
+            std::string kernel_name = "gpu_kernel" + std::to_string(i);
             m[jit->mangleAndIntern(kernel_name)] = llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(kernels[i]),
                 llvm::JITSymbolFlags::Exported);
