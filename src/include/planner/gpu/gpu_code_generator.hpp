@@ -144,6 +144,13 @@ class OperatorCodeGenerator {
     {
         return;
     }
+    virtual void GenerateDeclarationInHostCode(CypherPhysicalOperator *op,
+                                               size_t op_idx, CodeBuilder &code,
+                                               GpuCodeGenerator *code_gen,
+                                               PipelineContext &pipeline_ctx)
+    {
+        return;  // Default implementation does nothing
+    }
     virtual void GenerateCodeForLocalVariable(CypherPhysicalOperator *op,
                                               size_t op_idx, CodeBuilder &code,
                                               GpuCodeGenerator *code_gen,
@@ -184,9 +191,10 @@ class NodeScanCodeGenerator : public OperatorCodeGenerator {
         ClientContext &context, PipelineContext &pipeline_context,
         std::vector<KernelParam> &input_kernel_params,
         std::vector<ScanColumnInfo> &scan_column_infos);
-    virtual void AnalyzeOperatorForMaterialization(
-        CypherPhysicalOperator *op, int sub_idx, int op_idx,
-        PipelineContext &pipeline_context, GpuCodeGenerator *code_gen);
+    void AnalyzeOperatorForMaterialization(CypherPhysicalOperator *op,
+                                           int sub_idx, int op_idx,
+                                           PipelineContext &pipeline_context,
+                                           GpuCodeGenerator *code_gen) override;
 };
 
 class ProjectionCodeGenerator : public OperatorCodeGenerator {
@@ -195,15 +203,17 @@ class ProjectionCodeGenerator : public OperatorCodeGenerator {
                       GpuCodeGenerator *code_gen, ClientContext &context,
                       PipelineContext &pipeline_ctx,
                       bool is_main_loop = false) override;
+
    private:
     void GenerateProjectionExpressionCode(Expression *expr, size_t expr_idx,
                                           CodeBuilder &code,
                                           GpuCodeGenerator *code_gen,
                                           ClientContext &context,
                                           PipelineContext &pipeline_ctx);
-    virtual void AnalyzeOperatorForMaterialization(
-        CypherPhysicalOperator *op, int sub_idx, int op_idx,
-        PipelineContext &pipeline_context, GpuCodeGenerator *code_gen);
+    void AnalyzeOperatorForMaterialization(CypherPhysicalOperator *op,
+                                           int sub_idx, int op_idx,
+                                           PipelineContext &pipeline_context,
+                                           GpuCodeGenerator *code_gen) override;
 };
 
 class ProduceResultsCodeGenerator : public OperatorCodeGenerator {
@@ -215,14 +225,15 @@ class ProduceResultsCodeGenerator : public OperatorCodeGenerator {
     void GenerateCodeForLocalVariable(CypherPhysicalOperator *op, size_t op_idx,
                                       CodeBuilder &code,
                                       GpuCodeGenerator *code_gen,
-                                      PipelineContext &pipeline_ctx);
+                                      PipelineContext &pipeline_ctx) override;
     void GenerateOutputKernelParameters(
         CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
         ClientContext &context, PipelineContext &pipeline_context,
-        std::vector<KernelParam> &output_kernel_params);
-    virtual void AnalyzeOperatorForMaterialization(
-        CypherPhysicalOperator *op, int sub_idx, int op_idx,
-        PipelineContext &pipeline_context, GpuCodeGenerator *code_gen);
+        std::vector<KernelParam> &output_kernel_params) override;
+    void AnalyzeOperatorForMaterialization(CypherPhysicalOperator *op,
+                                           int sub_idx, int op_idx,
+                                           PipelineContext &pipeline_context,
+                                           GpuCodeGenerator *code_gen) override;
 };
 
 class FilterCodeGenerator : public OperatorCodeGenerator {
@@ -231,9 +242,10 @@ class FilterCodeGenerator : public OperatorCodeGenerator {
                       GpuCodeGenerator *code_gen, ClientContext &context,
                       PipelineContext &pipeline_ctx,
                       bool is_main_loop = false) override;
-    virtual void AnalyzeOperatorForMaterialization(
-        CypherPhysicalOperator *op, int sub_idx, int op_idx,
-        PipelineContext &pipeline_context, GpuCodeGenerator *code_gen);
+    void AnalyzeOperatorForMaterialization(CypherPhysicalOperator *op,
+                                           int sub_idx, int op_idx,
+                                           PipelineContext &pipeline_context,
+                                           GpuCodeGenerator *code_gen) override;
 };
 
 class HashAggregateCodeGenerator : public OperatorCodeGenerator {
@@ -255,19 +267,24 @@ class HashAggregateCodeGenerator : public OperatorCodeGenerator {
                                    size_t op_idx, CodeBuilder &code,
                                    GpuCodeGenerator *code_gen,
                                    ClientContext &context,
-                                   PipelineContext &pipeline_ctx);
+                                   PipelineContext &pipeline_ctx) override;
+    void GenerateDeclarationInHostCode(CypherPhysicalOperator *op,
+                                       size_t op_idx, CodeBuilder &code,
+                                       GpuCodeGenerator *code_gen,
+                                       PipelineContext &pipeline_ctx) override;
     void GenerateInputKernelParameters(
         CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
         ClientContext &context, PipelineContext &pipeline_context,
         std::vector<KernelParam> &input_kernel_params,
-        std::vector<ScanColumnInfo> &scan_column_infos);
+        std::vector<ScanColumnInfo> &scan_column_infos) override;
     void GenerateOutputKernelParameters(
         CypherPhysicalOperator *op, GpuCodeGenerator *code_gen,
         ClientContext &context, PipelineContext &pipeline_context,
-        std::vector<KernelParam> &output_kernel_params);
-    virtual void AnalyzeOperatorForMaterialization(
-        CypherPhysicalOperator *op, int sub_idx, int op_idx,
-        PipelineContext &pipeline_context, GpuCodeGenerator *code_gen);
+        std::vector<KernelParam> &output_kernel_params) override;
+    void AnalyzeOperatorForMaterialization(CypherPhysicalOperator *op,
+                                           int sub_idx, int op_idx,
+                                           PipelineContext &pipeline_context,
+                                           GpuCodeGenerator *code_gen) override;
 };
 
 class GpuCodeGenerator {
@@ -290,7 +307,7 @@ class GpuCodeGenerator {
     void GenerateKernelCode(CypherPipeline &pipeline);
 
     // Generate GPU host code
-    void GenerateHostCode(CypherPipeline &pipeline);
+    void GenerateHostCode(std::vector<CypherPipeline *> &pipelines);
 
     // Generate kernel parameters
     void GenerateKernelParams(const CypherPipeline &pipeline);
@@ -318,6 +335,8 @@ class GpuCodeGenerator {
     std::string ConvertLogicalTypeIdToPrimitiveType(LogicalTypeId type_id,
                                                     uint16_t extra_info);
     std::string GetValidVariableName(const std::string &name, size_t col_idx);
+    std::string GetInitValueForAggregate(
+        const BoundAggregateExpression *bound_agg);
 
     // Set whether this kernel needs to be repeatable
     void SetRepeatable(bool repeatable) { is_repeatable = repeatable; }
@@ -421,7 +440,8 @@ class GpuCodeGenerator {
     void GenerateCodeForLocalVariable(CodeBuilder &code,
                                       PipelineContext &pipeline_context);
 
-    void GenerateDeclarationInHostCode(CodeBuilder &code);
+    void GenerateDeclarationInHostCode(std::vector<CypherPipeline *> &pipelines,
+                                       CodeBuilder &code);
     void GenerateKernelCallInHostCode(CodeBuilder &code);
 
     // Pipeline context management
@@ -449,6 +469,8 @@ class GpuCodeGenerator {
     GpuKernelArgs kernel_args;  // GPU kernel configuration
 
     std::string global_declarations;
+    std::string gpu_include_header;
+    std::string cpu_include_header;
     std::string generated_gpu_code;
     std::string generated_cpu_code;
     std::string current_code_hash;

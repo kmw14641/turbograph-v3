@@ -259,33 +259,23 @@ bool GpuJitCompiler::AddCudaRuntimeSymbols()
 }
 
 // Helper: compile src → PTX → load → return (mod, fn)
-bool GpuJitCompiler::CompileWithNVRTC(const std::string &src,
-                                      const char *kernel_name,
-                                      int num_pipelines_compiled,
-                                      CUmodule &mod_out,
-                                      std::vector<CUfunction> &fn_out)
+bool GpuJitCompiler::CompileWithNVRTC(
+    const std::string &src, const char *kernel_name, int num_pipelines_compiled,
+    std::vector<std::string> &initfn_names, CUmodule &mod_out,
+    std::vector<CUfunction> &fn_out, std::vector<CUfunction> &initfns)
 {
     nvrtcProgram prog;
     if (nvrtcCreateProgram(&prog, src.c_str(), "jit_kernel.cu", 0, nullptr,
                            nullptr) != NVRTC_SUCCESS)
         return false;
 
-    // TODO: get themis include path from config or something
-    // const char *opts[] = {
-    //     "--gpu-architecture=compute_75",
-    //     "--std=c++17",
-    //     "--include-path=/usr/local/cuda/targets/x86_64-linux/include",
-    //     "--include-path=/turbograph-v3/src/include/planner/gpu/themis/",
-    //     "--include-path=/usr/include/",
-    //     "--include-path=/usr/include/x86_64-linux-gnu/",
-    //     "-D__x86_64__=1",
-    //     "-D__LP64__=1"};
     const char *opts[] = {
         "--gpu-architecture=compute_75", "--std=c++17",
         "--include-path=/usr/include/",
         "--include-path=/usr/include/x86_64-linux-gnu/",
         "--include-path=/turbograph-v3/src/include/planner/gpu/themis/",
         "--disable-warnings"};
+        
     nvrtcResult r = nvrtcCompileProgram(prog, 6, opts);
     if (r != NVRTC_SUCCESS) {
         size_t sz;
@@ -343,10 +333,25 @@ bool GpuJitCompiler::CompileWithNVRTC(const std::string &src,
         }
         fn_out.push_back(std::move(fn));
     }
+
+    for (int i = 0; i < initfn_names.size(); ++i) {
+        CUfunction init_fn;
+        if (cuModuleGetFunction(&init_fn, mod_out, initfn_names[i].c_str()) !=
+            CUDA_SUCCESS) {
+            std::cerr << "Failed to get init function: " << initfn_names[i]
+                      << std::endl;
+            continue;
+        }
+        initfns.push_back(std::move(init_fn));
+    }
     return true;
 }
 
-bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, std::vector<CUfunction> &kernels) {
+bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code,
+                                         std::vector<CUfunction> &kernels,
+                                         std::vector<std::string> &initfn_names,
+                                         std::vector<CUfunction> &initfns)
+{
     InitializeCompiler();
 
     auto realFS = llvm::vfs::getRealFileSystem();
@@ -357,33 +362,26 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, std::vect
         new llvm::vfs::OverlayFileSystem(realFS));
     overlayFS->pushOverlay(memFS);
 
-    memFS->addFile(
-        "gpu_host.cu",
-        /*ModTime=*/0,
-        llvm::MemoryBuffer::getMemBuffer(host_code, "gpu_host.cu"));
+    memFS->addFile("gpu_host.cu",
+                   /*ModTime=*/0,
+                   llvm::MemoryBuffer::getMemBuffer(host_code, "gpu_host.cu"));
 
     clang::driver::Driver drv(
         "/usr/bin/clang++-17", llvm::sys::getDefaultTargetTriple(),
         compiler->getDiagnostics(), "clang LLVM compiler", memFS);
 
-    std::vector<const char*> drv_argv = {
+    std::vector<const char *> drv_argv = {
         "clang++",
         // "-###", "-v",
-        "--cuda-path=/usr/local/cuda-11.8",
-        "-x", "cuda", "gpu_host.cu",
-        "--cuda-gpu-arch=sm_75",
-        "--cuda-host-only",
-        "-O3",
-        "-std=c++17",
-        "-isystem", "/usr/include/c++/11",
-        "-isystem", "/usr/include/x86_64-linux-gnu/c++/11",
-        "-isystem", "/usr/local/cuda/include",
-        "-isystem", "/usr/include",
-        "-isystem", "/usr/include/x86_64-linux-gnu",
-        "-isystem", "/turbograph-v3/src/include/planner/gpu/themis/",
-        "-I", project_include_path.c_str(),  // Use dynamic include path
-        "-emit-llvm", "-c"
-    };
+        "--cuda-path=/usr/local/cuda-11.8", "-x", "cuda", "gpu_host.cu",
+        "--cuda-gpu-arch=sm_75", "--cuda-host-only", "-O3", "-std=c++17",
+        "-isystem", "/usr/include/c++/11", "-isystem",
+        "/usr/include/x86_64-linux-gnu/c++/11", "-isystem",
+        "/usr/local/cuda/include", "-isystem", "/usr/include", "-isystem",
+        "/usr/include/x86_64-linux-gnu", "-isystem",
+        "/turbograph-v3/src/include/planner/gpu/themis/", "-I",
+        project_include_path.c_str(),  // Use dynamic include path
+        "-emit-llvm", "-c"};
 
     std::unique_ptr<clang::driver::Compilation> comp(
         drv.BuildCompilation(drv_argv));
@@ -401,7 +399,8 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, std::vect
 
     for (auto &J : comp->getJobs()) {
         auto *cmd = llvm::dyn_cast<clang::driver::Command>(&J);
-        if (!cmd) continue;
+        if (!cmd)
+            continue;
 
         // llvm::errs() << cmd->getExecutable();
         // for (auto A : cmd->getArguments())
@@ -411,8 +410,9 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, std::vect
         const bool is_device = llvm::any_of(
             cmd->getArguments(),
             [](llvm::StringRef A) { return A == "-fcuda-is-device"; });
-        
-        if (is_device) continue;
+
+        if (is_device)
+            continue;
 
         auto CI = std::make_unique<clang::CompilerInstance>();
 
@@ -446,16 +446,20 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code, std::vect
 
     {
         llvm::orc::SymbolMap m;
+        for (int i = 0; i < initfn_names.size(); ++i) {
+            m[jit->mangleAndIntern(initfn_names[i])] = llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(initfns[i]),
+                llvm::JITSymbolFlags::Exported);
+        }
         for (int i = 0; i < kernels.size(); ++i) {
             std::string kernel_name = "gpu_kernel_" + std::to_string(i);
-            m[jit->mangleAndIntern(kernel_name)] =
-                llvm::orc::ExecutorSymbolDef(
-                    llvm::orc::ExecutorAddr::fromPtr(kernels[i]),
-                    llvm::JITSymbolFlags::Exported);
+            m[jit->mangleAndIntern(kernel_name)] = llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(kernels[i]),
+                llvm::JITSymbolFlags::Exported);
         }
 
-        if (auto err = jit->getMainJITDylib().define(
-                llvm::orc::absoluteSymbols(m))) {
+        if (auto err =
+                jit->getMainJITDylib().define(llvm::orc::absoluteSymbols(m))) {
             llvm::errs() << err << '\n';
             return false;
         }

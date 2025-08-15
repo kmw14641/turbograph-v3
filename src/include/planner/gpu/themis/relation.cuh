@@ -19,12 +19,14 @@
 
 #define ALL_LANES 0xffffffff
 
+#ifdef __CUDACC_RTC__
 __device__ unsigned int get_smid()
 {
     unsigned int ret;
     asm("mov.u32 %0, %smid;" : "=r"(ret));
     return ret;
 }
+#endif
 
 #ifndef __CUDACC_RTC__
 template <typename T>
@@ -157,6 +159,7 @@ struct str_offs {
 // }
 
 // intialize an array as used e.g. for join hash tables
+#ifdef __CUDACC_RTC__
 template <typename T>
 __global__ void initArray(T *array, T value, int num)
 {
@@ -419,10 +422,12 @@ __device__ bool stringLikeCheck(str_t string, str_t like)
     }
     return lPos >= lInEnd;
 }
+#endif
 
 #define HASH_EMPTY 0xffffffffffffffff
 #define HASH_MAX 0x7fffffffffffffff
 
+#ifdef __CUDACC_RTC__
 __device__ __forceinline__ uint64_t hash(uint64_t key)
 {
     key += ~(key << 32);
@@ -478,6 +483,7 @@ __device__ uint64_t stringHashPushDown(bool active, str_t s)
     }
     return hashResult;
 }
+#endif
 
 template <typename T>
 struct unique_ht {
@@ -485,6 +491,7 @@ struct unique_ht {
     T payload;
 };
 
+#ifdef __CUDACC_RTC__
 // intialize an array as used e.g. for join hash tables
 template <typename T>
 __global__ void initUniqueHT(unique_ht<T> *ht, int32_t num)
@@ -561,6 +568,7 @@ __device__ bool hashProbeUnique1(unique_ht<T> *hash_table, int ht_size,
     //printf ( "probing full hash table - num lookups: %i\n", numLookups );
     return false;
 }
+#endif
 
 // simplified version of multi ht without locking but with intermediate prefix sum
 struct multi_ht {
@@ -568,6 +576,7 @@ struct multi_ht {
     uint32_t count;
 };
 
+#ifdef __CUDACC_RTC__
 // intialize an array as used e.g. for join hash tables
 __global__ void initMultiHT(multi_ht *ht, int32_t num)
 {
@@ -699,6 +708,7 @@ __device__ bool hashProbeMulti(multi_ht *ht, uint32_t ht_size, uint64_t hash,
         return false;
     }
 }
+#endif
 
 /*
  A lock that ensures that a section is only executed once.
@@ -712,6 +722,7 @@ struct OnceLock {
 
     volatile unsigned lock;
 
+#ifdef __CUDACC_RTC__
     __device__ void init() { lock = LOCK_FRESH; }
 
     __device__ bool enter()
@@ -742,6 +753,7 @@ struct OnceLock {
         while (lock != LOCK_DONE)
             ;
     }
+#endif
 };
 
 template <typename T>
@@ -751,6 +763,7 @@ struct __align__(8) agg_ht {
     T payload;
 };
 
+#ifdef __CUDACC_RTC__
 template <typename T>
 __global__ void initAggHT(agg_ht<T> *ht, int32_t num)
 {
@@ -868,6 +881,7 @@ __device__ __forceinline__ int hashAggregateGetBucketTest(agg_ht<T> *ht,
     __threadfence();
     return location;
 }
+#endif
 
 /*
 #define CRYSTAL_HASH(X,Y,Z) ((X-Z) % Y)
@@ -926,6 +940,7 @@ __device__ int hashAggregateGetBucket ( local_agg_ht<T>* ht, int32_t ht_size, ui
     return h == 0xFFFFFFFFFFFFFFFF || h == grouphash ? loc : -1;
 }
 */
+
 template <typename T>
 __host__ __device__ void trieProbe(T *keys, int size, T &search_key, int &tid)
 {
@@ -1030,6 +1045,7 @@ __host__ __device__ __forceinline__ bool binarySearch(int *keys, int *offset,
 
 // a3 == 3; // attr
 
+#ifdef __CUDACC_RTC__
 __device__ void csrProbeMulti(int *offsets, int hash, int &offset, int &end)
 {
     offset = hash == 0 ? 0 : offsets[hash - 1];
@@ -1080,5 +1096,6 @@ __global__ void krnl_sample_start(unsigned long long *sample_start)
     if (threadIdx.x == 0)
         sample_start[0] = clock64();
 }
+#endif
 
 #endif

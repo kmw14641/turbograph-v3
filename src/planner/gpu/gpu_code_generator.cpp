@@ -35,8 +35,6 @@ GpuCodeGenerator::GpuCodeGenerator(ClientContext &context)
 GpuCodeGenerator::~GpuCodeGenerator()
 {
     Cleanup();
-    gpu_code_file.close();
-    cpu_code_file.close();
 }
 
 void GpuCodeGenerator::InitializeLLVMTargets()
@@ -73,11 +71,11 @@ void GpuCodeGenerator::GenerateGlobalDeclarations(
     CodeBuilder code;
 
     // include necessary headers
-    code.Add("#include \"range.cuh\"");
-    code.Add("#include \"themis.cuh\"");
-    code.Add("#include \"work_sharing.cuh\"");
-    code.Add("#include \"adaptive_work_sharing.cuh\"");
-    code.Add(""); // new line
+    gpu_include_header = "#include \"range.cuh\"\n";
+    gpu_include_header += "#include \"themis.cuh\"\n";
+    gpu_include_header += "#include \"work_sharing.cuh\"\n";
+    gpu_include_header += "#include \"adaptive_work_sharing.cuh\"\n";
+    gpu_include_header += "\n";
 
     // Generate global declarations for each operator
     for (auto &pipeline : pipelines) {
@@ -101,12 +99,6 @@ void GpuCodeGenerator::GenerateGPUCode(CypherPipeline &pipeline)
     GenerateKernelCode(pipeline);
     SUBTIMER_STOP(GenerateGPUCode, "GenerateKernelCode");
 
-    // for debug - write to files
-    gpu_code_file.open("generated_gpu_code.cu");
-    gpu_code_file << global_declarations << std::endl;
-    gpu_code_file << generated_gpu_code << std::endl;
-    gpu_code_file.close();
-
     num_pipelines_compiled++;
 }
 
@@ -117,13 +109,8 @@ void GpuCodeGenerator::GenerateCPUCode(std::vector<CypherPipeline *> &pipelines)
 
     // generate host code
     SUBTIMER_START(GenerateCPUCode, "GenerateHostCode");
-    GenerateHostCode(*pipelines[0]);
+    GenerateHostCode(pipelines);
     SUBTIMER_STOP(GenerateCPUCode, "GenerateHostCode");
-
-    // for debug - write to files
-    cpu_code_file.open("generated_cpu_code.cpp", std::ios::app);
-    cpu_code_file << generated_cpu_code << std::endl;
-    cpu_code_file.close();
 }
 
 void GpuCodeGenerator::SplitPipelineIntoSubPipelines(CypherPipeline &pipeline)
@@ -481,28 +468,31 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     generated_gpu_code += code.str();
 }
 
-void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
+void GpuCodeGenerator::GenerateHostCode(std::vector<CypherPipeline *> &pipelines)
 {
     CodeBuilder code;
 
-    code.Add("#include <cuda.h>");
-    code.Add("#include <cuda_runtime.h>");
-    code.Add("#include <cstdint>");
-    code.Add("#include <vector>");
-    code.Add("#include <iostream>");
-    code.Add("#include <string>");
-    code.Add("#include <unordered_map>\n");
-    // code.Add("#include \"range.cuh\"");
-    // code.Add("#include \"themis.cuh\"");
-    // code.Add("#include \"work_sharing.cuh\"");
-    code.Add("#include \"adaptive_work_sharing.cuh\"");
-    code.Add("#include \"pushedparts.cuh\"");
-    code.Add("");
+    cpu_include_header = "#include <cuda.h>\n";
+    cpu_include_header += "#include <cuda_runtime.h>\n";
+    cpu_include_header += "#include <cstdint>\n";
+    cpu_include_header += "#include <vector>\n";
+    cpu_include_header += "#include <iostream>\n";
+    cpu_include_header += "#include <string>\n";
+    cpu_include_header += "#include <unordered_map>\n";
+    cpu_include_header += "#include \"adaptive_work_sharing.cuh\"\n";
+    cpu_include_header += "#include \"pushedparts.cuh\"\n";
+    cpu_include_header += "#include \"relation.cuh\"\n";
+    cpu_include_header += "#include \"typedef.cuh\"\n";
+    cpu_include_header += "\n";
 
+    // declare kernel functions
     for (int i = 0; i < num_pipelines_compiled; i++) {
         code.Add("extern \"C\" CUfunction gpu_kernel" + std::to_string(i) +
                  ";");
     }
+    // declare initialization function
+    code.Add("extern \"C\" CUfunction initAggHT;");
+    code.Add("extern \"C\" CUfunction initArray;");
     code.Add("");
 
     // Define structure for pointer mapping
@@ -561,10 +551,12 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
     }
     code.Add("");
 
-    code.Add("const int blockSize = 128;");
-    code.Add("const int gridSize  = 3280;");
+    code.Add("const int blockSize = " +
+             std::to_string(KernelConstants::DEFAULT_BLOCK_SIZE) + ";");
+    code.Add("const int gridSize  = " +
+             std::to_string(KernelConstants::DEFAULT_GRID_SIZE) + ";");
 
-    GenerateDeclarationInHostCode(code);
+    GenerateDeclarationInHostCode(pipelines, code);
     GenerateKernelCallInHostCode(code);
     
     code.Add("if (r != CUDA_SUCCESS) {");
@@ -596,8 +588,22 @@ void GpuCodeGenerator::GenerateHostCode(CypherPipeline &pipeline)
     generated_cpu_code = code.str();
 }
 
-void GpuCodeGenerator::GenerateDeclarationInHostCode(CodeBuilder &code)
+void GpuCodeGenerator::GenerateDeclarationInHostCode(
+    std::vector<CypherPipeline *> &pipelines, CodeBuilder &code)
 {
+    // Generate declarations for operators
+    code.Add("// Generate declarations for operators in host code");
+    for (auto &pipeline : pipelines) {
+        for (size_t i = 0; i < pipeline->GetPipelineLength(); i++) {
+            auto *op = pipeline->GetIdxOperator(i);
+            auto it = operator_generators.find(op->GetOperatorType());
+            if (it != operator_generators.end()) {
+                it->second->GenerateDeclarationInHostCode(
+                    op, i, code, this, pipeline_context);
+            }
+        }
+    }
+
     if (!do_inter_warp_lb) {
         // If inter warp load balancing is not enabled, we can skip the
         // declaration of global variables for inter warp load balancing
@@ -615,6 +621,7 @@ void GpuCodeGenerator::GenerateDeclarationInHostCode(CodeBuilder &code)
     std::string bitmapsize_2_str = std::to_string(bitmapsize_2);
 
     // Declare the basic variables for inter warp load balancing
+    code.Add("// declare variables for inter warp load balancing");
     code.Add("unsigned int *global_info;");
     code.Add(
         "cudaMalloc((void **)&global_info, sizeof(unsigned int) * 2 * 32);");
@@ -696,12 +703,20 @@ bool GpuCodeGenerator::CompileGeneratedCode()
 
     // Compile the generated GPU code using nvrtc
     SUBTIMER_START(CompileGeneratedCode, "CompileWithNVRTC");
-    generated_gpu_code = global_declarations + generated_gpu_code;
+    generated_gpu_code =
+        gpu_include_header + global_declarations + generated_gpu_code;
+    // for debug - write to files
+    gpu_code_file.open("generated_gpu_code.cu");
+    gpu_code_file << generated_gpu_code << std::endl;
+    gpu_code_file.close();
+
     CUmodule gpu_module = nullptr;
     std::vector<CUfunction> kernels;
+    std::vector<std::string> initfn_names = {"initAggHT", "initArray"};
+    std::vector<CUfunction> initfns;
     auto success = jit_compiler->CompileWithNVRTC(
-        generated_gpu_code, "gpu_kernel", num_pipelines_compiled, gpu_module,
-        kernels);
+        generated_gpu_code, "gpu_kernel", num_pipelines_compiled, initfn_names,
+        gpu_module, kernels, initfns);
     SUBTIMER_STOP(CompileGeneratedCode, "CompileWithNVRTC");
 
     // Check if the GPU code compilation was successful
@@ -710,8 +725,13 @@ bool GpuCodeGenerator::CompileGeneratedCode()
 
     // Compile the generated CPU code using ORC JIT
     SUBTIMER_START(CompileGeneratedCode, "CompileWithORCLLJIT");
-    auto success_orc =
-        jit_compiler->CompileWithORCLLJIT(generated_cpu_code, kernels);
+    generated_cpu_code =
+        cpu_include_header + global_declarations + generated_cpu_code;
+    cpu_code_file.open("generated_cpu_code.cpp");
+    cpu_code_file << generated_cpu_code << std::endl;
+    cpu_code_file.close();
+    auto success_orc = jit_compiler->CompileWithORCLLJIT(
+        generated_cpu_code, kernels, initfn_names, initfns);
     SUBTIMER_STOP(CompileGeneratedCode, "CompileWithORCLLJIT");
 
     // Check if the CPU code compilation was successful
@@ -857,6 +877,53 @@ std::string GpuCodeGenerator::GetValidVariableName(const std::string &name,
     std::string col_name = "attr_" + hex_suffix;
     pipeline_context.column_to_var_map[name] = col_name;
     return col_name;
+}
+
+std::string GpuCodeGenerator::GetInitValueForAggregate(
+    const BoundAggregateExpression *bound_agg)
+{
+    std::string init_value;
+    auto &agg_func_name = bound_agg->function.name;
+
+    if (agg_func_name == "count" || agg_func_name == "count_star" ||
+        agg_func_name == "avg" || agg_func_name == "sum") {
+        switch (bound_agg->return_type.InternalType()) {
+            case PhysicalType::INT8:
+            case PhysicalType::INT16:
+            case PhysicalType::INT32:
+            case PhysicalType::INT64:
+            case PhysicalType::UINT8:
+            case PhysicalType::UINT16:
+            case PhysicalType::UINT32:
+            case PhysicalType::UINT64:
+                init_value = "0";
+                break;
+            case PhysicalType::INT128:
+                init_value = "{0, 0}";
+                break;
+            case PhysicalType::FLOAT:
+                init_value = "0.0f";
+                break;
+            case PhysicalType::DOUBLE:
+                init_value = "0.0";
+                break;
+            default:
+                throw NotImplementedException(
+                    "Aggregate function not implemented for type: " +
+                    bound_agg->return_type.ToString());
+        }
+    }
+    else if (agg_func_name == "min") {
+        init_value = Value::MaximumValue(bound_agg->return_type).ToString();
+    }
+    else if (agg_func_name == "max") {
+        init_value = Value::MinimumValue(bound_agg->return_type).ToString();
+    }
+    else {
+        throw NotImplementedException("Aggregate function not implemented: " +
+                                      agg_func_name);
+    }
+    return init_value;
 }
 
 void GpuCodeGenerator::GenerateInputCode(CypherPipeline &sub_pipeline,
@@ -2449,16 +2516,15 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
         code.Add("}");
 
         bool contain_count_func = false;
-        std::vector<std::string> agg_function_names;
         for (auto &aggregate : agg_op->aggregates) {
             D_ASSERT(aggregate->GetExpressionType() ==
                      ExpressionType::BOUND_AGGREGATE);
             auto bound_agg =
                 dynamic_cast<BoundAggregateExpression *>(aggregate.get());
-            agg_function_names.push_back(bound_agg->function.name);
             if (bound_agg->function.name == "count_star" ||
                 bound_agg->function.name == "count") {
                 contain_count_func = true;
+                break;
             }
         }
 
@@ -2552,6 +2618,101 @@ void HashAggregateCodeGenerator::GenerateGlobalDeclaration(
     }
     code.DecreaseNesting();
     code.Add("}; // Payload" + std::to_string(op_id));
+    code.Add("");
+    return;
+}
+
+void HashAggregateCodeGenerator::GenerateDeclarationInHostCode(
+    CypherPhysicalOperator *op, size_t op_idx, CodeBuilder &code,
+    GpuCodeGenerator *code_gen, PipelineContext &pipeline_ctx)
+{
+    // Hashaggregate appears twice in the pipelines, once for build side
+    // and once for probe side. We need to generate declarations only once
+    if (op_idx == 0)
+        return;
+
+    // declare agg hash table
+    std::string ht_size = "512"; // TODO: make this configurable or get from operator
+    auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
+    uint64_t op_id = agg_op->GetOperatorId();
+    std::string ht_name = "agg_ht<Payload" + std::to_string(op_id) + ">";
+    code.Add("int ht_size = " + ht_size + ";");
+    code.Add(ht_name + " *aht" + std::to_string(op_id) + ";");
+    code.Add("cudaMalloc((void **)&aht" + std::to_string(op_id) + ", " +
+             ht_size + " * sizeof(" + ht_name + "));");
+    code.Add("{");
+    code.IncreaseNesting();
+    code.Add("void *args[] = { &aht" + std::to_string(op_id) + ", &ht_size };");
+    code.Add(
+        "cuLaunchKernel(initAggHT, gridSize, 1, 1, blockSize, 1, 1, 0, 0, "
+        "args, nullptr);");
+    code.DecreaseNesting();
+    code.Add("} // initAggHT kernel launch");
+
+    // declare aggregate variables
+    bool contain_count_func = false;
+    for (auto &aggregate : agg_op->aggregates) {
+        D_ASSERT(aggregate->GetExpressionType() ==
+                    ExpressionType::BOUND_AGGREGATE);
+        auto bound_agg =
+            dynamic_cast<BoundAggregateExpression *>(aggregate.get());
+        if (bound_agg->function.name == "count_star" ||
+            bound_agg->function.name == "count") {
+            contain_count_func = true;
+            break;
+        }
+    }
+
+    code.Add("// Declare aggregate variables for hash aggregate");
+    for (size_t i = 0; i < agg_op->aggregates.size(); i++) {
+        auto &aggregate = agg_op->aggregates[i];
+        D_ASSERT(aggregate->GetExpressionType() ==
+                 ExpressionType::BOUND_AGGREGATE);
+        auto bound_agg =
+            dynamic_cast<BoundAggregateExpression *>(aggregate.get());
+        auto &agg_function_name = bound_agg->function.name;
+        std::string agg_var_name =
+            "aht" + std::to_string(op_id) + "_agg_" + std::to_string(i);
+        std::string agg_type =
+            code_gen->ConvertLogicalTypeToPrimitiveType(bound_agg->return_type);
+        std::string init_value = code_gen->GetInitValueForAggregate(bound_agg);
+
+        code.Add(agg_type + "*" + agg_var_name + ";");
+        code.Add("cudaMalloc((void **)&" + agg_var_name + ", " + ht_size +
+                 " * sizeof(" + agg_type + "));");
+        code.Add("{");
+        code.IncreaseNesting();
+        code.Add(agg_type + "init_value = " + init_value + ";");
+        code.Add("void *args[] = { &" + agg_var_name +
+                 ", &init_value, &ht_size };");
+        code.Add(
+            "cuLaunchKernel(initArray, gridSize, 1, 1, blockSize, 1, 1, 0, 0, "
+            "args, nullptr);");
+        code.DecreaseNesting();
+        code.Add("} // initArray kernel launch");
+        if (agg_function_name == "avg" && !contain_count_func) {
+            // If there is no count function, we need to add a count variable
+            // for average calculation
+            std::string count_var_name = agg_var_name + "_cnt";
+            std::string count_init_value = "0";
+            code.Add("unsigned long long *" + count_var_name + ";");
+            code.Add("cudaMalloc((void **)&" + count_var_name + ", " + ht_size +
+                     " * sizeof(unsigned long long));");
+            code.Add("{");
+            code.IncreaseNesting();
+            code.Add("unsigned long long init_value = " + count_init_value +
+                     ";");
+            code.Add("void *args[] = { &" + agg_var_name +
+                     ", &init_value, &ht_size };");
+            code.Add(
+                "cuLaunchKernel(initArray, gridSize, 1, 1, blockSize, "
+                "1, 1, 0, 0, args, nullptr);");
+            code.DecreaseNesting();
+            code.Add("} // initArray kernel launch");
+        }
+    }
+    code.Add("// HashAggregate declaration in host code completed");
+
     return;
 }
 

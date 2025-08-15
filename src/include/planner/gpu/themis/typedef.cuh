@@ -36,6 +36,7 @@ struct hugeint_t {
 	int64_t upper;
 };
 
+#ifdef __CUDACC_RTC__
 __device__ inline bool operator==(const hugeint_t& a, const hugeint_t& b) {
     return a.upper == b.upper && a.lower == b.lower;
 }
@@ -147,5 +148,6 @@ __device__ inline void atomicAdd(hugeint_t *addr, hugeint_t x) {
     atomicAdd(reinterpret_cast<unsigned long long *>(&addr->upper),
               static_cast<unsigned long long>(hi_inc));
 }
+#endif
 
 #endif
