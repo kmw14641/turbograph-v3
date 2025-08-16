@@ -234,19 +234,21 @@ void ExecuteQuery(const string& query, std::shared_ptr<ClientContext> client, Cl
 	    profiler.StartQuery(query, options.enable_profile);
 	    profiler.Initialize(executors[executors.size()-1]->pipeline->GetSink());
     }
-	
-	{
-		SCOPED_TIMER(ExecuteQuery, spdlog::level::info, spdlog::level::info, exec_elapsed_time);
-		for (int i = 0; i < executors.size(); i++) {
-			auto exec = executors[i];
-            spdlog::info("[ExecuteQuery] Pipeline {:02d} Plan\n{}", i, exec->pipeline->toString());
+
+    {
+        SCOPED_TIMER(ExecuteQuery, spdlog::level::info, spdlog::level::info,
+                     exec_elapsed_time);
+        for (int i = 0; i < executors.size(); i++) {
+            auto exec = executors[i];
+            spdlog::info("[ExecuteQuery] Pipeline {:02d} Plan\n{}", i,
+                         exec->GetPipelineToString());
             spdlog::debug("[ExecuteQuery] Pipeline ID {:02d} Started", i);
-			SUBTIMER_START(ExecuteQuery, "Pipeline " + std::to_string(i));
-			exec->ExecutePipeline();
-			SUBTIMER_STOP(ExecuteQuery, "Pipeline " + std::to_string(i));
+            SUBTIMER_START(ExecuteQuery, "Pipeline " + std::to_string(i));
+            exec->ExecutePipeline();
+            SUBTIMER_STOP(ExecuteQuery, "Pipeline " + std::to_string(i));
             spdlog::debug("[ExecuteQuery] Pipeline ID {:02d} Finished", i);
-		}
-	}
+        }
+    }
 
     if (!options.enable_gpu_processing) {
 	    profiler.EndQuery();

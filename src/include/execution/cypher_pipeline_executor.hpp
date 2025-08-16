@@ -55,6 +55,10 @@ public:
 	//! Get schema flow graph
 	SchemaFlowGraph* GetSchemaFlowGraph() override { return &sfg; }
 
+	std::string GetPipelineToString() const override {
+		return pipeline->toString();
+	}
+
 	//! Push a single input DataChunk into the pipeline.
 	// //! Returns either OperatorResultType::NEED_MORE_INPUT or OperatorResultType::FINISHED
 	// //! If OperatorResultType::FINISHED is returned, more input will not change the result anymore

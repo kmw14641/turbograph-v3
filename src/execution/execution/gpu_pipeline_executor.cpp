@@ -86,15 +86,7 @@ GPUPipelineExecutor::~GPUPipelineExecutor()
 void GPUPipelineExecutor::ExecutePipeline()
 {
     if (is_initialized && main_function) {
-        // Try GPU execution first
-        try {
-            ExecuteGPUPipeline();
-        }
-        catch (const std::exception &e) {
-            std::cerr << "GPU execution failed: " << e.what() << std::endl;
-            std::cerr << "Falling back to CPU execution" << std::endl;
-            // todo exception handling
-        }
+        ExecuteGPUPipeline();
     }
     else {
         throw std::runtime_error("GPU pipeline executor not initialized");

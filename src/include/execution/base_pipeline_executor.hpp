@@ -33,6 +33,8 @@ class BasePipelineExecutor {
 
     //! Get schema flow graph (if applicable)
     virtual SchemaFlowGraph *GetSchemaFlowGraph() { return nullptr; }
+
+    virtual std::string GetPipelineToString() const = 0;
 };
 
 }  // namespace duckdb

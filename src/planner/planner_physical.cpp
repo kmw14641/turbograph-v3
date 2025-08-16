@@ -3998,8 +3998,6 @@ duckdb::CypherPhysicalOperatorGroups *Planner::pTransformEopAgg(
         CExpression *pexprAggExpr;
         output_column_names.push_back(pGetColNameFromColRef(
             ((CScalarProjectElement *)pexprProjElem->Pop())->Pcr()));
-        output_column_names_proj.push_back(pGetColNameFromColRef(
-            ((CScalarProjectElement *)pexprProjElem->Pop())->Pcr()));
         if (pexprScalarExpr->Pop()->Eopid() != COperator::EopScalarAggFunc) {
             has_post_projection = true;
         }
@@ -4047,6 +4045,17 @@ duckdb::CypherPhysicalOperatorGroups *Planner::pTransformEopAgg(
                 agg_exprs.push_back(std::move(pTransformScalarAggFunc(
                     pexprScalarExpr, child_cols, proj_exprs.back()->return_type,
                     proj_exprs.size() - 1)));
+                if (proj_exprs.back()->GetExpressionClass() ==
+                    duckdb::ExpressionClass::BOUND_REF) {
+                    auto bound_expr = 
+                        (duckdb::BoundReferenceExpression *)proj_exprs.back().get();
+                    CColRef *col = child_cols->operator[](bound_expr->index);
+                    output_column_names_proj.push_back(pGetColNameFromColRef(col));
+                }
+                else {
+                    output_column_names_proj.push_back(
+                        proj_exprs.back()->ToString());
+                }
                 proj_types.push_back(proj_exprs.back()->return_type);
                 types.push_back(agg_exprs.back()->return_type);
             }
@@ -4062,6 +4071,17 @@ duckdb::CypherPhysicalOperatorGroups *Planner::pTransformEopAgg(
                 else {
                     agg_exprs.push_back(std::move(
                         pTransformScalarExpr(pexprScalarExpr, child_cols)));
+                }
+                if (proj_exprs.back()->GetExpressionClass() ==
+                    duckdb::ExpressionClass::BOUND_REF) {
+                    auto bound_expr = 
+                        (duckdb::BoundReferenceExpression *)proj_exprs.back().get();
+                    CColRef *col = child_cols->operator[](bound_expr->index);
+                    output_column_names_proj.push_back(pGetColNameFromColRef(col));
+                }
+                else {
+                    output_column_names_proj.push_back(
+                        proj_exprs.back()->ToString());
                 }
                 proj_types.push_back(proj_exprs.back()->return_type);
                 types.push_back(agg_exprs.back()->return_type);

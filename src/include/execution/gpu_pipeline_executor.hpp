@@ -41,6 +41,10 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
         return sfg ? &(*sfg) : nullptr;
     }
 
+    std::string GetPipelineToString() const override {
+        return "";
+    }
+
    private:
     //! Initialize GPU resources
     bool InitializeGPU();

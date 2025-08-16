@@ -20,8 +20,8 @@ typedef uint8_t decimal_uint8_t;
 typedef struct { long long int low; long long int high; } decimal_int128_t;
 #endif
 
-namespace turbograph {
-namespace gpu {
+// namespace turbograph {
+// namespace gpu {
 
 static constexpr decimal_uint8_t MAX_WIDTH_INT16 = 4;
 static constexpr decimal_uint8_t MAX_WIDTH_INT32 = 9;
@@ -359,8 +359,24 @@ __device__ __forceinline__ decimal_int128_t scale_decimal_64_to_128(decimal_int6
     return result;
 }
 
-} // namespace gpu
-} // namespace turbograph
+#ifdef __CUDACC__
+__device__ __forceinline__
+void atomicAdd(decimal_int128_t* addr, decimal_int64_t val) {
+    const unsigned long long add_lo = static_cast<unsigned long long>(val);
+
+    const unsigned long long old_lo =
+        atomicAdd(reinterpret_cast<unsigned long long *>(&addr->low), add_lo);
+    const unsigned long long new_lo = old_lo + add_lo;
+
+    const long long carry = (new_lo < old_lo) ? 1 : 0;
+
+    atomicAdd(reinterpret_cast<unsigned long long *>(&addr->high),
+              static_cast<unsigned long long>(carry));
+}
+#endif
+
+// } // namespace gpu
+// } // namespace turbograph
 
 #ifdef __CUDACC__
 __device__ __host__
