@@ -323,7 +323,6 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     code.DecreaseNesting();
     code.Add(") {");
     code.IncreaseNesting();
-    code.Add("printf(\"Starting kernel execution...\\n\");");
     int in_idx  = 0;
     int out_idx = 0;
     for (const auto &p : input_kernel_params.back()) {

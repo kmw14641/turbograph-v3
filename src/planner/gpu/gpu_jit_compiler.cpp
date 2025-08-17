@@ -346,16 +346,15 @@ bool GpuJitCompiler::CompileWithNVRTC(
     }
 
     for (int i = 0; i < num_pipelines_compiled; ++i) {
-        CUfunction fn;
+        fn_out.push_back(nullptr);
         std::string kernel_name_i =
             std::string(kernel_name) + std::to_string(i);
-        if (cuModuleGetFunction(&fn, mod_out, kernel_name_i.c_str()) !=
+        if (cuModuleGetFunction(&fn_out[i], mod_out, kernel_name_i.c_str()) !=
             CUDA_SUCCESS) {
             std::cerr << "Failed to get function for pipeline " << i << " ("
                       << kernel_name_i << "): " << std::endl;
             return false;
         }
-        fn_out.push_back(std::move(fn));
     }
 
     for (int i = 0; i < initfn_names.size(); ++i) {
@@ -491,7 +490,7 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code,
         for (int i = 0; i < kernels.size(); ++i) {
             std::string kernel_name = "gpu_kernel" + std::to_string(i);
             m[jit->mangleAndIntern(kernel_name)] = llvm::orc::ExecutorSymbolDef(
-                llvm::orc::ExecutorAddr::fromPtr(kernels[i]),
+                llvm::orc::ExecutorAddr::fromPtr(&kernels[i]),
                 llvm::JITSymbolFlags::Exported);
         }
 
