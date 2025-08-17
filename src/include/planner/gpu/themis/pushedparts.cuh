@@ -142,11 +142,10 @@ void InitPushedPartsStack(PushedPartsStack *&stack, size_t &size_per_warp,
     stack = (PushedPartsStack *)(result + size_per_warp - 128);
     // Krnl_InitPushedPartsStack<<<1024, 128>>>(stack, size_per_warp,
     //                                          (size_t)num_warps);
-    for (int i = 0; i < num_warps; i++) {
-        PushedPartsStack *s = (PushedPartsStack *)(((char *)stack) + size_per_warp * i);
-        s->lock = 0;
-        s->num = 0;
-        s->start = 0;
+    cudaError_t err = cudaMemset2D((void *)stack, size_per_warp, 0,
+                                   sizeof(PushedPartsStack), num_warps);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "cudaMemset2D failed: %s\n", cudaGetErrorString(err));
     }
 }
 #endif

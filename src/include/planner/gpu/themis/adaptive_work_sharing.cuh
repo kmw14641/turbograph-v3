@@ -1,5 +1,7 @@
 #ifdef __CUDACC_RTC__
 #include "themis.cuh"
+#else
+#include <cstring>
 #endif
 namespace Themis {
 
@@ -214,15 +216,15 @@ __global__ void krnl_InitStatisticsPerLvl(
 void InitStatisticsPerLvlHost(StatisticsPerLvl *stats, unsigned int num_warps,
                               int num_inodes_at_zero, int depth)
 {
-    for (int i = 0; i < depth; ++i) {
-        if (i >= depth) break;
+    if (depth <= 0) return;
+    std::vector<StatisticsPerLvl> h_stats(depth);
+    std::memset(h_stats.data(), 0, sizeof(StatisticsPerLvl) * depth);
+    
+    for (int i = 1; i < depth; ++i) {
+        h_stats[i].max_order = 31;
+    }
 
-        stats[i].max_order = (i == 0 ? 0 : 31);
-        stats[i].num_warps = 0;
-
-        if (i > 0 || num_inodes_at_zero == 0)
-            continue;
-
+    if (num_inodes_at_zero != 0) {
         // round-robin based partitioining
         int num_inodes_of_last_block = num_inodes_at_zero % 32;
         if (num_inodes_of_last_block == 0)
@@ -235,24 +237,27 @@ void InitStatisticsPerLvlHost(StatisticsPerLvl *stats, unsigned int num_warps,
         int num_inodes_of_case_0 = 32 * ((num_blocks - 1) / num_warps) + 32;
         int8_t order = CalculateOrderInHost(num_inodes_of_case_0);
 
-        stats[0].max_order = order;
-        stats[0].sub_num_warps[order] = num_case_0;
+        h_stats[0].max_order = order;
+        h_stats[0].sub_num_warps[order] = num_case_0;
 
         int num_case_1 = 1;
         int num_inodes_of_case_1 =
             32 * ((num_blocks - 1) / num_warps) + num_inodes_of_last_block;
         order = CalculateOrderInHost(num_inodes_of_case_1);
-        stats[0].sub_num_warps[order] += num_case_1;
+        h_stats[0].sub_num_warps[order] += num_case_1;
 
         int num_case_2 = num_warps - num_case_0 - 1;
         int num_inodes_of_case_2 = 32 * ((num_blocks - 1) / num_warps);
         order = CalculateOrderInHost(num_inodes_of_case_2);
-        stats[0].sub_num_warps[order] += num_case_2;
+        h_stats[0].sub_num_warps[order] += num_case_2;
 
-        stats[0].num_warps = (num_inodes_of_case_2 > 0)
+        h_stats[0].num_warps = (num_inodes_of_case_2 > 0)
                                  ? num_warps
                                  : num_case_0 + 1;
     }
+
+    cudaMemcpy(stats, h_stats.data(), sizeof(StatisticsPerLvl) * depth,
+               cudaMemcpyHostToDevice);
 }
 
 void InitStatisticsPerLvl(StatisticsPerLvl *&device_stats,

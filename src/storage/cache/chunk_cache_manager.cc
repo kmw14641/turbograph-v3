@@ -176,10 +176,9 @@ void ChunkCacheManager::FlushMetaInfo(const char *path)
 ReturnStatus ChunkCacheManager::PinSegment(ChunkID cid, std::string file_path, uint8_t** ptr, size_t* size, bool read_data_async, bool is_initial_loading) {
   spdlog::trace("[PinSegment] Start to pin segment: {}", cid);
   // Check validity of given ChunkID
-  if (CidValidityCheck(cid))
-    exit(-1);
-    //TODO: exception 추가
-    //throw InvalidInputException("[PinSegment] invalid cid");
+  if (CidValidityCheck(cid)) {
+    throw InvalidInputException("[PinSegment] invalid cid");
+  }
 
   auto file_handler = GetFileHandler(cid);
   size_t segment_size = file_handler->GetRequestedSize();
@@ -235,10 +234,9 @@ ReturnStatus ChunkCacheManager::PinSegment(ChunkID cid, std::string file_path, u
 
 ReturnStatus ChunkCacheManager::UnPinSegment(ChunkID cid) {
   // Check validity of given ChunkID
-  if (CidValidityCheck(cid))
-    exit(-1);
-    // TODO
-    // throw InvalidInputException("[UnpinSegment] invalid cid");
+  if (CidValidityCheck(cid)) {
+    throw InvalidInputException("[UnpinSegment] invalid cid");
+  }
 
   // Unpin Segment using Lightning Release()
   // client->Release(cid);
@@ -247,15 +245,13 @@ ReturnStatus ChunkCacheManager::UnPinSegment(ChunkID cid) {
 
 ReturnStatus ChunkCacheManager::SetDirty(ChunkID cid) {
   // Check validity of given ChunkID
-  if (CidValidityCheck(cid))
-    exit(-1);
-    // TODO
-    //throw InvalidInputException("[SetDirty] invalid cid");
+  if (CidValidityCheck(cid)) {
+    throw InvalidInputException("[SetDirty] invalid cid");
+  }
 
   // TODO: modify header information
   if (client->SetDirty(cid) != 0) {
-    // TODO: exception handling
-    exit(-1);
+    throw InternalException("[SetDirty] failed to set dirty");
   }
   return NOERROR;
 }
@@ -264,10 +260,9 @@ ReturnStatus ChunkCacheManager::CreateSegment(ChunkID cid, std::string file_path
   spdlog::trace("[CreateSegment] Start to create segment: {}", cid);
   // Check validity of given alloc_size
   // It fails if 1) the storage runs out of space, 2) the alloc_size exceeds the limit size (if it exists)
-  if (AllocSizeValidityCheck(alloc_size))
-    exit(-1);
-    //TODO
-    //throw InvalidInputException("[CreateSegment] invalid alloc_size");
+  if (AllocSizeValidityCheck(alloc_size)) {
+    throw InvalidInputException("[CreateSegment] invalid alloc_size");
+  }
 
   // Create file for the segment
   auto ret = CreateNewFile(cid, file_path, alloc_size, can_destroy);
@@ -277,10 +272,9 @@ ReturnStatus ChunkCacheManager::CreateSegment(ChunkID cid, std::string file_path
 ReturnStatus ChunkCacheManager::DestroySegment(ChunkID cid) {
   spdlog::trace("[DestroySegment] Start to destroy segment: {}", cid);
   // Check validity of given ChunkID
-  if (CidValidityCheck(cid))
-    exit(-1);
-    // TODO
-    //throw InvalidInputException("[DestroySegment] invalid cid");
+  if (CidValidityCheck(cid)) {
+    throw InvalidInputException("[DestroySegment] invalid cid");
+  }
 
   // TODO: Check the reference count
   // If the count > 0, we cannot destroy the segment

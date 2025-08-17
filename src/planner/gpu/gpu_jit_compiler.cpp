@@ -233,18 +233,21 @@ bool GpuJitCompiler::AddCudaRuntimeSymbols()
     using FnMemcpy =
         cudaError_t (*)(void *, const void *, size_t, cudaMemcpyKind);
     using FnMemset = cudaError_t (*)(void *, int, size_t);
+    using FnMemset2D = cudaError_t (*)(void *, size_t, int, size_t, size_t);
 
     struct Pair {
         const char *name;
         void *addr;
-    } tbl[] = {{"cudaMalloc", to_void(static_cast<FnMalloc>(&cudaMalloc))},
-               {"cudaFree", to_void(static_cast<FnFree>(&cudaFree))},
-               {"cudaDeviceSynchronize",
-                to_void(static_cast<FnSync>(&cudaDeviceSynchronize))},
-               {"cudaGetErrorString",
-                to_void(static_cast<FnErrStr>(&cudaGetErrorString))},
-               {"cudaMemcpy", to_void(static_cast<FnMemcpy>(&cudaMemcpy))},
-               {"cudaMemset", to_void(static_cast<FnMemset>(&cudaMemset))}};
+    } tbl[] = {
+        {"cudaMalloc", to_void(static_cast<FnMalloc>(&cudaMalloc))},
+        {"cudaFree", to_void(static_cast<FnFree>(&cudaFree))},
+        {"cudaDeviceSynchronize",
+         to_void(static_cast<FnSync>(&cudaDeviceSynchronize))},
+        {"cudaGetErrorString",
+         to_void(static_cast<FnErrStr>(&cudaGetErrorString))},
+        {"cudaMemcpy", to_void(static_cast<FnMemcpy>(&cudaMemcpy))},
+        {"cudaMemset", to_void(static_cast<FnMemset>(&cudaMemset))},
+        {"cudaMemset2D", to_void(static_cast<FnMemset2D>(&cudaMemset2D))}};
 
     llvm::orc::SymbolMap smap;
     for (auto &p : tbl) {

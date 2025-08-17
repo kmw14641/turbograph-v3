@@ -581,18 +581,20 @@ OID Planner::pGetTypeIdFromScalarSwitch(CExpression *switch_expr) {
 }
 
 INT Planner::pGetTypeModFromScalar(CExpression *expr) {
-	if (expr->Pop()->Eopid() == COperator::EopScalarIdent) {
-		return pGetTypeModFromScalarIdent(expr);
-	} else if (expr->Pop()->Eopid() == COperator::EopScalarConst) {
-		return pGetTypeModFromScalarConst(expr);
-	} else if (expr->Pop()->Eopid() == COperator::EopScalarFunc) {
-		return pGetTypeModFromScalarFunc(expr);
-	} else if (expr->Pop()->Eopid() == COperator::EopScalarAggFunc) {
-		return pGetTypeModFromScalarAggFunc(expr);
-	} else if (expr->Pop()->Eopid() == COperator::EopScalarSwitch) {
-		return pGetTypeModFromScalarSwitch(expr);
-	} else {
-		GPOS_ASSERT(false); // not implemented yet
+	switch (expr->Pop()->Eopid()) {
+		case COperator::EopScalarIdent:
+			return pGetTypeModFromScalarIdent(expr);
+		case COperator::EopScalarConst:
+			return pGetTypeModFromScalarConst(expr);
+		case COperator::EopScalarFunc:
+			return pGetTypeModFromScalarFunc(expr);
+		case COperator::EopScalarAggFunc:
+			return pGetTypeModFromScalarAggFunc(expr);
+		case COperator::EopScalarSwitch:
+			return pGetTypeModFromScalarSwitch(expr);
+		default:
+			GPOS_ASSERT(false); // not implemented yet
+			return -1;
 	}
 }
 

@@ -376,6 +376,10 @@ class GpuCodeGenerator {
         return scan_column_infos;
     }
 
+    std::vector<CUfunction> &GetKernels() {
+        return kernels;
+    }
+
     // Cleanup resources
     void Cleanup();
 
@@ -495,6 +499,7 @@ class GpuCodeGenerator {
     std::vector<MemoryTransferInfo> memory_transfers;
     std::map<std::string, size_t> device_memory_sizes;
 
+    std::vector<CUfunction> kernels;
     std::unique_ptr<GpuJitCompiler> jit_compiler;
 
     bool is_compiled;

@@ -14,14 +14,8 @@ class SchemaFlowGraph;
 //! GPU Pipeline Executor for GPU-accelerated pipeline execution
 class GPUPipelineExecutor : public BasePipelineExecutor {
    public:
-    GPUPipelineExecutor(ExecutionContext *context, void *kernel_function);
-    GPUPipelineExecutor(ExecutionContext *context, SchemaFlowGraph &sfg,
-                        void *kernel_function);
-    GPUPipelineExecutor(ExecutionContext *context, void *kernel_function,
-                        const std::vector<PointerMapping> &pointer_mappings,
-                        const std::vector<ScanColumnInfo> &scan_column_infos);
-    GPUPipelineExecutor(ExecutionContext *context, SchemaFlowGraph &sfg,
-                        void *kernel_function,
+    GPUPipelineExecutor(ExecutionContext *context, void *main_function,
+                        std::vector<CUfunction> &gpu_kernels,
                         const std::vector<PointerMapping> &pointer_mappings,
                         const std::vector<ScanColumnInfo> &scan_column_infos);
     ~GPUPipelineExecutor();
@@ -70,6 +64,7 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
    private:
     std::unique_ptr<SchemaFlowGraph> sfg;
     void *main_function;
+    std::vector<CUfunction> gpu_kernels;
 
     // Pointer mappings for GPU execution
     std::vector<PointerMapping> pointer_mappings;

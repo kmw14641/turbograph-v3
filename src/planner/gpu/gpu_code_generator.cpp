@@ -323,6 +323,7 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     code.DecreaseNesting();
     code.Add(") {");
     code.IncreaseNesting();
+    code.Add("printf(\"Starting kernel execution...\\n\");");
     int in_idx  = 0;
     int out_idx = 0;
     for (const auto &p : input_kernel_params.back()) {
@@ -513,6 +514,7 @@ void GpuCodeGenerator::GenerateHostCode(std::vector<CypherPipeline *> &pipelines
         "int num_mappings) {");
     code.IncreaseNesting();
 
+    code.Add("printf(\"Query started on GPU...\\n\");");
     code.Add("const int blockSize = " +
              std::to_string(KernelConstants::DEFAULT_BLOCK_SIZE) + ";");
     code.Add("const int gridSize  = " +
@@ -607,25 +609,6 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(
                         KernelConstants::DEFAULT_GRID_SIZE;
         std::string num_subpipes =
             std::to_string(pipeline_context.sub_pipelines.size());
-        code.Add("cudaMemset(global_info, 0, 64 * sizeof(unsigned int));");
-        code.Add(
-            "cudaMemset(global_stats_per_lvl, 0, "
-            "sizeof(Themis::StatisticsPerLvl) * " +
-            num_subpipes + ");");
-        // tableSize = pipe.subpipes[0].operators[0].genTableSize()
-        int tableSize = 100000; // TODO
-        // if tableSize[0] == '*': 
-        //     // tableSize = tableSize[1:]                
-        //     code.Add(f'Themis::InitStatisticsPerLvlPtr(global_stats_per_lvl, {num_warps}, {tableSize}, {len(pipe.subpipeSeqs)});')
-        // else:
-        code.Add("Themis::InitStatisticsPerLvlHost(global_stats_per_lvl, " +
-                 std::to_string(num_warps) + ", " + std::to_string(tableSize) +
-                 ", " + num_subpipes + ");");
-
-        int bitmapsize = (int((num_warps - 1) / 64) + 1);
-        std::string bitmapsize_str = std::to_string(16 + bitmapsize * 16);
-        code.Add("cudaMemset(global_bit1, 0, sizeof(unsigned long long) * " +
-                 bitmapsize_str + ");");
 
         for (int pipe_idx = 0; pipe_idx < pipelines.size(); pipe_idx++) {
             auto &cur_input_params = input_kernel_params[pipe_idx];
@@ -635,6 +618,27 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(
             code.Add("// Pipeline " + std::to_string(pipe_idx));
             code.Add("{");
             code.IncreaseNesting();
+
+            code.Add("cudaMemset(global_info, 0, 64 * sizeof(unsigned int));");
+            code.Add(
+                "cudaMemset(global_stats_per_lvl, 0, "
+                "sizeof(Themis::StatisticsPerLvl) * " +
+                num_subpipes + ");");
+            // tableSize = pipe.subpipes[0].operators[0].genTableSize()
+            int tableSize = 100000;  // TODO
+            // if tableSize[0] == '*':
+            //     // tableSize = tableSize[1:]
+            //     code.Add(f'Themis::InitStatisticsPerLvlPtr(global_stats_per_lvl, {num_warps}, {tableSize}, {len(pipe.subpipeSeqs)});')
+            // else:
+            code.Add("Themis::InitStatisticsPerLvlHost(global_stats_per_lvl, " +
+                     std::to_string(num_warps) + ", " +
+                     std::to_string(tableSize) + ", " + num_subpipes + ");");
+
+            int bitmapsize = (int((num_warps - 1) / 64) + 1);
+            std::string bitmapsize_str = std::to_string(16 + bitmapsize * 16);
+            code.Add(
+                "cudaMemset(global_bit1, 0, sizeof(unsigned long long) * " +
+                bitmapsize_str + ");");
 
             int input_ptr_count = 0;
             for (const auto &p : cur_input_params)
@@ -651,6 +655,8 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(
                      std::to_string(input_ptr_count) + "* sizeof(void *));");
             code.Add("cudaMalloc(&d_output_data, " +
                      std::to_string(output_ptr_count) + "* sizeof(void *));");
+            code.Add("std::cerr << \"Allocated device memory for input and output "
+                     "data pointers.\" << std::endl;");
 
             int ptr_map_idx = 0;
             int in_idx = 0;
@@ -710,12 +716,27 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(
             code.Add("cudaMemcpy(d_output_count, &output_count, sizeof(int), "
                      "cudaMemcpyHostToDevice);");
             code.Add("");
+            code.Add(
+                "std::cerr << \"Prepared input and output data pointers for "
+                "kernel launch.\" << std::endl;");
+            code.Add("int tmp = 0;");
+            code.Add("CUresult fr = cuFuncGetAttribute(&tmp, CU_FUNC_ATTRIBUTE_NUM_REGS, gpu_kernel0);");
+            code.Add("if (fr != CUDA_SUCCESS) {");
+            code.IncreaseNesting();
+            code.Add("const char *n,*s; cuGetErrorName(fr,&n); cuGetErrorString(fr,&s);");
+            code.Add(
+                "std::cerr << \"cuFuncGetAttribute failed: \" << "
+                "(n?n:\"unknown\") << \" - \" << (s?s:\"unknown\") << "
+                "std::endl;");
+            code.DecreaseNesting();
+            code.Add("}");
 
             code.Add(
                 "void *args[] = { &d_input_data, &d_output_data, "
                 "&d_output_count, &global_num_idle_warps, &global_scan_offset, "
                 "&gts, &size_of_stack_per_warp, &global_stats_per_lvl, "
                 "&global_bit1, &global_bit2 };");
+            code.Add("std::cerr << \"Prepared kernel arguments.\" << std::endl;");
             code.Add(
                 "CUresult r = cuLaunchKernel(gpu_kernel" +
                 std::to_string(pipe_idx) +
@@ -770,7 +791,6 @@ bool GpuCodeGenerator::CompileGeneratedCode()
     gpu_code_file.close();
 
     CUmodule gpu_module = nullptr;
-    std::vector<CUfunction> kernels;
     std::vector<CUfunction> initfns;
     auto success = jit_compiler->CompileWithNVRTC(
         generated_gpu_code, "gpu_kernel", num_pipelines_compiled, initfn_names,

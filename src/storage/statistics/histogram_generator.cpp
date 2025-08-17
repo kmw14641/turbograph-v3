@@ -398,6 +398,9 @@ void HistogramGenerator::_create_bucket(DataChunk &chunk, vector<LogicalType> &u
                 }
                 break;
             }
+            default: {
+                break;
+            }
         }
     }
 }
@@ -537,6 +540,9 @@ void HistogramGenerator::_accumulate_data_for_ndv(DataChunk& chunk, vector<Logic
                 case LogicalTypeId::UBIGINT: {
                     target_set.insert(target_value.GetValue<uint64_t>());
                     break;
+                }
+                default: {
+                    break; // For other types, we do not count distinct values
                 }
             }
         }

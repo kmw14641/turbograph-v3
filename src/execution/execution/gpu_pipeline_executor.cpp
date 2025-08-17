@@ -9,43 +9,14 @@
 
 namespace duckdb {
 
-GPUPipelineExecutor::GPUPipelineExecutor(ExecutionContext *context,
-                                         void *main_function)
-    : BasePipelineExecutor(),
-      main_function(main_function),
-      cuda_stream(nullptr),
-      is_initialized(false)
-{
-    this->context = context;
-    this->sfg = nullptr;
-    // Initialize GPU resources
-    if (!InitializeGPU()) {
-        std::cerr << "Failed to initialize GPU resources" << std::endl;
-    }
-}
-
-GPUPipelineExecutor::GPUPipelineExecutor(ExecutionContext *context,
-                                         SchemaFlowGraph &sfg,
-                                         void *main_function)
-    : BasePipelineExecutor(),
-      main_function(main_function),
-      cuda_stream(nullptr),
-      is_initialized(false)
-{
-    this->context = context;
-    this->sfg = std::make_unique<SchemaFlowGraph>(sfg);
-    // Initialize GPU resources
-    if (!InitializeGPU()) {
-        std::cerr << "Failed to initialize GPU resources" << std::endl;
-    }
-}
-
 GPUPipelineExecutor::GPUPipelineExecutor(
     ExecutionContext *context, void *main_function,
+    std::vector<CUfunction> &gpu_kernels,
     const std::vector<PointerMapping> &pointer_mappings,
     const std::vector<ScanColumnInfo> &scan_column_infos)
     : BasePipelineExecutor(),
       main_function(main_function),
+      gpu_kernels(std::move(gpu_kernels)),
       pointer_mappings(pointer_mappings),
       scan_column_infos(scan_column_infos),
       cuda_stream(nullptr),
@@ -53,25 +24,6 @@ GPUPipelineExecutor::GPUPipelineExecutor(
 {
     this->context = context;
     this->sfg = nullptr;
-    // Initialize GPU resources
-    if (!InitializeGPU()) {
-        std::cerr << "Failed to initialize GPU resources" << std::endl;
-    }
-}
-
-GPUPipelineExecutor::GPUPipelineExecutor(
-    ExecutionContext *context, SchemaFlowGraph &sfg, void *main_function,
-    const std::vector<PointerMapping> &pointer_mappings,
-    const std::vector<ScanColumnInfo> &scan_column_infos)
-    : BasePipelineExecutor(),
-      main_function(main_function),
-      pointer_mappings(pointer_mappings),
-      scan_column_infos(scan_column_infos),
-      cuda_stream(nullptr),
-      is_initialized(false)
-{
-    this->context = context;
-    this->sfg = std::make_unique<SchemaFlowGraph>(sfg);
     // Initialize GPU resources
     if (!InitializeGPU()) {
         std::cerr << "Failed to initialize GPU resources" << std::endl;
@@ -154,7 +106,7 @@ bool GPUPipelineExecutor::AllocateGPUMemory()
                 // Store the column value ptrs
                 std::vector<uint64_t> h_col_ptr(num_tuples_total);
                 uint64_t current_idx = 0;
-                for (uint64_t j = 0; i < scan_info.extent_ids.size(); j++) {
+                for (uint64_t j = 0; j < scan_info.extent_ids.size(); j++) {
                     auto extent_id = scan_info.extent_ids[j];
                     auto num_tuples = scan_info.num_tuples_per_extent[j];
                     auto cid_in_extent = scan_info.chunk_ids[i][j];
