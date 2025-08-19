@@ -59,11 +59,8 @@ void TestPerfectHashJoin(std::vector<std::vector<int>> left_data,
     PerfectHashJoinStats perfect_join_statistics;
     perfect_join_statistics.build_min = 10;
     perfect_join_statistics.build_max = 50;
-    perfect_join_statistics.probe_min = 10;
-    perfect_join_statistics.probe_max = 50;
     perfect_join_statistics.is_build_small = true;
     perfect_join_statistics.is_build_dense = true;
-    perfect_join_statistics.is_probe_in_domain = true;
     perfect_join_statistics.build_range = 40;
 
     // Create operator
@@ -171,11 +168,8 @@ void PHJProjectionTest(std::vector<std::vector<int>> left_data,
     PerfectHashJoinStats perfect_join_statistics;
     perfect_join_statistics.build_min = 10;
     perfect_join_statistics.build_max = 50;
-    perfect_join_statistics.probe_min = 10;
-    perfect_join_statistics.probe_max = 50;
     perfect_join_statistics.is_build_small = true;
     perfect_join_statistics.is_build_dense = true;
-    perfect_join_statistics.is_probe_in_domain = true;
     perfect_join_statistics.build_range = 40;
 
     // Create operator
