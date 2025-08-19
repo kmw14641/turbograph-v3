@@ -18,7 +18,18 @@ bool PerfectHashJoinExecutor::CanDoPerfectHashJoin() {
 // Build
 //===--------------------------------------------------------------------===//
 bool PerfectHashJoinExecutor::BuildPerfectHashTable(LogicalType &key_type, unique_ptr<JoinHashTable> &ht) {
-	// First, allocate memory for each build column
+	// Fill columns with build data
+	Vector tuples_addresses(LogicalType::POINTER, ht->Count());              // allocate space for all the tuples
+	auto key_locations = FlatVector::GetData<data_ptr_t>(tuples_addresses); // get a pointer to vector data
+	// TODO: In a parallel finalize: One should exclusively lock and each thread should do one part of the code below.
+	// Go through all the blocks and fill the keys addresses
+	JoinHTScanState state;
+	auto keys_count = ht->FillWithHTOffsets(key_locations, state);
+	// Scan the build keys in the hash table
+	Vector build_vector(key_type, keys_count);
+	RowOperations::FullScanColumn(ht->layout, tuples_addresses, build_vector, keys_count, 0);
+
+	// Allocate memory for each build column
 	auto build_size = perfect_join_statistics.build_range + 1;
 	for (const auto &type : ht->build_types) {
 		perfect_hash_table.emplace_back(type, build_size);
@@ -27,21 +38,7 @@ bool PerfectHashJoinExecutor::BuildPerfectHashTable(LogicalType &key_type, uniqu
 	bitmap_build_idx = unique_ptr<bool[]>(new bool[build_size]);
 	memset(bitmap_build_idx.get(), 0, sizeof(bool) * build_size); // set false
 
-	// Now fill columns with build data
-	JoinHTScanState join_ht_state;
-	return FullScanHashTable(join_ht_state, key_type, ht);
-}
-
-bool PerfectHashJoinExecutor::FullScanHashTable(JoinHTScanState &state, LogicalType &key_type, unique_ptr<JoinHashTable> &ht) {
-	Vector tuples_addresses(LogicalType::POINTER, ht->Count());              // allocate space for all the tuples
-	auto key_locations = FlatVector::GetData<data_ptr_t>(tuples_addresses); // get a pointer to vector data
-	// TODO: In a parallel finalize: One should exclusively lock and each thread should do one part of the code below.
-	// Go through all the blocks and fill the keys addresses
-	auto keys_count = ht->FillWithHTOffsets(key_locations, state);
-	// Scan the build keys in the hash table
-	Vector build_vector(key_type, keys_count);
-	RowOperations::FullScanColumn(ht->layout, tuples_addresses, build_vector, keys_count, 0);
-	// Now fill the selection vector using the build keys and create a sequential vector
+	// Fill the selection vector using the build keys and create a sequential vector
 	// todo: add check for fast pass when probe is part of build domain
 	SelectionVector sel_build(keys_count + 1);
 	SelectionVector sel_tuples(keys_count + 1);

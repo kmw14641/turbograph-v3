@@ -55,7 +55,6 @@ private:
 	template <typename T>
 	bool TemplatedFillSelectionVectorBuild(Vector &source, SelectionVector &sel_vec, SelectionVector &seq_sel_vec,
 	                                       idx_t count);
-	bool FullScanHashTable(JoinHTScanState &state, LogicalType &key_type, unique_ptr<JoinHashTable> &ht);
 
 private:
 	const PhysicalHashJoin &join;
