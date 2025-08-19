@@ -24,6 +24,8 @@ struct PerfectHashJoinStats {
 	int64_t build_max;
 	bool is_build_small = false;
 	int64_t build_range = 0;
+
+	bool is_physical_id = false;
 };
 
 //! PhysicalHashJoin represents a hash loop join between two tables

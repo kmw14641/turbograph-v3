@@ -4992,9 +4992,18 @@ duckdb::PerfectHashJoinStats Planner::pTranslateCStatToPHJStat(const IStatistics
             right_ref_expr = (duckdb::BoundReferenceExpression *)cond.right.get();
         }
         right_col_id = (*rhs_cols)[right_ref_expr->index]->Id();
+        const CHistogram *histogram = cstat->GetHistogram(right_col_id);
+
+        if (right_ref_expr->return_type == duckdb::LogicalType::ID) {  // there is no histogram bucket
+            join_stat.is_physical_id = true;
+            if (histogram->GetNumDistinct() < duckdb::PerfectHashJoinStats::MAX_BUILD_SIZE) {
+                join_stat.is_build_small = true;  // optimistic heuristic. can be changed by scan.
+            }
+            return join_stat;
+        }
 
         std::pair<int64_t, int64_t> right_min_max;
-        if (!pGetMinMaxFromColStat(cstat, right_col_id, right_min_max)) {
+        if (!pGetMinMaxFromHistogram(histogram, right_min_max)) {
             return join_stat;
         }
 
@@ -5011,8 +5020,8 @@ duckdb::PerfectHashJoinStats Planner::pTranslateCStatToPHJStat(const IStatistics
     }
 }
 
-bool Planner::pGetMinMaxFromColStat(const CStatistics* cstat, ULONG col_id, std::pair<int64_t, int64_t>& min_max) {
-    const CBucketArray *buckets = (cstat->GetHistogram(col_id)->GetBuckets());
+bool Planner::pGetMinMaxFromHistogram(const CHistogram* histogram, std::pair<int64_t, int64_t>& min_max) {
+    const CBucketArray *buckets = histogram->GetBuckets();
     if (buckets->Size() == 0) return false;  // no data or only null (are you sure about that?)
 
     // bucket is sorted. see histogram_generator.cpp

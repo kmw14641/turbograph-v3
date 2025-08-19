@@ -580,7 +580,7 @@ private:
 	// scalar helper functions
 	void pTranslatePredicateToJoinCondition(CExpression* pred, vector<duckdb::JoinCondition>& out_conds, CColRefArray* lhs_cols, CColRefArray* rhs_cols);
 	duckdb::PerfectHashJoinStats pTranslateCStatToPHJStat(const IStatistics* stat, duckdb::JoinType join_type, vector<duckdb::JoinCondition>& join_conds, CColRefArray* lhs_cols, CColRefArray* rhs_cols);
-	bool pGetMinMaxFromColStat(const CStatistics* cstat, ULONG col_id, std::pair<int64_t, int64_t>& min_max);
+	bool pGetMinMaxFromHistogram(const CHistogram* histogram, std::pair<int64_t, int64_t>& min_max);
 	static duckdb::OrderByNullType pTranslateNullType(COrderSpec::ENullTreatment ent);
 	static duckdb::ExpressionType pTranslateCmpType(IMDType::ECmpType cmp_type, bool contains_null = false);
 	static duckdb::ExpressionType pTranslateBoolOpType(CScalarBoolOp::EBoolOperator op_type);
