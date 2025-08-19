@@ -50,9 +50,6 @@ bool PerfectHashJoinExecutor::FullScanHashTable(JoinHTScanState &state, LogicalT
 	if (!success) {
 		return false;
 	}
-	if (unique_keys == perfect_join_statistics.build_range + 1 && !ht->has_null) {
-		perfect_join_statistics.is_build_dense = true;
-	}
 	keys_count = unique_keys; // do not consider keys out of the range
 	// Full scan the remaining build columns and fill the perfect hash table
 	for (idx_t i = 0; i < ht->build_types.size(); i++) {
@@ -162,8 +159,8 @@ OperatorResultType PerfectHashJoinExecutor::ProbePerfectHashTable(ExecutionConte
 	for (idx_t i = 0; i < ht->output_left_projection_map.size(); i++) {
 		if (ht->output_left_projection_map[i] !=
 			std::numeric_limits<uint32_t>::max()) {
-			// If build is dense and probe is in build's domain, just reference probe
-			if (perfect_join_statistics.is_build_dense && keys_count == probe_sel_count) {
+			// If all probe side matches to build side, just reference probe
+			if (keys_count == probe_sel_count) {
 				result.data[ht->output_left_projection_map[i]].Reference(
 					input.data[i]);
 			} else {

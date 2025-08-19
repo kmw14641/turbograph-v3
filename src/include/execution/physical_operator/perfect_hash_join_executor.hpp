@@ -23,7 +23,6 @@ struct PerfectHashJoinStats {
 	int64_t build_min;
 	int64_t build_max;
 	bool is_build_small = false;
-	bool is_build_dense = false;
 	int64_t build_range = 0;
 };
 
