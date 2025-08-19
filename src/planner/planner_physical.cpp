@@ -5007,12 +5007,10 @@ duckdb::PerfectHashJoinStats Planner::pTranslateCStatToPHJStat(const IStatistics
             return join_stat;
         }
 
-        // The max size our build must have to run the perfect HJ
-        const int64_t MAX_BUILD_SIZE = 1000000;
         join_stat.build_min = right_min_max.first;
         join_stat.build_max = right_min_max.second;
         join_stat.build_range = join_stat.build_max - join_stat.build_min;
-        if (join_stat.build_range > MAX_BUILD_SIZE) {
+        if (join_stat.build_range > duckdb::PerfectHashJoinStats::MAX_BUILD_SIZE) {
             return join_stat;
         }
         join_stat.is_build_small = true;

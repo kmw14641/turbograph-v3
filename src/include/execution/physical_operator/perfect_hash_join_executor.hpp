@@ -20,6 +20,9 @@ class HashJoinGlobalState;
 class PhysicalHashJoin;
 
 struct PerfectHashJoinStats {
+	// The max size our build must have to run the perfect HJ
+	static const int64_t MAX_BUILD_SIZE = 1000000;
+
 	int64_t build_min;
 	int64_t build_max;
 	int64_t build_range = 0;

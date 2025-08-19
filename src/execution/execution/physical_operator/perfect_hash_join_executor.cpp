@@ -121,7 +121,7 @@ void PerfectHashJoinExecutor::FillJoinStatForPhysicalId(Vector &source, idx_t co
 		perfect_join_statistics.tuple_range = perfect_join_statistics.tuple_max - perfect_join_statistics.tuple_min;
 
 		perfect_join_statistics.build_max = GetPhysicalIdHash(perfect_join_statistics.partition_max, perfect_join_statistics.extent_max, perfect_join_statistics.tuple_max);
-		if (perfect_join_statistics.build_max > 1000000) {
+		if (perfect_join_statistics.build_max > PerfectHashJoinStats::MAX_BUILD_SIZE) {
 			perfect_join_statistics.is_build_small = false;
 			return;
 		}
