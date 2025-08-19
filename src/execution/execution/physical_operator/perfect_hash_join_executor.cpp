@@ -29,6 +29,13 @@ bool PerfectHashJoinExecutor::BuildPerfectHashTable(LogicalType &key_type, uniqu
 	Vector build_vector(key_type, keys_count);
 	RowOperations::FullScanColumn(ht->layout, tuples_addresses, build_vector, keys_count, 0);
 
+	if (perfect_join_statistics.is_physical_id) {
+		FillJoinStatForPhysicalId(build_vector, keys_count);
+		if (!perfect_join_statistics.is_build_small) {
+			return false;
+		}
+	}
+
 	// Allocate memory for each build column
 	auto build_size = perfect_join_statistics.build_range + 1;
 	for (const auto &type : ht->build_types) {
@@ -59,6 +66,69 @@ bool PerfectHashJoinExecutor::BuildPerfectHashTable(LogicalType &key_type, uniqu
 		                      build_size);
 	}
 	return true;
+}
+
+std::tuple<uint16_t, uint16_t, uint32_t> PerfectHashJoinExecutor::DestructPhysicalId(uint64_t physical_id) {
+	// TODO: safe casting? although it works
+	uint16_t partition_id = physical_id >> 48;
+	uint16_t extent_id = physical_id >> 32;
+	uint32_t tuple_id = physical_id;
+	return {partition_id, extent_id, tuple_id};
+}
+
+uint64_t PerfectHashJoinExecutor::GetPhysicalIdHash(uint16_t partition_id, uint16_t extent_id, uint32_t tuple_id) {
+	if (partition_id > perfect_join_statistics.partition_max ||
+		extent_id > perfect_join_statistics.extent_max ||
+		tuple_id > perfect_join_statistics.tuple_max) {
+		return std::numeric_limits<uint64_t>::max();  // return max so that input_value > build_max
+	}
+
+	uint64_t partition_base = (perfect_join_statistics.extent_range + 1) * (perfect_join_statistics.tuple_range + 1);
+	uint64_t extent_base = perfect_join_statistics.tuple_range + 1;
+
+	uint16_t partition_idx = partition_id - perfect_join_statistics.partition_min;
+	uint16_t extent_idx = extent_id - perfect_join_statistics.extent_min;
+	uint32_t tuple_idx = tuple_id - perfect_join_statistics.tuple_min;
+
+	return partition_idx * partition_base + extent_idx * extent_base + tuple_idx;
+}
+
+uint64_t PerfectHashJoinExecutor::GetPhysicalIdHash(uint64_t physical_id) {
+	auto [partition_id, extent_id, tuple_id] = DestructPhysicalId(physical_id);
+	GetPhysicalIdHash(partition_id, extent_id, tuple_id);
+}
+
+void PerfectHashJoinExecutor::FillJoinStatForPhysicalId(Vector &source, idx_t count) {
+	D_ASSERT(source.GetType().InternalType() == PhysicalType::UINT64);
+
+	VectorData vector_data;
+	source.Orrify(count, vector_data);
+	auto data = reinterpret_cast<uint64_t *>(vector_data.data);
+
+	for (idx_t i = 0; i < count; ++i) {
+		auto data_idx = vector_data.sel->get_index(i);
+		auto input_value = data[data_idx];
+		auto [partition_id, extent_id, tuple_id] = DestructPhysicalId(input_value);
+
+		perfect_join_statistics.partition_max = std::max(perfect_join_statistics.partition_max, partition_id);
+		perfect_join_statistics.partition_min = std::min(perfect_join_statistics.partition_min, partition_id);
+		perfect_join_statistics.partition_range = perfect_join_statistics.partition_max - perfect_join_statistics.partition_min;
+		perfect_join_statistics.extent_max = std::max(perfect_join_statistics.extent_max, extent_id);
+		perfect_join_statistics.extent_min = std::min(perfect_join_statistics.extent_min, extent_id);
+		perfect_join_statistics.extent_range = perfect_join_statistics.extent_max - perfect_join_statistics.extent_min;
+		perfect_join_statistics.tuple_max = std::max(perfect_join_statistics.tuple_max, tuple_id);
+		perfect_join_statistics.tuple_min = std::min(perfect_join_statistics.tuple_min, tuple_id);
+		perfect_join_statistics.tuple_range = perfect_join_statistics.tuple_max - perfect_join_statistics.tuple_min;
+
+		perfect_join_statistics.build_max = GetPhysicalIdHash(perfect_join_statistics.partition_max, perfect_join_statistics.extent_max, perfect_join_statistics.tuple_max);
+		if (perfect_join_statistics.build_max > 1000000) {
+			perfect_join_statistics.is_build_small = false;
+			return;
+		}
+	}
+
+	perfect_join_statistics.build_min = 0;
+	perfect_join_statistics.build_range = perfect_join_statistics.build_max;
 }
 
 bool PerfectHashJoinExecutor::FillSelectionVectorSwitchBuild(Vector &source, SelectionVector &sel_vec,
@@ -97,6 +167,11 @@ bool PerfectHashJoinExecutor::TemplatedFillSelectionVectorBuild(Vector &source, 
 	for (idx_t i = 0, sel_idx = 0; i < count; ++i) {
 		auto data_idx = vector_data.sel->get_index(i);
 		auto input_value = data[data_idx];
+
+		if (perfect_join_statistics.is_physical_id) {
+			input_value = GetPhysicalIdHash(input_value);
+		}
+
 		// add index to selection vector if value in the range
 		if (min_value <= input_value && input_value <= max_value) {
 			auto idx = (idx_t)(input_value - min_value); // subtract min value to get the idx position
@@ -238,6 +313,11 @@ void PerfectHashJoinExecutor::TemplatedFillSelectionVectorProbe(Vector &source, 
 			// retrieve value from vector
 			auto data_idx = vector_data.sel->get_index(i);
 			auto input_value = data[data_idx];
+
+			if (perfect_join_statistics.is_physical_id) {
+				input_value = GetPhysicalIdHash(input_value);
+			}
+
 			// add index to selection vector if value in the range
 			if (min_value <= input_value && input_value <= max_value) {
 				auto idx = (idx_t)(input_value - min_value); // subtract min value to get the idx position
@@ -257,6 +337,11 @@ void PerfectHashJoinExecutor::TemplatedFillSelectionVectorProbe(Vector &source, 
 				continue;
 			}
 			auto input_value = data[data_idx];
+
+			if (perfect_join_statistics.is_physical_id) {
+				input_value = GetPhysicalIdHash(input_value);
+			}
+
 			// add index to selection vector if value in the range
 			if (min_value <= input_value && input_value <= max_value) {
 				auto idx = (idx_t)(input_value - min_value); // subtract min value to get the idx position
