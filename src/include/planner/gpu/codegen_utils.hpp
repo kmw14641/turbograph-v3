@@ -61,6 +61,7 @@ struct PipelineContext {
 
     // Pipeline
     CypherPipeline *current_pipeline = nullptr;
+    std::vector<uint64_t> per_pipeline_num_input_tuples;
 
     // Sub pipeline
     std::vector<CypherPipeline> sub_pipelines;

@@ -1,8 +1,10 @@
+#include "common/scoped_timer.hpp"
 #include "execution/gpu_pipeline_executor.hpp"
 #include "execution/execution_context.hpp"
 #include "execution/schema_flow_graph.hpp"
 #include "main/client_context.hpp"
 #include "storage/cache/gpu_chunk_cache_manager.h"
+#include "storage/extent/compression/compression_header.hpp"
 
 #include <iostream>
 #include <cuda_runtime.h>
@@ -10,11 +12,12 @@
 namespace duckdb {
 
 GPUPipelineExecutor::GPUPipelineExecutor(
-    ExecutionContext *context, void *main_function,
-    std::vector<CUfunction> &gpu_kernels,
+    ExecutionContext *context, std::vector<CypherPipeline *> &pipelines,
+    void *main_function, std::vector<CUfunction> &gpu_kernels,
     const std::vector<PointerMapping> &pointer_mappings,
     const std::vector<ScanColumnInfo> &scan_column_infos)
     : BasePipelineExecutor(),
+      pipelines(pipelines),
       main_function(main_function),
       gpu_kernels(std::move(gpu_kernels)),
       pointer_mappings(pointer_mappings),
@@ -98,14 +101,13 @@ bool GPUPipelineExecutor::AllocateGPUMemory()
                 auto col_pos = scan_info.col_position[i];
                 auto col_type_size = scan_info.col_type_size[i];
 
-                // generate column pointer
-                uint64_t *d_col_ptr = nullptr;
-                size_t total_bytes = num_tuples_total * sizeof(uint64_t);
-                cudaMalloc(reinterpret_cast<void **>(&d_col_ptr), total_bytes);
-
-                // Store the column value ptrs
-                std::vector<uint64_t> h_col_ptr(num_tuples_total);
-                uint64_t current_idx = 0;
+                uint8_t *d_col_data = nullptr;
+                size_t total_bytes = num_tuples_total * col_type_size;
+                cudaMalloc(reinterpret_cast<void **>(&d_col_data), total_bytes);
+                
+                // Store the column values (TODO: this is temporary implementation)
+                // uint64_t current_idx = 0;
+                uint64_t current_byte_offset = 0;
                 for (uint64_t j = 0; j < scan_info.extent_ids.size(); j++) {
                     auto extent_id = scan_info.extent_ids[j];
                     auto num_tuples = scan_info.num_tuples_per_extent[j];
@@ -137,30 +139,30 @@ bool GPUPipelineExecutor::AllocateGPUMemory()
                         gpu_mem.is_allocated = true;
                         gpu_memory_pool.push_back(gpu_mem);
 
+                        // advance gpu_ptr by size of compression header
+                        gpu_ptr += CompressionHeader::GetSizeWoBitSet();
+
                         // Update the pointer mapping with the actual GPU address
                         target_mapping->address = gpu_ptr;
+
+                        // Direct GPU-to-GPU memory copy (no host transfer!)
+                        size_t extent_data_size = num_tuples * col_type_size;
+                        cudaMemcpy(d_col_data + current_byte_offset, gpu_ptr,
+                                   extent_data_size, cudaMemcpyDeviceToDevice);
+
+                        current_byte_offset += extent_data_size;
                     }
                     else {
                         std::cerr << "Failed to allocate GPU memory for chunk "
                                   << cid_in_extent << std::endl;
                         return false;
                     }
-
-                    // For each tuple in this extent, store the ptrs to column value
-                    for (uint64_t k = 0; k < num_tuples; k++) {
-                        uint64_t value_address = reinterpret_cast<uint64_t>(
-                            gpu_ptr + k * col_type_size);
-                        h_col_ptr[current_idx++] = value_address;
-                    }
                 }
-                D_ASSERT(current_idx == num_tuples_total);
-
-                cudaMemcpy(d_col_ptr, h_col_ptr.data(), total_bytes,
-                           cudaMemcpyHostToDevice);
+                D_ASSERT(current_byte_offset == total_bytes);
                 
                 PointerMapping col_mapping;
                 col_mapping.name = col_name;
-                col_mapping.address = reinterpret_cast<void *>(d_col_ptr);
+                col_mapping.address = reinterpret_cast<void *>(d_col_data);
                 col_mapping.cid = -1;  // No chunk ID for virtual columns
                 input_pointer_mappings.push_back(col_mapping);
             }
@@ -179,9 +181,6 @@ bool GPUPipelineExecutor::LaunchKernel()
         // Call the main function with pointer mappings
         exec(const_cast<PointerMapping *>(input_pointer_mappings.data()),
              input_pointer_mappings.size());
-        std::cout << "Launching GPU kernel with "
-                  << input_pointer_mappings.size() << " pointer mappings..."
-                  << std::endl;
         return true;
     }
     return false;
@@ -233,20 +232,29 @@ void GPUPipelineExecutor::ExecuteGPUPipeline()
 {
     std::cout << "Executing pipeline on GPU..." << std::endl;
 
+    SCOPED_TIMER_SIMPLE(ExecuteGPUPipeline, spdlog::level::info,
+                        spdlog::level::info);
+    
     // Allocate GPU memory
+    SUBTIMER_START(ExecuteGPUPipeline, "AllocateGPUMemory");
     if (!AllocateGPUMemory()) {
         throw std::runtime_error("Failed to allocate GPU memory");
     }
+    SUBTIMER_STOP(ExecuteGPUPipeline, "AllocateGPUMemory");
 
     // Launch kernel
+    SUBTIMER_START(ExecuteGPUPipeline, "LaunchKernel");
     if (!LaunchKernel()) {
         throw std::runtime_error("Failed to launch GPU kernel");
     }
+    SUBTIMER_STOP(ExecuteGPUPipeline, "LaunchKernel");
 
     // Transfer results back to CPU
+    SUBTIMER_START(ExecuteGPUPipeline, "TransferResultsToCPU");
     if (!TransferResultsToCPU()) {
         throw std::runtime_error("Failed to transfer results from GPU");
     }
+    SUBTIMER_STOP(ExecuteGPUPipeline, "TransferResultsToCPU");
 
     std::cout << "GPU pipeline execution completed" << std::endl;
 }

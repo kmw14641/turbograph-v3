@@ -229,6 +229,7 @@ __device__ static double atomicMin(double *address, double val)
     return __longlong_as_double(old);
 }
 
+#ifndef USE_NEW_STR_T
 __device__ __forceinline__ str_t stringScan(const size_t *offs, char *chrs,
                                             int ix)
 {
@@ -422,6 +423,221 @@ __device__ bool stringLikeCheck(str_t string, str_t like)
     }
     return lPos >= lInEnd;
 }
+#else // ifdef USE_NEW_STR_T
+// we don't use all functions below, so we disable them for now
+// __device__ __forceinline__ str_t stringScan(const size_t *offs, char *chrs,
+//                                             int ix)
+// {
+//     str_t s;
+//     size_t start = offs[ix];
+//     s.start = chrs + start;
+//     size_t end = offs[ix + 1];
+//     s.end = chrs + end;
+//     return s;
+// }
+
+// __device__ __forceinline__ str_t stringScan1(const size_t *offs, char *chrs,
+//                                              int ix)
+// {
+//     str_t s;
+//     size_t start = offs[ix];
+//     s.start = chrs + start;
+//     size_t end = offs[ix + 1];
+//     s.end = chrs + end;
+//     return s;
+// }
+
+// __device__ __forceinline__ str_t stringScan2(const size_t *offs, char *chrs,
+//                                              int ix)
+// {
+//     str_t s;
+//     size_t start = offs[ix];
+//     s.start = chrs + start;
+//     size_t end = offs[ix + 1];
+//     s.end = chrs + end;
+//     return s;
+// }
+
+// __device__ str_offs toStringOffset(char *chrs, str_t s)
+// {
+//     str_offs o;
+//     o.start = s.start - chrs;
+//     o.end = s.end - chrs;
+//     return o;
+// }
+
+// __device__ str_t stringConstant(const char *chars, int len)
+// {
+//     str_t s;
+//     s.start = const_cast<char *>(chars);
+//     s.end = const_cast<char *>(chars) + len;
+//     return s;
+// }
+
+__device__ str_t __shfl_sync(unsigned lanemask, str_t v, int sourceLane)
+{
+    str_t res;
+    const unsigned int *src = reinterpret_cast<const unsigned int *>(&v);
+    unsigned int *dst = reinterpret_cast<unsigned int *>(&res);
+
+    dst[0] = __shfl_sync(lanemask, src[0], sourceLane);
+    dst[1] = __shfl_sync(lanemask, src[1], sourceLane);
+    dst[2] = __shfl_sync(lanemask, src[2], sourceLane);
+    dst[3] = __shfl_sync(lanemask, src[3], sourceLane);
+    return res;
+}
+
+__device__ bool stringEquals(const str_t &a, const str_t &b)
+{
+    uint32_t lena = a.value.inlined.length;
+    uint32_t lenb = b.value.inlined.length;
+    if (lena != lenb)
+        return false;
+    
+    if (lena <= 12) {        
+        for (uint32_t idx = 0; idx < lena; idx++) {
+            if (a.value.inlined.inlined[idx] != b.value.inlined.inlined[idx])
+                return false;
+        }
+    } else {
+        char *c = a.value.pointer.ptr;
+        char *d = b.value.pointer.ptr;
+        for (; c < a.value.pointer.ptr + lena; c++, d++) {
+            if (*c != *d)
+                return false;
+        }
+    }
+    return true;
+}
+
+__device__ bool stringEquals(const str_t &a, const str_t &b, int &iteration)
+{
+    uint32_t lena = a.value.inlined.length;
+    uint32_t lenb = b.value.inlined.length;
+    if (lena != lenb)
+        return false;
+
+    if (lena <= 12) {        
+        for (uint32_t idx = 0; idx < lena; idx++) {
+            if (a.value.inlined.inlined[idx] != b.value.inlined.inlined[idx])
+                return false;
+            ++iteration;
+        }
+    } else {
+        char *c = a.value.pointer.ptr;
+        char *d = b.value.pointer.ptr;
+        for (; c < a.value.pointer.ptr + lena; c++, d++) {
+            if (*c != *d)
+                return false;
+            ++iteration;
+        }
+    }
+    return true;
+}
+
+// __device__ bool stringEqualsPushdown(bool active, str_t a, str_t b)
+// {
+//     unsigned warplane = threadIdx.x % 32;
+//     bool equal = active;
+//     if (equal) {
+//         equal = ((a.end - a.start) == (b.end - b.start));
+//     }
+//     unsigned cmpTodoMask = __ballot_sync(ALL_LANES, equal);
+//     while (cmpTodoMask > 0) {
+//         unsigned strLane = (__ffs(cmpTodoMask) - 1);
+//         cmpTodoMask -= (1 << strLane);
+//         str_t strA = __shfl_sync(ALL_LANES, a, strLane);
+//         str_t strB = __shfl_sync(ALL_LANES, b, strLane);
+//         bool currEqual = true;
+//         char *chrA = strA.start + warplane;
+//         char *chrB = strB.start + warplane;
+//         while (chrA < strA.end && currEqual) {
+//             currEqual &= __all_sync(ALL_LANES, (*chrA) == (*chrB));
+//             chrA += 32;
+//             chrB += 32;
+//         }
+//         if (warplane == strLane) {
+//             equal = currEqual;
+//         }
+//     }
+//     return equal || (!active);
+// }
+
+// __device__ str_t stringSubstring(str_t str, int from, int fr)
+// {
+//     str_t res;
+//     // todo: throw error if for is negative
+//     res.start = str.start + from - 1;
+//     res.end = res.start + fr;
+//     if (res.start < str.start)
+//         res.start = str.start;
+//     if (res.end > str.end)
+//         res.end = str.end;
+//     return res;
+// }
+
+__inline__ __device__ bool cmpLike(char c, char l)
+{
+    return (c == l) || (l == '_');
+}
+
+// __device__ bool stringLikeCheck(str_t string, str_t like)
+// {
+//     char *sPos, *lPos, *sTrace, *lTrace;
+//     char *lInStart = like.start;
+//     char *lInEnd = like.end;
+//     char *sInStart = string.start;
+//     char *sInEnd = string.end;
+
+//     // prefix
+//     if (*like.start != '%') {
+//         sPos = string.start;
+//         lPos = like.start;
+//         for (; lPos < like.end && sPos < string.end && (*lPos) != '%';
+//              ++lPos, ++sPos) {
+//             if (!cmpLike(*sPos, *lPos))
+//                 return false;
+//         }
+//         lInStart = lPos;
+//         sInStart = sPos;
+//     }
+
+//     // suffix
+//     if (*(like.end - 1) != '%') {
+//         sPos = string.end - 1;
+//         lPos = like.end - 1;
+//         for (; lPos >= like.start && sPos >= string.start && (*lPos) != '%';
+//              --lPos, --sPos) {
+//             if (!cmpLike(*sPos, *lPos))
+//                 return false;
+//         }
+//         lInEnd = lPos;
+//         sInEnd = sPos + 1;  // first suffix char
+//     }
+
+//     // infixes
+//     if (lInStart < lInEnd) {
+//         lPos = lInStart + 1;  // skip '%'
+//         sPos = sInStart;
+//         while (sPos < sInEnd && lPos < lInEnd) {  // loop 's' string
+//             lTrace = lPos;
+//             sTrace = sPos;
+//             while (cmpLike(*sTrace, *lTrace) &&
+//                    sTrace < sInEnd) {  // loop infix matches
+//                 ++lTrace;
+//                 if (*lTrace == '%') {
+//                     lPos = ++lTrace;
+//                     sPos = sTrace;
+//                     break;
+//                 }
+//                 ++sTrace;
+//             }
+//             ++sPos;
+//         }
+//     }
+//     return lPos >= lInEnd;
+// }
+#endif
 #endif
 
 #define HASH_EMPTY 0xffffffffffffffff
@@ -441,6 +657,7 @@ __device__ __forceinline__ uint64_t hash(uint64_t key)
     return key & (HASH_MAX);
 }
 
+#ifndef USE_NEW_STR_T
 __device__ __forceinline__ uint64_t stringHash(str_t s)
 {
     uint64_t h = 1;
@@ -483,6 +700,64 @@ __device__ uint64_t stringHashPushDown(bool active, str_t s)
     }
     return hashResult;
 }
+#else
+__device__ __forceinline__ uint64_t stringHash(str_t s)
+{
+    uint64_t h = 1;
+    unsigned char rem = 0;
+    if (s.value.inlined.length <= 12) {
+        for (uint32_t idx = 0; idx < s.value.inlined.length; idx++) {
+            char exChr = s.value.inlined.inlined[idx];
+            h *= exChr;
+            rem++;
+            // apply hash function every 8 byte
+            if (rem % 8 == 0) {
+                h = hash(h);
+                rem = 0;
+            }
+        }
+        return h;
+    } else {
+        for (uint32_t idx = 0; idx < s.value.pointer.length; idx++) {
+            char exChr = s.value.pointer.ptr[idx];
+            h *= exChr;
+            rem++;
+            // apply hash function every 8 byte
+            if (rem % 8 == 0) {
+                h = hash(h);
+                rem = 0;
+            }
+        }
+    }
+    return h;
+}
+
+// __device__ uint64_t stringHashPushDown(bool active, str_t s)
+// {
+//     uint64_t hashResult = 1;
+//     unsigned warplane = threadIdx.x % 32;
+//     unsigned hashTodoMask = __ballot_sync(ALL_LANES, active);
+//     while (hashTodoMask > 0) {
+//         unsigned strLane = (__ffs(hashTodoMask) - 1);
+//         hashTodoMask -= (1 << strLane);
+//         str_t hs = __shfl_sync(ALL_LANES, s, strLane);
+//         char *c = hs.start + warplane;
+//         uint32_t hsub = 1;
+//         while (c < hs.end) {
+//             hsub *= (*c);
+//             c += 32;
+//         }
+//         hsub = hash(hsub);
+//         uint64_t hash;
+//         hash = (uint64_t)__ballot_sync(ALL_LANES, hsub & 1u);
+//         hash += (uint64_t)__ballot_sync(ALL_LANES, hsub & 2u) << 32;
+//         if (warplane == strLane) {
+//             hashResult = hash;
+//         }
+//     }
+//     return hashResult;
+// }
+#endif
 #endif
 
 template <typename T>

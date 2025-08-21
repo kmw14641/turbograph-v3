@@ -57,14 +57,15 @@ class GpuChunkCacheManager {
     bool AllocSizeValidityCheck(size_t alloc_size);
     size_t GetSegmentSize(ChunkID cid, std::string file_path);
     size_t GetFileSize(ChunkID cid, std::string file_path);
+    void InitSwizzleKernel();
+    void Swizzle(void *gpu_ptr, void *cpu_ptr);
 
     facebook::velox::wave::GpuArena *gpu_arena;
-
     GpuCachePolicy policy_;
-
     ChunkCacheManager *cpu_cache_manager_;
-
     unordered_map<ChunkID, facebook::velox::wave::WaveBufferPtr> gpu_ptrs_;
+    CUmodule swizzle_module_{nullptr};
+    CUfunction swizzle_kernel_{nullptr};
 };
 
 }  // namespace duckdb

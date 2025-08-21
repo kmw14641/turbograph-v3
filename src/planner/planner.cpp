@@ -650,7 +650,7 @@ vector<duckdb::BasePipelineExecutor *> Planner::genPipelineExecutors(bool enable
         duckdb::BasePipelineExecutor *pipe_exec;
         auto *new_ctxt = new duckdb::ExecutionContext(context);
         pipe_exec = new duckdb::GPUPipelineExecutor(
-            new_ctxt, main_function, code_gen->GetKernels(),
+            new_ctxt, pipelines, main_function, code_gen->GetKernels(),
             code_gen->GetPointerMappings(), code_gen->GetScanColumnInfos());
         // if (generate_sfg) {
         //     D_ASSERT(false);

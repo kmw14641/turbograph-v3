@@ -1,6 +1,9 @@
 #include "storage/cache/gpu_chunk_cache_manager.h"
 #include <cuda_runtime.h>
 #include "velox/experimental/wave/common/Cuda.h"
+#include <nvrtc.h>
+#include "common/gpu/gpu_ctx.hpp"
+#include "common/gpu/gpu_utils.hpp"
 
 namespace duckdb {
 
@@ -19,12 +22,22 @@ GpuChunkCacheManager::GpuChunkCacheManager(const char *path,
         cpu_cache_manager_ = nullptr;
     }
 
-    // initialize gpu arena
-    const size_t gpu_arena_size = 1024 * 1024 * 1024;  // 1GB
-    gpu_arena = new facebook::velox::wave::GpuArena(
-        gpu_arena_size, 
-        facebook::velox::wave::getAllocator(facebook::velox::wave::getDevice())
-    );
+    if (!duckdb::EnsurePrimaryCudaContext()) {
+        throw InternalException(
+            "Failed to ensure primary CUDA context for GpuChunkCacheManager");
+    }
+
+    {
+        duckdb::CudaCtxGuard guard(duckdb::GetPrimaryCudaContext());
+
+        // initialize gpu arena
+        const size_t gpu_arena_size = 1024 * 1024 * 1024;  // 1GB
+        gpu_arena = new facebook::velox::wave::GpuArena(
+            gpu_arena_size, facebook::velox::wave::getAllocator(
+                                facebook::velox::wave::getDevice()));
+    }
+
+    InitSwizzleKernel();
 }
 
 GpuChunkCacheManager::~GpuChunkCacheManager()
@@ -44,6 +57,81 @@ GpuChunkCacheManager::~GpuChunkCacheManager()
     if (cpu_cache_manager_) {
         delete cpu_cache_manager_;
     }
+}
+
+void GpuChunkCacheManager::InitSwizzleKernel() {
+    if (!duckdb::EnsurePrimaryCudaContext()) {
+        throw InternalException(
+            "Failed to ensure primary CUDA context for swizzle kernel");
+    }
+    duckdb::CudaCtxGuard guard(duckdb::GetPrimaryCudaContext());
+
+    static const char* kStrSwizzleKernelSrc_ = R"(
+        struct __align__(16) str_t {
+            union {
+                struct { unsigned int length; char prefix[4]; char* ptr; } pointer;
+                struct { unsigned int length; char prefix[4]; unsigned long long offset; } offset;
+                struct { unsigned int length; char inlined[12]; } inlined;
+            } value;
+        };
+
+        static __device__ __forceinline__ bool is_inlined_len(unsigned int len) {
+            return len <= 12u;
+        }
+
+        extern "C" __global__
+        void swizzle_offsets_to_ptr_inplace(str_t* __restrict__ rows,
+                                            const char* __restrict__ chars_base,
+                                            unsigned int n)
+        {
+            unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+            if (i >= n) return;
+
+            unsigned int len = rows[i].value.offset.length;
+            if (is_inlined_len(len)) return;
+
+            unsigned long long off = rows[i].value.offset.offset;
+            rows[i].value.pointer.ptr = (char*)(chars_base + off);
+        }
+    )";
+
+    nvrtcProgram prog;
+    nvrtcCreateProgram(&prog, kStrSwizzleKernelSrc_, "swizzle.cu", 0, nullptr,
+                       nullptr);
+    std::string arch = makeNvrtcArchFlag_();
+    const char *opts[] = { arch.c_str(), "--std=c++17" };
+
+    nvrtcResult cres =
+        nvrtcCompileProgram(prog, (int)(sizeof(opts) / sizeof(opts[0])), opts);
+
+    size_t logSize = 0;
+    nvrtcGetProgramLogSize(prog, &logSize);
+    if (logSize > 1) {
+        std::string log(logSize, '\0');
+        nvrtcGetProgramLog(prog, &log[0]);
+        fprintf(stderr, "[NVRTC LOG] %s\n", log.c_str());
+    }
+    if (cres != NVRTC_SUCCESS) {
+        nvrtcDestroyProgram(&prog);
+        fprintf(stderr, "[NVRTC] compile failed.\n");
+        return;
+    }
+
+    size_t ptxSize = 0;
+    nvrtcGetPTXSize(prog, &ptxSize);
+    std::string ptx(ptxSize, '\0');
+    nvrtcGetPTX(prog, &ptx[0]);
+    nvrtcDestroyProgram(&prog);
+
+    CUmodule mod = nullptr;
+    cuModuleLoadData(&mod, ptx.c_str());
+
+    CUfunction fn = nullptr;
+    cuModuleGetFunction(&fn, mod, "swizzle_offsets_to_ptr_inplace");
+
+    swizzle_module_ = mod;
+    swizzle_kernel_ = fn;
+    return;
 }
 
 ReturnStatus GpuChunkCacheManager::PinSegment(ChunkID cid,
@@ -72,7 +160,7 @@ ReturnStatus GpuChunkCacheManager::PinSegment(ChunkID cid,
         // load to CPU first
         ReturnStatus status =
             cpu_cache_manager_->PinSegment(cid, file_path, &cpu_ptr, &cpu_size,
-                                           read_data_async, is_initial_loading);
+                                           read_data_async, true);
         if (status != ReturnStatus::NOERROR) {
             return status;
         }
@@ -91,6 +179,9 @@ ReturnStatus GpuChunkCacheManager::PinSegment(ChunkID cid,
 
         // copy from CPU to GPU
         cudaMemcpy(gpu_mem, cpu_ptr, cpu_size, cudaMemcpyHostToDevice);
+
+        // swizzle data if necessary
+        Swizzle(gpu_mem, cpu_ptr);
 
         // release CPU memory
         cpu_cache_manager_->UnPinSegment(cid);
@@ -304,6 +395,57 @@ size_t GpuChunkCacheManager::GetSegmentSize(ChunkID cid, std::string file_path)
 size_t GpuChunkCacheManager::GetFileSize(ChunkID cid, std::string file_path)
 {
     return cpu_cache_manager_->GetFileSize(cid, file_path);
+}
+
+struct StrAbiHost { uint32_t length; char prefix[4]; uint64_t tail8; };
+static_assert(sizeof(StrAbiHost)==16, "str_t stride must be 16");
+constexpr size_t kStrStride = sizeof(StrAbiHost);
+
+void GpuChunkCacheManager::Swizzle(void *gpu_ptr, void *cpu_ptr)
+{
+    CompressionHeader comp_header;
+    memcpy(&comp_header, cpu_ptr, comp_header.GetSizeWoBitSet());
+    if (comp_header.swizzle_type == SwizzlingType::SWIZZLE_NONE) {
+        // No swizzling needed
+        return;
+    }
+
+    const size_t header_bytes = comp_header.GetSizeWoBitSet();
+    size_t size = comp_header.data_len;
+
+    CUdeviceptr base = reinterpret_cast<CUdeviceptr>(gpu_ptr);
+    CUdeviceptr rows_addr = base + static_cast<CUdeviceptr>(header_bytes);
+    CUdeviceptr chars_addr =
+        rows_addr + static_cast<CUdeviceptr>(size) * kStrStride;
+
+    void *d_rows = reinterpret_cast<void *>(rows_addr);
+    const void *d_chars_base = reinterpret_cast<const void *>(chars_addr);
+
+    D_ASSERT(swizzle_kernel_ != nullptr);
+    // Launch the swizzle kernel
+    unsigned int n = static_cast<unsigned int>(size);
+    const unsigned int block = 256;
+    const unsigned int grid = (n + block - 1) / block;
+
+    void *args[] = {&d_rows, (void *)&d_chars_base, &n};
+
+    std::cerr << "Launching swizzle kernel for " << size
+              << " rows with grid size: " << grid
+              << ", block size: " << block << std::endl;
+    CUresult r = cuLaunchKernel(swizzle_kernel_, grid, 1, 1, block, 1, 1,
+                                /*sharedMemBytes*/ 0,
+                                /*stream*/ 0, args, nullptr);
+
+    if (r != CUDA_SUCCESS) {
+        const char *err = nullptr;
+        cuGetErrorString(r, &err);
+        std::cerr << "swizzle kernel launch failed: " << (err ? err : "unknown")
+                  << std::endl;
+    }
+
+    cuCtxSynchronize();
+    std::cerr << "Swizzle kernel launched successfully for "
+              << size << " rows." << std::endl;
 }
 
 }  // namespace duckdb

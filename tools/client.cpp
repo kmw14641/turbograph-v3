@@ -323,13 +323,14 @@ size_t GetResultSizeInBytes(std::vector<std::shared_ptr<duckdb::DataChunk>> &que
 
 void DeallocateIterationMemory(std::vector<BasePipelineExecutor *> &executors) {
     auto &exec_context = executors.back()->context;
-    auto &query_results = *exec_context->query_results;
-    auto result_size = GetResultSizeInBytes(query_results);
+    auto query_results = exec_context->query_results;
+    if (query_results == nullptr) return;
+    auto result_size = GetResultSizeInBytes(*query_results);
 
-    for (auto &chunk: query_results) {
+    for (auto &chunk: *query_results) {
         chunk.reset();
     }
-    query_results.clear();
+    query_results->clear();
     
     for (auto &exec : executors) {
         delete exec;
@@ -353,7 +354,7 @@ void CompileAndExecuteIteration(const std::string &query_str,
         ExecuteQuery(query_str, client, options, executors, exec_time);
 
         auto &query_results = executors.back()->context->query_results;
-        auto &schema = executors.back()->pipeline->GetSink()->schema;
+        auto &schema = executors.back()->GetPipeline()->GetSink()->schema;
         auto col_names = planner.getQueryOutputColNames();
 
         PrintOutputConsole(col_names, query_results, schema, options.slient);

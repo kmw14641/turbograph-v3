@@ -23,6 +23,7 @@ public:
 	// }
 	ExecutionContext(ClientContext *client_p) : client(client_p) {
 		// NOTE; thread should be manually set after calling constructor
+		query_results = nullptr;
 	}
 
 	//! The client-global context; caution needs to be taken when used in parallel situations

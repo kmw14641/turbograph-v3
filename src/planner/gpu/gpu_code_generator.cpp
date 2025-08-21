@@ -411,7 +411,10 @@ void GpuCodeGenerator::GenerateKernelCode(CypherPipeline &pipeline)
     // 2. Generate initial distribution
     code.Add("int inodes_cnts = 0; // the number of nodes per level");
     code.Add("Range ts_0_range_cached;");
-    // code.Add("ts_0_range_cached.end = {scan.genTableSize()};')
+    code.Add(
+        "ts_0_range_cached.end = " +
+        std::to_string(pipeline_context.per_pipeline_num_input_tuples.back()) +
+        ";");
 
     if (do_inter_warp_lb) {
         std::string num_warps =
@@ -623,8 +626,8 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(
                 "cudaMemset(global_stats_per_lvl, 0, "
                 "sizeof(Themis::StatisticsPerLvl) * " +
                 num_subpipes + ");");
-            // tableSize = pipe.subpipes[0].operators[0].genTableSize()
-            int tableSize = 100000;  // TODO
+            uint64_t tableSize =
+                pipeline_context.per_pipeline_num_input_tuples[pipe_idx];
             // if tableSize[0] == '*':
             //     // tableSize = tableSize[1:]
             //     code.Add(f'Themis::InitStatisticsPerLvlPtr(global_stats_per_lvl, {num_warps}, {tableSize}, {len(pipe.subpipeSeqs)});')
@@ -735,11 +738,15 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(
                 "&d_output_count, &global_num_idle_warps, &global_scan_offset, "
                 "&gts, &size_of_stack_per_warp, &global_stats_per_lvl, "
                 "&global_bit1, &global_bit2 };");
-            code.Add("std::cerr << \"Prepared kernel arguments.\" << std::endl;");
+
+            code.Add("std::cerr << \"Launching kernel gpu_kernel" +
+                     std::to_string(pipe_idx) + "\" << std::endl;");
             code.Add(
                 "CUresult r = cuLaunchKernel(gpu_kernel" +
                 std::to_string(pipe_idx) +
                 ", gridSize, 1, 1, blockSize, 1, 1, 0, 0, args, nullptr);");
+            code.Add("std::cerr << \"Kernel gpu_kernel" +
+                     std::to_string(pipe_idx) + " launched.\" << std::endl;");
 
             // error handling
             code.Add("if (r != CUDA_SUCCESS) {");
@@ -766,6 +773,59 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(
                 "throw std::runtime_error(\"cudaDeviceSynchronize failed\");");
             code.DecreaseNesting();
             code.Add("}");
+
+            code.Add("cudaMemcpy(&output_count, d_output_count, sizeof(int), "
+                     "cudaMemcpyDeviceToHost);");
+            code.Add("std::cerr << \"Kernel execution finished. Output count: \" "
+                     "<< output_count << std::endl;");
+            
+            // print output data, temporary
+            // code.Add("std::vector<str_t> h_res0(256);");
+            // code.Add("std::vector<str_t> h_res1(256);");
+            // code.Add("std::vector<hugeint_t> h_res2(256);");
+            // code.Add("std::vector<decimal_int128_t> h_res3(256);");
+            // code.Add("std::vector<decimal_int128_t> h_res4(256);");
+            // code.Add("std::vector<decimal_int128_t> h_res5(256);");
+            // code.Add("std::vector<double> h_res6(256);");
+            // code.Add("std::vector<double> h_res7(256);");
+            // code.Add("std::vector<double> h_res8(256);");
+            // code.Add("std::vector<unsigned long long> h_res9(256);");
+            // code.Add("cudaMemcpy(h_res0.data(), result_00000_data, "
+            //          "sizeof(str_t) * 256, cudaMemcpyDeviceToHost);");
+            // code.Add("cudaMemcpy(h_res1.data(), result_00001_data, "
+            //          "sizeof(str_t) * 256, cudaMemcpyDeviceToHost);");
+            // code.Add("cudaMemcpy(h_res2.data(), result_00002_data, sizeof(hugeint_t) * 256, cudaMemcpyDeviceToHost);");
+            // code.Add("cudaMemcpy(h_res3.data(), result_00003_data, sizeof(decimal_int128_t) * 256, cudaMemcpyDeviceToHost);");
+            // code.Add("cudaMemcpy(h_res4.data(), result_00004_data, sizeof(decimal_int128_t) * 256, cudaMemcpyDeviceToHost);");
+            // code.Add("cudaMemcpy(h_res5.data(), result_00005_data, sizeof(decimal_int128_t) * 256, cudaMemcpyDeviceToHost);");
+            // code.Add("cudaMemcpy(h_res6.data(), result_00006_data, sizeof(double) * 256, cudaMemcpyDeviceToHost);");
+            // code.Add("cudaMemcpy(h_res7.data(), result_00007_data, sizeof(double) * 256, cudaMemcpyDeviceToHost);");
+            // code.Add("cudaMemcpy(h_res8.data(), result_00008_data, sizeof(double) * 256, cudaMemcpyDeviceToHost);");
+            // code.Add("cudaMemcpy(h_res9.data(), result_00009_data, sizeof(unsigned long long) * 256, cudaMemcpyDeviceToHost);");
+            // code.Add("std::cerr << \"Output data: \" << std::endl;");
+            // code.Add("for (int i = 0; i < output_count && i < 256; i++) {");
+            // code.IncreaseNesting();
+            // code.Add(
+            //     "printf(\"%c, %c, %llu, %.4f, %.4f, %.4f, %llu\\n\", "
+            //     "h_res0[i].value.inlined.inlined[0], "
+            //     "h_res1[i].value.inlined.inlined[0], "
+            //     "h_res2[i].lower, h_res6[i], h_res7[i], h_res8[i], "
+            //     "h_res9[i]);");
+            // code.DecreaseNesting();
+            // code.Add("}");
+            // out_idx = 0;
+            // for (const auto &p : cur_output_params) {
+            //     std::string delimiter =
+            //         out_idx == output_ptr_count - 1 ? "" : ",";
+            //     if (p.type.find('*') != std::string::npos) {
+            //         code.Add(p.name + delimiter);
+            //         out_idx++;
+            //     }
+            //     else {
+            //         // code.Add("// skipped " + p.type + " " + p.name + " = " +
+            //         //          p.value + ";");
+            //     }
+            // }
 
             code.DecreaseNesting();
             code.Add("} // end of pipeline " + std::to_string(pipe_idx));
@@ -1416,7 +1476,7 @@ void GpuCodeGenerator::GenerateOutputCodeForType2(CypherPipeline &sub_pipeline,
     code.Add("Themis::UpdateMaskAtIfLvlAfterPush(" + next_subpipe_id +
              ", ts_cnt, mask_32, mask_1);");
     if (tids.size() > 0) {
-        code.Add("if (ts_cnt >=32) {");
+        code.Add("if (ts_cnt >= 32) {");
         code.IncreaseNesting();
         for (const auto &tid : tids) {
             code.Add("ts_" + next_subpipe_id + "_" + tid + " = " + tid + ";");
@@ -1832,6 +1892,11 @@ void NodeScanCodeGenerator::GenerateCode(
                     std::string attr_name = it->second;
                     auto value_str = scan_op->eq_filter_pushdown_values[i]
                                          .ToPhysicalTypeString();
+                    if (scan_op->eq_filter_pushdown_values[i].type() ==
+                        LogicalType::VARCHAR) {
+                        // For string values, we need to add quotes
+                        value_str = "\"" + value_str + "\"";
+                    }
                     predicate_string += (attr_name + " == " + value_str);
                 }
             }
@@ -1893,6 +1958,7 @@ void NodeScanCodeGenerator::GenerateInputKernelParameters(
 {
     auto scan_op = dynamic_cast<PhysicalNodeScan *>(op);
 
+    uint64_t num_tuples_total = 0;
     // Process oids to get table/column information
     for (size_t oid_idx = 0; oid_idx < scan_op->oids.size(); oid_idx++) {
         idx_t oid = scan_op->oids[oid_idx];
@@ -1910,6 +1976,8 @@ void NodeScanCodeGenerator::GenerateInputKernelParameters(
         auto *extra_infos = property_schema_cat_entry->GetExtraTypeInfos();
         scan_column_infos.push_back(ScanColumnInfo());
         ScanColumnInfo &scan_column_info = scan_column_infos.back();
+        scan_column_info.pipeline_id =
+            pipeline_context.current_pipeline->GetPipelineId();
         uint64_t num_extents = property_schema_cat_entry->extent_ids.size();
         bool is_first_time_to_get_column_info = true;
 
@@ -1937,6 +2005,7 @@ void NodeScanCodeGenerator::GenerateInputKernelParameters(
                 extent_cat_entry->GetNumTuplesInExtent();
             scan_column_info.num_tuples_per_extent.push_back(
                 num_tuples_in_extent);
+            num_tuples_total += num_tuples_in_extent;
 
             if (is_first_time_to_get_column_info) {
                 scan_column_info.chunk_ids.resize(
@@ -2022,16 +2091,9 @@ void NodeScanCodeGenerator::GenerateInputKernelParameters(
             }
 
             is_first_time_to_get_column_info = false;
-
-            // Add count parameter for this table
-            KernelParam count_param;
-            count_param.name = table_name + "_count";
-            count_param.type = "unsigned long long ";
-            count_param.value = std::to_string(num_tuples_in_extent);
-            count_param.is_device_ptr = false;
-            input_kernel_params.push_back(count_param);
         }
     }
+    pipeline_context.per_pipeline_num_input_tuples.push_back(num_tuples_total);
 }
 
 void NodeScanCodeGenerator::AnalyzeOperatorForMaterialization(
@@ -2992,6 +3054,9 @@ void HashAggregateCodeGenerator::GenerateInputKernelParameters(
             input_kernel_params.push_back(count_param);
         }
     }
+
+    pipeline_context.per_pipeline_num_input_tuples.push_back(
+        512);  // TODO: make this configurable
 }
 
 void HashAggregateCodeGenerator::GenerateOutputKernelParameters(

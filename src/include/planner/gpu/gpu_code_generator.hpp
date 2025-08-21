@@ -99,6 +99,7 @@ struct PointerMapping {
 struct ScanColumnInfo {
     ScanColumnInfo() : get_physical_id_column(false), graphlet_id(0) {}
     bool get_physical_id_column = false;
+    uint64_t pipeline_id;
     uint64_t graphlet_id;
     std::vector<ExtentID> extent_ids;
     std::vector<uint64_t> num_tuples_per_extent;

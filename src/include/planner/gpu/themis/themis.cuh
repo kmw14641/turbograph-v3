@@ -631,6 +631,7 @@ __device__ __forceinline__ void PullAttributesAtLoopLvl(int thread_id,
     part_attrs = gts_attrs[thread_id + 32];
 }
 
+#ifndef USE_NEW_STR_T
 __device__ __forceinline__ void PullStrAttributesAtLoopLvl(
     int thread_id, str_t &dpart_attrs, str_t &part_attrs,
     volatile str_t *gts_attrs)
@@ -640,6 +641,31 @@ __device__ __forceinline__ void PullStrAttributesAtLoopLvl(
     part_attrs.start = gts_attrs[thread_id + 32].start;
     part_attrs.end = gts_attrs[thread_id + 32].end;
 }
+#else
+__device__ __forceinline__ void PullStrAttributesAtLoopLvl(
+    int thread_id, str_t &dpart_attrs, str_t &part_attrs,
+    volatile str_t *gts_attrs)
+{
+    {
+        const volatile unsigned long long* src64 =
+            reinterpret_cast<const volatile unsigned long long*>(&gts_attrs[thread_id]);
+        unsigned long long* dst64 =
+            reinterpret_cast<unsigned long long*>(&dpart_attrs);
+
+        dst64[0] = src64[0];
+        dst64[1] = src64[1];
+    }
+    {
+        const volatile unsigned long long* src64 =
+            reinterpret_cast<const volatile unsigned long long*>(&gts_attrs[thread_id + 32]);
+        unsigned long long* dst64 =
+            reinterpret_cast<unsigned long long*>(&part_attrs);
+
+        dst64[0] = src64[0];
+        dst64[1] = src64[1];
+    }
+}
+#endif
 
 __device__ __forceinline__ void PullPtrIntAttributesAtLoopLvl(
     int thread_id, int *&dpart_attrs, int *&part_attrs,
@@ -714,6 +740,7 @@ __device__ __forceinline__ void PushPtrIntAttributesAtLoopLvl(
     gts_attrs[thread_id + 32] = part_attr;
 }
 
+#ifndef USE_NEW_STR_T
 __device__ __forceinline__ void PushStrAttributesAtLoopLvl(
     int thread_id, volatile str_t *gts_attrs, str_t &dpart_attr,
     str_t &part_attr)
@@ -723,6 +750,31 @@ __device__ __forceinline__ void PushStrAttributesAtLoopLvl(
     *((volatile char **)(&gts_attrs[thread_id + 32].start)) = part_attr.start;
     *((volatile char **)(&gts_attrs[thread_id + 32].end)) = part_attr.end;
 }
+#else
+__device__ __forceinline__ void PushStrAttributesAtLoopLvl(
+    int thread_id, volatile str_t *gts_attrs, str_t &dpart_attr,
+    str_t &part_attr)
+{
+     {
+        const unsigned long long* src64 =
+            reinterpret_cast<const unsigned long long*>(&dpart_attr);
+        volatile unsigned long long* dst64 =
+            reinterpret_cast<volatile unsigned long long*>(&gts_attrs[thread_id]);
+
+        dst64[0] = src64[0];
+        dst64[1] = src64[1];
+    }
+    {
+        const unsigned long long* src64 =
+            reinterpret_cast<const unsigned long long*>(&part_attr);
+        volatile unsigned long long* dst64 =
+            reinterpret_cast<volatile unsigned long long*>(&gts_attrs[thread_id + 32]);
+
+        dst64[0] = src64[0];
+        dst64[1] = src64[1];
+    }
+}
+#endif
 
 __device__ __forceinline__ void PullINodesFromPPartAtIfLvl(
     int thread_id, int lvl, PushedParts::PushedPartsAtIfLvl *gts,
@@ -740,12 +792,26 @@ __device__ __forceinline__ void PullAttributesAtIfLvl(int thread_id,
     lts_attr = gts_attrs[thread_id];
 }
 
+#ifndef USE_NEW_STR_T
 __device__ __forceinline__ void PullStrAttributesAtIfLvl(
     int thread_id, str_t &lts_attr, volatile str_t *gts_attrs)
 {
     lts_attr.start = gts_attrs[thread_id].start;
     lts_attr.end = gts_attrs[thread_id].end;
 }
+#else
+__device__ __forceinline__ void PullStrAttributesAtIfLvl(
+    int thread_id, str_t &lts_attr, volatile str_t *gts_attrs)
+{
+    const volatile unsigned long long* src64 =
+        reinterpret_cast<const volatile unsigned long long*>(&gts_attrs[thread_id]);
+    unsigned long long* dst64 =
+        reinterpret_cast<unsigned long long*>(&lts_attr);
+
+    dst64[0] = src64[0];
+    dst64[1] = src64[1];
+}
+#endif
 
 __device__ __forceinline__ void PullPtrIntAttributesAtIfLvl(
     int thread_id, int *&lts_attr, volatile int **gts_attrs)
@@ -780,12 +846,26 @@ __device__ __forceinline__ void PushPtrIntAttributesAtIfLvl(
     gts_attrs[thread_id] = lts_attr;
 }
 
+#ifndef USE_NEW_STR_T
 __device__ __forceinline__ void PushStrAttributesAtIfLvl(
     int thread_id, volatile str_t *gts_attrs, str_t &lts_attr)
 {
     *((volatile char **)(&gts_attrs[thread_id].start)) = lts_attr.start;
     *((volatile char **)(&gts_attrs[thread_id].end)) = lts_attr.end;
 }
+#else
+__device__ __forceinline__ void PushStrAttributesAtIfLvl(
+    int thread_id, volatile str_t *gts_attrs, str_t &lts_attr)
+{
+    const unsigned long long* src64 =
+        reinterpret_cast<const unsigned long long*>(&lts_attr);
+    volatile unsigned long long* dst64 =
+        reinterpret_cast<volatile unsigned long long*>(&gts_attrs[thread_id]);
+
+    dst64[0] = src64[0];
+    dst64[1] = src64[1];
+}
+#endif
 
 __global__ void InitializeTwoLvlBitmap(unsigned long long *bit1,
                                        unsigned long long *bit2, int num_warps)

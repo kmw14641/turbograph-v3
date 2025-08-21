@@ -1,4 +1,6 @@
 #include "planner/gpu/gpu_jit_compiler.hpp"
+#include "common/gpu/gpu_ctx.hpp"
+#include "common/gpu/gpu_utils.hpp"
 #include <cuda_runtime_api.h>
 #include <functional>
 #include <stdexcept>
@@ -234,6 +236,7 @@ bool GpuJitCompiler::AddCudaRuntimeSymbols()
         cudaError_t (*)(void *, const void *, size_t, cudaMemcpyKind);
     using FnMemset = cudaError_t (*)(void *, int, size_t);
     using FnMemset2D = cudaError_t (*)(void *, size_t, int, size_t, size_t);
+    using FnGetErr = cudaError_t (*)();
 
     struct Pair {
         const char *name;
@@ -247,7 +250,10 @@ bool GpuJitCompiler::AddCudaRuntimeSymbols()
          to_void(static_cast<FnErrStr>(&cudaGetErrorString))},
         {"cudaMemcpy", to_void(static_cast<FnMemcpy>(&cudaMemcpy))},
         {"cudaMemset", to_void(static_cast<FnMemset>(&cudaMemset))},
-        {"cudaMemset2D", to_void(static_cast<FnMemset2D>(&cudaMemset2D))}};
+        {"cudaMemset2D", to_void(static_cast<FnMemset2D>(&cudaMemset2D))},
+        {"cudaGetLastError", to_void(static_cast<FnGetErr>(&cudaGetLastError))},
+        {"cudaPeekAtLastError",
+         to_void(static_cast<FnGetErr>(&cudaPeekAtLastError))}};
 
     llvm::orc::SymbolMap smap;
     for (auto &p : tbl) {
@@ -291,16 +297,21 @@ bool GpuJitCompiler::CompileWithNVRTC(
         }
     }
 
+    std::string arch = makeNvrtcArchFlag_();
     const char *opts[] = {
-        "--gpu-architecture=compute_75",
+        arch.c_str(),
         "--std=c++17",
+        // debug
+        "--device-debug",
+        "--generate-line-info",
+        "--ptxas-options=-v",
         "--include-path=/usr/include/",
         "--include-path=/usr/include/x86_64-linux-gnu/",
         "--include-path=/turbograph-v3/src/include/planner/gpu/themis/",
         "--include-path=/usr/local/cuda/include",
         "--disable-warnings"
     };
-    nvrtcResult r = nvrtcCompileProgram(prog, 7, opts);
+    nvrtcResult r = nvrtcCompileProgram(prog, (sizeof(opts) / sizeof(opts[0])), opts);
     if (r != NVRTC_SUCCESS) {
         size_t sz;
         nvrtcGetProgramLogSize(prog, &sz);
@@ -315,14 +326,23 @@ bool GpuJitCompiler::CompileWithNVRTC(
     std::string ptx(ptxSize, '\0');
     nvrtcGetPTX(prog, ptx.data());
 
-    if (!ensureCudaContext()) {
-        std::cerr << "CUDA Driver/context init failed\n";
+    if (!duckdb::EnsurePrimaryCudaContext()) {
+        std::cerr << "Failed to ensure primary CUDA context\n";
         nvrtcDestroyProgram(&prog);
         return false;
     }
+    duckdb::CudaCtxGuard ctx_guard(duckdb::GetPrimaryCudaContext());
+
+    CUjit_option keys[] = {CU_JIT_GENERATE_DEBUG_INFO, CU_JIT_LOG_VERBOSE,
+                           CU_JIT_ERROR_LOG_BUFFER,
+                           CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES};
+    char errorLog[8192] = {};
+    void *vals[] = {(void *)1,  // create debug symbols
+                    (void *)1,  // detailed loading log
+                    (void *)errorLog, (void *)sizeof(errorLog)};
 
     CUresult loadResult =
-        cuModuleLoadDataEx(&mod_out, ptx.data(), 0, nullptr, nullptr);
+        cuModuleLoadDataEx(&mod_out, ptx.data(), 4, keys, vals);
     if (loadResult != CUDA_SUCCESS) {
         const char *errName = nullptr, *errStr = nullptr;
         cuGetErrorName(loadResult, &errName);
@@ -406,7 +426,9 @@ bool GpuJitCompiler::CompileWithORCLLJIT(const std::string &host_code,
         "clang++",
         // "-###", "-v",
         "--cuda-path=/usr/local/cuda-11.8", "-x", "cuda", "gpu_host.cu",
-        "--cuda-gpu-arch=sm_75", "--cuda-host-only", "-O3", "-std=c++17",
+        "--cuda-gpu-arch=sm_75", "--cuda-host-only",
+        "-O1", "-g",
+        "-std=c++17",
         "-isystem", "/usr/include/c++/11", "-isystem",
         "/usr/include/x86_64-linux-gnu/c++/11", "-isystem",
         "/usr/local/cuda/include", "-isystem", "/usr/include", "-isystem",
@@ -590,25 +612,6 @@ void GpuJitCompiler::Cleanup()
 std::string GpuJitCompiler::CalculateHash(const std::string &code)
 {
     return std::to_string(std::hash<std::string>{}(code));
-}
-
-bool GpuJitCompiler::ensureCudaContext() {
-    if (cuda_context_initialized) return true;
-
-    CUresult r;
-    r = cuInit(0);
-    if (r != CUDA_SUCCESS) return false;
-
-    CUdevice dev;
-    r = cuDeviceGet(&dev, 0);
-    if (r != CUDA_SUCCESS) return false;
-
-    CUcontext ctx;
-    r = cuCtxCreate(&ctx, 0, dev);
-    if (r != CUDA_SUCCESS) return false;
-
-    cuda_context_initialized = true;
-    return true;
 }
 
 }  // namespace duckdb
