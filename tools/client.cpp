@@ -324,14 +324,16 @@ size_t GetResultSizeInBytes(std::vector<std::shared_ptr<duckdb::DataChunk>> &que
 void DeallocateIterationMemory(std::vector<BasePipelineExecutor *> &executors) {
     auto &exec_context = executors.back()->context;
     auto query_results = exec_context->query_results;
-    if (query_results == nullptr) return;
-    auto result_size = GetResultSizeInBytes(*query_results);
 
-    for (auto &chunk: *query_results) {
-        chunk.reset();
+    if (query_results != nullptr) {
+        auto result_size = GetResultSizeInBytes(*query_results);
+
+        for (auto &chunk : *query_results) {
+            chunk.reset();
+        }
+        query_results->clear();
     }
-    query_results->clear();
-    
+
     for (auto &exec : executors) {
         delete exec;
     }
@@ -350,17 +352,22 @@ void CompileAndExecuteIteration(const std::string &query_str,
     CompileQuery(query_str, client, planner, compile_time);
 
     if (!options.compile_only) {
-        auto executors = planner.genPipelineExecutors(options.enable_gpu_processing);
+        auto executors =
+            planner.genPipelineExecutors(options.enable_gpu_processing);
         ExecuteQuery(query_str, client, options, executors, exec_time);
 
-        auto &query_results = executors.back()->context->query_results;
-        auto &schema = executors.back()->GetPipeline()->GetSink()->schema;
-        auto col_names = planner.getQueryOutputColNames();
+        if (!options.enable_gpu_processing) {
+            auto &query_results = executors.back()->context->query_results;
+            auto &schema = executors.back()->GetPipeline()->GetSink()->schema;
+            auto col_names = planner.getQueryOutputColNames();
 
-        PrintOutputConsole(col_names, query_results, schema, options.slient);
+            PrintOutputConsole(col_names, query_results, schema,
+                               options.slient);
 
-        if (!options.output_file.empty()) {
-        	PrintOutputToFile(col_names, query_results, schema, options.output_file);
+            if (!options.output_file.empty()) {
+                PrintOutputToFile(col_names, query_results, schema,
+                                  options.output_file);
+            }
         }
 
         DeallocateIterationMemory(executors);

@@ -234,7 +234,6 @@ ReturnStatus GpuChunkCacheManager::UnPinSegment(ChunkID cid)
     auto it = gpu_ptrs_.find(cid);
     if (it != gpu_ptrs_.end()) {
         it->second->unpin();
-        gpu_arena->free(it->second.get());
         gpu_ptrs_.erase(it);
     }
 
@@ -429,9 +428,6 @@ void GpuChunkCacheManager::Swizzle(void *gpu_ptr, void *cpu_ptr)
 
     void *args[] = {&d_rows, (void *)&d_chars_base, &n};
 
-    std::cerr << "Launching swizzle kernel for " << size
-              << " rows with grid size: " << grid
-              << ", block size: " << block << std::endl;
     CUresult r = cuLaunchKernel(swizzle_kernel_, grid, 1, 1, block, 1, 1,
                                 /*sharedMemBytes*/ 0,
                                 /*stream*/ 0, args, nullptr);
@@ -444,8 +440,6 @@ void GpuChunkCacheManager::Swizzle(void *gpu_ptr, void *cpu_ptr)
     }
 
     cuCtxSynchronize();
-    std::cerr << "Swizzle kernel launched successfully for "
-              << size << " rows." << std::endl;
 }
 
 }  // namespace duckdb

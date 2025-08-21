@@ -21,16 +21,10 @@ GPUPipelineExecutor::GPUPipelineExecutor(
       main_function(main_function),
       gpu_kernels(std::move(gpu_kernels)),
       pointer_mappings(pointer_mappings),
-      scan_column_infos(scan_column_infos),
-      cuda_stream(nullptr),
-      is_initialized(false)
+      scan_column_infos(scan_column_infos)
 {
     this->context = context;
     this->sfg = nullptr;
-    // Initialize GPU resources
-    if (!InitializeGPU()) {
-        std::cerr << "Failed to initialize GPU resources" << std::endl;
-    }
 }
 
 GPUPipelineExecutor::~GPUPipelineExecutor()
@@ -40,7 +34,7 @@ GPUPipelineExecutor::~GPUPipelineExecutor()
 
 void GPUPipelineExecutor::ExecutePipeline()
 {
-    if (is_initialized && main_function) {
+    if (main_function) {
         ExecuteGPUPipeline();
     }
     else {
@@ -48,19 +42,9 @@ void GPUPipelineExecutor::ExecutePipeline()
     }
 }
 
-bool GPUPipelineExecutor::InitializeGPU()
-{
-    // TODO: Implement actual GPU initialization
-    // For now, just set initialized to true
-    is_initialized = true;
-    return true;
-}
-
 bool GPUPipelineExecutor::AllocateGPUMemory()
 {
-    std::cout << "Allocating GPU memory using chunk cache manager..."
-              << std::endl;
-
+    spdlog::info("[AllocateGPUMemory] Allocating GPU memory for pipeline execution");
     auto *gpu_cache_manager = GpuChunkCacheManager::g_ccm;
 
     if (use_scan_column_infos) {
@@ -194,8 +178,7 @@ bool GPUPipelineExecutor::TransferResultsToCPU()
 
 void GPUPipelineExecutor::CleanupGPU()
 {
-    std::cout << "Cleaning up GPU resources..." << std::endl;
-
+    spdlog::info("[CleanupGPU] Cleaning up GPU resources");
     auto *gpu_cache_manager = GpuChunkCacheManager::g_ccm;
 
     // Clean up allocated GPU memory through cache manager
@@ -205,9 +188,6 @@ void GPUPipelineExecutor::CleanupGPU()
         auto &gpu_mem = gpu_memory_pool[i];
 
         if (mapping.cid >= 0 && gpu_mem.is_allocated) {
-            std::cout << "Unpinning chunk " << mapping.cid << " from GPU memory"
-                      << std::endl;
-
             ReturnStatus status = gpu_cache_manager->UnPinSegment(mapping.cid);
             if (status != ReturnStatus::OK) {
                 std::cerr << "Failed to unpin chunk " << mapping.cid
@@ -222,16 +202,11 @@ void GPUPipelineExecutor::CleanupGPU()
 
     // Clear memory pools
     gpu_memory_pool.clear();
-    device_ptrs.clear();
-
-    is_initialized = false;
-    std::cout << "GPU cleanup completed" << std::endl;
 }
 
 void GPUPipelineExecutor::ExecuteGPUPipeline()
 {
-    std::cout << "Executing pipeline on GPU..." << std::endl;
-
+    spdlog::info("[ExecuteGPUPipeline] Executing GPU pipeline Started");
     SCOPED_TIMER_SIMPLE(ExecuteGPUPipeline, spdlog::level::info,
                         spdlog::level::info);
     
@@ -255,19 +230,7 @@ void GPUPipelineExecutor::ExecuteGPUPipeline()
         throw std::runtime_error("Failed to transfer results from GPU");
     }
     SUBTIMER_STOP(ExecuteGPUPipeline, "TransferResultsToCPU");
-
-    std::cout << "GPU pipeline execution completed" << std::endl;
-}
-
-void GPUPipelineExecutor::ExecuteCPUPipeline()
-{
-    std::cout << "Executing pipeline on CPU (fallback)..." << std::endl;
-
-    // TODO: Implement CPU fallback execution
-    // This could create a temporary CypherPipelineExecutor and use it
-    // or implement a simplified CPU version
-
-    std::cout << "CPU pipeline execution completed" << std::endl;
+    spdlog::info("[ExecuteGPUPipeline] GPU pipeline Execution Finished");
 }
 
 }  // namespace duckdb

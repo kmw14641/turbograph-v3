@@ -42,9 +42,6 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
     }
 
    private:
-    //! Initialize GPU resources
-    bool InitializeGPU();
-
     //! Allocate GPU memory
     bool AllocateGPUMemory();
 
@@ -60,9 +57,6 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
     //! Execute pipeline using GPU kernel
     void ExecuteGPUPipeline();
 
-    //! Execute pipeline using CPU fallback
-    void ExecuteCPUPipeline();
-
    private:
     std::unique_ptr<SchemaFlowGraph> sfg;
     std::vector<CypherPipeline *> &pipelines;
@@ -75,13 +69,7 @@ class GPUPipelineExecutor : public BasePipelineExecutor {
 
     // Scan column information for GPU execution
     std::vector<ScanColumnInfo> scan_column_infos;
-
     bool use_scan_column_infos = true;
-
-    // GPU resources
-    void *cuda_stream;  // CUstream 대신 void* 사용
-    std::vector<void *> device_ptrs;
-    bool is_initialized;
 
     // GPU memory management
     struct GPUMemory {

@@ -81,14 +81,6 @@ struct KernelParam {
     bool is_device_ptr;
 };
 
-// Structure for GPU memory transfer information
-struct MemoryTransferInfo {
-    std::string src_name;
-    std::string dst_name;
-    size_t size;
-    bool is_host_to_device;
-};
-
 // Structure for pointer mapping
 struct PointerMapping {
     std::string name;
@@ -335,6 +327,8 @@ class GpuCodeGenerator {
                                                   bool get_short_name = false);
     std::string ConvertLogicalTypeIdToPrimitiveType(LogicalTypeId type_id,
                                                     uint16_t extra_info);
+    std::string ConvertLogicalTypeToFormatStr(LogicalType &type);
+    std::string ConvertLogicalTypeToArgStr(LogicalType &type, size_t col_idx);
     std::string GetValidVariableName(const std::string &name, size_t col_idx);
     std::string GetInitValueForAggregate(
         const BoundAggregateExpression *bound_agg);
@@ -462,6 +456,8 @@ class GpuCodeGenerator {
                                        CodeBuilder &code);
     void GenerateKernelCallInHostCode(std::vector<CypherPipeline *> &pipelines,
                                       CodeBuilder &code);
+    void GeneratePrintResultsInHostCode(
+        std::vector<CypherPipeline *> &pipelines, CodeBuilder &code);
 
     // Pipeline context management
     void InitializePipelineContext(CypherPipeline &pipeline);
@@ -497,14 +493,13 @@ class GpuCodeGenerator {
 
     std::vector<std::vector<KernelParam>> input_kernel_params;
     std::vector<std::vector<KernelParam>> output_kernel_params;
-    std::vector<MemoryTransferInfo> memory_transfers;
-    std::map<std::string, size_t> device_memory_sizes;
 
     std::vector<CUfunction> kernels;
     std::unique_ptr<GpuJitCompiler> jit_compiler;
 
     bool is_compiled;
     bool is_repeatable;
+    bool debug_mode = true;
     bool verbose_mode = false;  // Control parameter naming style
     bool do_inter_warp_lb = true;
     bool doWorkoadSizeTracking = true;

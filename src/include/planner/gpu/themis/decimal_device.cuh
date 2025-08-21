@@ -23,6 +23,15 @@ typedef struct { long long int low; long long int high; } decimal_int128_t;
 // namespace turbograph {
 // namespace gpu {
 
+static inline const uint64_t POW10_U64[20] = {
+    1ULL, 10ULL, 100ULL, 1000ULL, 10000ULL,
+    100000ULL, 1000000ULL, 10000000ULL, 100000000ULL,
+    1000000000ULL, 10000000000ULL, 100000000000ULL,
+    1000000000000ULL, 10000000000000ULL, 100000000000000ULL,
+    1000000000000000ULL, 10000000000000000ULL, 100000000000000000ULL,
+    1000000000000000000ULL, 10000000000000000000ULL  // 1e19 (< 2^64)
+};
+
 static constexpr decimal_uint8_t MAX_WIDTH_INT16 = 4;
 static constexpr decimal_uint8_t MAX_WIDTH_INT32 = 9;
 static constexpr decimal_uint8_t MAX_WIDTH_INT64 = 18;
@@ -358,6 +367,107 @@ __device__ __forceinline__ decimal_int128_t scale_decimal_64_to_128(decimal_int6
     }
     return result;
 }
+
+#ifndef __CUDA_ARCH__
+static inline char *format_unsigned_u64(uint64_t v, char *end)
+{
+    do {
+        auto q = v / 10;
+        auto r = static_cast<unsigned>(v - q * 10);
+        *--end = static_cast<char>('0' + r);
+        v = q;
+    } while (v);
+    return end;
+}
+
+template <typename SIGNED, typename UNSIGNED>
+static inline std::string decimal_to_string_i64like(SIGNED value, uint8_t scale) {
+    bool neg = value < 0;
+    UNSIGNED mag = neg ? (UNSIGNED)(~(UNSIGNED)value + 1) : (UNSIGNED)value;
+
+    if (scale == 0) {
+        char buf[64]; char* end = buf + sizeof(buf);
+        char* p = format_unsigned_u64((uint64_t)mag, end);
+        std::string s;
+        s.reserve(neg + (end - p));
+        if (neg) s.push_back('-');
+        s.append(p, end);
+        return s;
+    }
+
+    uint64_t p10 = POW10_U64[scale];
+    uint64_t minor = (uint64_t)(mag % p10);
+    uint64_t major = (uint64_t)(mag / p10);
+
+    char buf[64]; char* end = buf + sizeof(buf);
+    char* p = format_unsigned_u64(minor, end);
+    while (p > end - scale) *--p = '0';
+    *--p = '.';
+    p = format_unsigned_u64(major, p);
+
+    std::string s;
+    s.reserve(neg + (end - p));
+    if (neg) s.push_back('-');
+    s.append(p, end);
+    return s;
+}
+
+static inline std::string decimal_to_string(decimal_int16_t v, uint8_t scale) {
+    return decimal_to_string_i64like<decimal_int16_t, uint16_t>(v, scale);
+}
+static inline std::string decimal_to_string(decimal_int32_t v, uint8_t scale) {
+    return decimal_to_string_i64like<decimal_int32_t, uint32_t>(v, scale);
+}
+static inline std::string decimal_to_string(decimal_int64_t v, uint8_t scale) {
+    return decimal_to_string_i64like<decimal_int64_t, uint64_t>(v, scale);
+}
+
+static inline std::string decimal_to_string(decimal_int128_t v, uint8_t scale) {
+    __int128 s = ( (__int128)v.high << 64 ) |
+                 ( (unsigned long long)v.low );
+    bool neg = s < 0;
+    unsigned __int128 mag = neg ? (unsigned __int128)(-s) : (unsigned __int128)s;
+
+    char digits[64];
+    char* end = digits + sizeof(digits);
+    char* p = end;
+    do {
+        unsigned __int128 q = mag / 10u;
+        unsigned r = (unsigned)(mag - q * 10u);
+        *--p = char('0' + r);
+        mag = q;
+    } while (mag != 0);
+
+    const size_t nd = (size_t)(end - p);
+
+    std::string out;
+    if (scale == 0) {
+        out.reserve(neg + nd);
+        if (neg) out.push_back('-');
+        out.append(p, end);
+        return out;
+    }
+
+    if (nd <= scale) {
+        // 0.xxx
+        size_t zeros = scale - nd;
+        out.reserve(neg + 2 + zeros + nd); // '-' + "0." + zeros + digits
+        if (neg) out.push_back('-');
+        out += "0.";
+        out.append(zeros, '0');
+        out.append(p, end);
+    } else {
+        // [major].[minor]
+        size_t major_len = nd - scale;
+        out.reserve(neg + major_len + 1 + scale);
+        if (neg) out.push_back('-');
+        out.append(p, p + major_len);
+        out.push_back('.');
+        out.append(p + major_len, end);
+    }
+    return out;
+}
+#endif
 
 #ifdef __CUDACC__
 __device__ __forceinline__

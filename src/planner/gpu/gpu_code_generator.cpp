@@ -599,13 +599,6 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(
         throw NotImplementedException(
             "GpuCodeGenerator::GenerateKernelCallInHostCode is not implemented "
             "for non-inter warp load balancing");
-        code.Add("void *args[] = { input_data, output_data, &output_count };");
-        code.Add("");
-
-        code.Add(
-            "CUresult r = cuLaunchKernel(gpu_kernel, gridSize,1,1, "
-            "blockSize,1,1, 0, 0, args, nullptr);");
-        return;
     } else {
         int num_warps = int(KernelConstants::DEFAULT_BLOCK_SIZE / 32) *
                         KernelConstants::DEFAULT_GRID_SIZE;
@@ -657,8 +650,8 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(
                      std::to_string(input_ptr_count) + "* sizeof(void *));");
             code.Add("cudaMalloc(&d_output_data, " +
                      std::to_string(output_ptr_count) + "* sizeof(void *));");
-            code.Add("std::cerr << \"Allocated device memory for input and output "
-                     "data pointers.\" << std::endl;");
+            // code.Add("std::cerr << \"Allocated device memory for input and output "
+            //          "data pointers.\" << std::endl;");
 
             int ptr_map_idx = 0;
             int in_idx = 0;
@@ -718,9 +711,9 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(
             code.Add("cudaMemcpy(d_output_count, &output_count, sizeof(int), "
                      "cudaMemcpyHostToDevice);");
             code.Add("");
-            code.Add(
-                "std::cerr << \"Prepared input and output data pointers for "
-                "kernel launch.\" << std::endl;");
+            // code.Add(
+            //     "std::cerr << \"Prepared input and output data pointers for "
+            //     "kernel launch.\" << std::endl;");
             code.Add("int tmp = 0;");
             code.Add("CUresult fr = cuFuncGetAttribute(&tmp, CU_FUNC_ATTRIBUTE_NUM_REGS, gpu_kernel0);");
             code.Add("if (fr != CUDA_SUCCESS) {");
@@ -739,14 +732,14 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(
                 "&gts, &size_of_stack_per_warp, &global_stats_per_lvl, "
                 "&global_bit1, &global_bit2 };");
 
-            code.Add("std::cerr << \"Launching kernel gpu_kernel" +
-                     std::to_string(pipe_idx) + "\" << std::endl;");
+            // code.Add("std::cerr << \"Launching kernel gpu_kernel" +
+            //          std::to_string(pipe_idx) + "\" << std::endl;");
             code.Add(
                 "CUresult r = cuLaunchKernel(gpu_kernel" +
                 std::to_string(pipe_idx) +
                 ", gridSize, 1, 1, blockSize, 1, 1, 0, 0, args, nullptr);");
-            code.Add("std::cerr << \"Kernel gpu_kernel" +
-                     std::to_string(pipe_idx) + " launched.\" << std::endl;");
+            // code.Add("std::cerr << \"Kernel gpu_kernel" +
+            //          std::to_string(pipe_idx) + " launched.\" << std::endl;");
 
             // error handling
             code.Add("if (r != CUDA_SUCCESS) {");
@@ -776,61 +769,126 @@ void GpuCodeGenerator::GenerateKernelCallInHostCode(
 
             code.Add("cudaMemcpy(&output_count, d_output_count, sizeof(int), "
                      "cudaMemcpyDeviceToHost);");
-            code.Add("std::cerr << \"Kernel execution finished. Output count: \" "
-                     "<< output_count << std::endl;");
-            
-            // print output data, temporary
-            // code.Add("std::vector<str_t> h_res0(256);");
-            // code.Add("std::vector<str_t> h_res1(256);");
-            // code.Add("std::vector<hugeint_t> h_res2(256);");
-            // code.Add("std::vector<decimal_int128_t> h_res3(256);");
-            // code.Add("std::vector<decimal_int128_t> h_res4(256);");
-            // code.Add("std::vector<decimal_int128_t> h_res5(256);");
-            // code.Add("std::vector<double> h_res6(256);");
-            // code.Add("std::vector<double> h_res7(256);");
-            // code.Add("std::vector<double> h_res8(256);");
-            // code.Add("std::vector<unsigned long long> h_res9(256);");
-            // code.Add("cudaMemcpy(h_res0.data(), result_00000_data, "
-            //          "sizeof(str_t) * 256, cudaMemcpyDeviceToHost);");
-            // code.Add("cudaMemcpy(h_res1.data(), result_00001_data, "
-            //          "sizeof(str_t) * 256, cudaMemcpyDeviceToHost);");
-            // code.Add("cudaMemcpy(h_res2.data(), result_00002_data, sizeof(hugeint_t) * 256, cudaMemcpyDeviceToHost);");
-            // code.Add("cudaMemcpy(h_res3.data(), result_00003_data, sizeof(decimal_int128_t) * 256, cudaMemcpyDeviceToHost);");
-            // code.Add("cudaMemcpy(h_res4.data(), result_00004_data, sizeof(decimal_int128_t) * 256, cudaMemcpyDeviceToHost);");
-            // code.Add("cudaMemcpy(h_res5.data(), result_00005_data, sizeof(decimal_int128_t) * 256, cudaMemcpyDeviceToHost);");
-            // code.Add("cudaMemcpy(h_res6.data(), result_00006_data, sizeof(double) * 256, cudaMemcpyDeviceToHost);");
-            // code.Add("cudaMemcpy(h_res7.data(), result_00007_data, sizeof(double) * 256, cudaMemcpyDeviceToHost);");
-            // code.Add("cudaMemcpy(h_res8.data(), result_00008_data, sizeof(double) * 256, cudaMemcpyDeviceToHost);");
-            // code.Add("cudaMemcpy(h_res9.data(), result_00009_data, sizeof(unsigned long long) * 256, cudaMemcpyDeviceToHost);");
-            // code.Add("std::cerr << \"Output data: \" << std::endl;");
-            // code.Add("for (int i = 0; i < output_count && i < 256; i++) {");
-            // code.IncreaseNesting();
-            // code.Add(
-            //     "printf(\"%c, %c, %llu, %.4f, %.4f, %.4f, %llu\\n\", "
-            //     "h_res0[i].value.inlined.inlined[0], "
-            //     "h_res1[i].value.inlined.inlined[0], "
-            //     "h_res2[i].lower, h_res6[i], h_res7[i], h_res8[i], "
-            //     "h_res9[i]);");
-            // code.DecreaseNesting();
-            // code.Add("}");
-            // out_idx = 0;
-            // for (const auto &p : cur_output_params) {
-            //     std::string delimiter =
-            //         out_idx == output_ptr_count - 1 ? "" : ",";
-            //     if (p.type.find('*') != std::string::npos) {
-            //         code.Add(p.name + delimiter);
-            //         out_idx++;
-            //     }
-            //     else {
-            //         // code.Add("// skipped " + p.type + " " + p.name + " = " +
-            //         //          p.value + ";");
-            //     }
-            // }
+            code.Add("std::cerr << \"Pipeline " + std::to_string(pipe_idx) +
+                     " execution finished. Output count: \" << output_count << "
+                     "std::endl;");
+            code.Add("result_count = output_count;");
 
             code.DecreaseNesting();
             code.Add("} // end of pipeline " + std::to_string(pipe_idx));
         }
+
+        // Print output data
+        GeneratePrintResultsInHostCode(pipelines, code);
     }
+}
+
+void GpuCodeGenerator::GeneratePrintResultsInHostCode(
+    std::vector<CypherPipeline *> &pipelines, CodeBuilder &code)
+{
+    code.Add("// Print results");
+    auto &output_schema = pipelines.back()->GetSink()->GetSchema();
+    auto &output_column_names = output_schema.getStoredColumnNamesRef();
+    auto &output_column_types = output_schema.getStoredTypesRef();
+
+    // Declare output host variables
+    int tmp_cnt = 256;  // hardcoded for now, should be dynamic
+    std::string output_count = std::to_string(tmp_cnt);
+    std::vector<std::string> ctypes;
+    ctypes.reserve(output_column_types.size());
+    for (size_t col_idx = 0; col_idx < output_column_names.size(); col_idx++) {
+        LogicalType &type = output_column_types[col_idx];
+        ctypes.push_back(ConvertLogicalTypeToPrimitiveType(type, true));
+    }
+
+    for (size_t col_idx = 0; col_idx < output_column_names.size(); col_idx++) {
+        std::string &ctype = ctypes[col_idx];
+        if (ctype == "str_t") {
+            code.Add("std::vector<" + ctype + "> h_res" +
+                     std::to_string(col_idx) + "_hdrs(" + output_count + ");");
+            code.Add("std::vector<std::string> h_res" +
+                     std::to_string(col_idx) + "(" + output_count + ");");
+        }
+        else {
+            code.Add("std::vector<" + ctype + "> h_res" +
+                     std::to_string(col_idx) + "(" + output_count + ");");
+        }
+    }
+
+    for (size_t col_idx = 0; col_idx < output_column_names.size(); col_idx++) {
+        std::string &ctype = ctypes[col_idx];
+
+        std::stringstream hex_stream;
+        hex_stream << std::hex << (0x100000 + col_idx);
+        std::string hex_suffix = hex_stream.str().substr(1);
+        std::string output_param_name = "result_" + hex_suffix + "_data";
+        std::string destination = "h_res" + std::to_string(col_idx);
+        if (ctype == "str_t") {
+            code.Add("cudaMemcpy(" + destination + "_hdrs.data(), " +
+                     output_param_name + ", sizeof(str_t) * " + output_count +
+                     ", cudaMemcpyDeviceToHost);");
+            code.Add("for (int i = 0; i < " + output_count + "; i++) {");
+            code.IncreaseNesting();
+            code.Add("const auto &s = " + destination + "_hdrs[i];");
+            code.Add("const uint32_t len = s.value.inlined.length;");
+            code.Add("if (len == 0) continue;");
+            code.Add("if (len <= 12) {");
+            code.IncreaseNesting();
+            code.Add(destination +
+                     "[i] = std::string(s.value.inlined.inlined, 0, len);");
+            code.DecreaseNesting();
+            code.Add("} else {");
+            code.IncreaseNesting();
+            code.Add("std::string dst;");
+            code.Add("dst.resize(len);");
+            code.Add("const uint32_t prefix_len = (len >= 4) ? 4u : len;");
+            code.Add("memcpy(dst.data(), s.value.pointer.prefix, prefix_len);");
+            code.Add("if (len > 4) {");
+            code.IncreaseNesting();
+            code.Add(
+                "const void *d_tail = static_cast<const void "
+                "*>(s.value.pointer.ptr);");
+            code.Add(
+                "cudaMemcpy(dst.data() + 4, d_tail, len - 4, "
+                "cudaMemcpyDeviceToHost);");
+            code.DecreaseNesting();
+            code.Add("}");
+            code.Add(destination + "[i] = std::move(dst);");
+            code.DecreaseNesting();
+            code.Add("}");
+            code.DecreaseNesting();
+            code.Add("}");  // end of for loop
+        }
+        else {
+            code.Add("cudaMemcpy(h_res" + std::to_string(col_idx) +
+                     ".data(), " + output_param_name + ", sizeof(" + ctype +
+                     ") * " + output_count + ", cudaMemcpyDeviceToHost);");
+        }
+    }
+
+    std::string format_str = "";
+    std::string args_str = "";
+    code.Add("std::cout << \"Query results: \" << std::endl;");
+    for (size_t col_idx = 0; col_idx < output_column_names.size();
+         col_idx++) {
+        std::string &col_name = output_column_names[col_idx];
+        auto &col_type = output_column_types[col_idx];
+        format_str += ConvertLogicalTypeToFormatStr(col_type);
+        args_str += ConvertLogicalTypeToArgStr(col_type, col_idx);
+        if (col_idx < output_column_names.size() - 1) {
+            code.Add("std::cout << \"" + col_name + ", \";");
+            format_str += ", ";
+            args_str += ", ";
+        } else {
+            code.Add("std::cout << \"" + col_name + "\";");
+        }
+    }
+    code.Add("std::cout << std::endl;");
+    code.Add("for (int i = 0; i < result_count && i < 256; i++) {");
+    code.IncreaseNesting();
+    code.Add("printf(\"" + format_str + "\\n\"," + args_str + ");");
+    code.DecreaseNesting();
+    code.Add("}");
 }
 
 bool GpuCodeGenerator::CompileGeneratedCode()
@@ -1087,6 +1145,103 @@ std::string GpuCodeGenerator::ConvertLogicalTypeToPrimitiveType(
         }
     }
     return type_name;
+}
+
+std::string GpuCodeGenerator::ConvertLogicalTypeToFormatStr(LogicalType &type)
+{
+    PhysicalType p_type = type.InternalType();
+    std::string format_str;
+    if (type.id() == LogicalTypeId::DECIMAL) {
+        format_str = "%s";
+    }
+    else {
+        switch (p_type) {
+            case PhysicalType::BOOL:
+                format_str = "%s";
+                break;
+            case PhysicalType::INT8:
+                format_str = "%hhd";
+                break;
+            case PhysicalType::INT16:
+                format_str = "%hd";
+                break;
+            case PhysicalType::INT32:
+                format_str = "%d";
+                break;
+            case PhysicalType::INT64:
+                format_str = "%lld";
+                break;
+            case PhysicalType::INT128:
+                // format_str = "%s";
+                format_str = "%llu";
+                break;
+            case PhysicalType::UINT8:
+                format_str = "%hhu";
+                break;
+            case PhysicalType::UINT16:
+                format_str = "%hu";
+                break;
+            case PhysicalType::UINT32:
+                format_str = "%u";
+                break;
+            case PhysicalType::UINT64:
+                format_str = "%llu";
+                break;
+            case PhysicalType::FLOAT:
+                format_str = "%f";
+                break;
+            case PhysicalType::DOUBLE:
+                format_str = "%f";
+                break;
+            case PhysicalType::VARCHAR:
+                format_str = "%s";
+                break;
+            default:
+                throw std::runtime_error("Unsupported physical type: " +
+                                            std::to_string((uint8_t)p_type));
+        }
+    }
+    return format_str;
+}
+
+std::string GpuCodeGenerator::ConvertLogicalTypeToArgStr(LogicalType &type, size_t col_idx)
+{
+    PhysicalType p_type = type.InternalType();
+    std::string var_name = "h_res" + std::to_string(col_idx) + "[i]";
+    std::string args_str;
+    if (type.id() == LogicalTypeId::DECIMAL) {
+        std::string scale = std::to_string(DecimalType::GetScale(type));
+        args_str = "decimal_to_string(" + var_name + ", " + scale + ").c_str()";
+    }
+    else {
+        switch (p_type) {
+            case PhysicalType::BOOL:
+                args_str = var_name + " ? \"true\" : \"false\"";
+                break;
+            case PhysicalType::INT8:
+            case PhysicalType::INT16:
+            case PhysicalType::INT32:
+            case PhysicalType::INT64:
+            case PhysicalType::UINT8:
+            case PhysicalType::UINT16:
+            case PhysicalType::UINT32:
+            case PhysicalType::UINT64:
+            case PhysicalType::FLOAT:
+            case PhysicalType::DOUBLE:
+                args_str = var_name;
+                break;
+            case PhysicalType::INT128:
+                args_str = var_name + ".lower";
+                break;
+            case PhysicalType::VARCHAR:
+                args_str = var_name + ".c_str()";
+                break;
+            default:
+                throw std::runtime_error("Unsupported physical type: " +
+                                            std::to_string((uint8_t)p_type));
+        }
+    }
+    return args_str;
 }
 
 std::string GpuCodeGenerator::GetValidVariableName(const std::string &name,
@@ -2455,6 +2610,7 @@ void ProduceResultsCodeGenerator::GenerateDeclarationInHostCode(
         code.Add("cudaMalloc((void**)&" + output_param_name + ", sizeof(" +
                  ctype + ") * " + output_count + ");");
     }
+    code.Add("int result_count = 0;");
 }
 
 void ProduceResultsCodeGenerator::GenerateCodeForLocalVariable(

@@ -133,7 +133,7 @@ void InitPushedPartsStack(PushedPartsStack *&stack, size_t &size_per_warp,
                           int64_t size, int num_warps)
 {
 
-    printf("Initialize pushed parts stack for %d warps\n", num_warps);
+    // printf("Initialize pushed parts stack for %d warps\n", num_warps);
     size_per_warp = 1024 * 32;
     char *result = NULL;
     //num_warps = 82 * 64;
