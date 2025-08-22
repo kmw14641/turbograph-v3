@@ -52,23 +52,11 @@ std::string ExpressionCodeGenerator::GenerateExpressionCode(
             return GenerateOperatorExpression(
                 dynamic_cast<BoundOperatorExpression *>(expr), code,
                 pipeline_ctx, column_map);
-        
+
         case ExpressionClass::BOUND_CONJUNCTION: {
-            std::string result_code = "";
-            auto bound_conj_expr = (duckdb::BoundConjunctionExpression *)expr;
-            for (size_t i = 0; i < bound_conj_expr->children.size(); i++) {
-                if (i > 0) {
-                    if (bound_conj_expr->type == ExpressionType::CONJUNCTION_AND) {
-                        result_code += " && ";
-                    } else if (bound_conj_expr->type == ExpressionType::CONJUNCTION_OR) {
-                        result_code += " || ";
-                    }
-                }
-                result_code += GenerateExpressionCode(
-                    bound_conj_expr->children[i].get(), code, pipeline_ctx,
-                    column_map);
-            }
-            return result_code;
+            return GenerateConjunctionExpression(
+                dynamic_cast<BoundConjunctionExpression *>(expr), code,
+                pipeline_ctx, column_map);
         }
         default: {
             throw NotImplementedException(
@@ -316,9 +304,7 @@ std::string ExpressionCodeGenerator::GenerateOperatorExpression(
     std::unordered_map<uint64_t, std::string> &column_map)
 {
     if (!op_expr) {
-        std::string result_var = GetUniqueVariableName("op_result");
-        code.Add("int " + result_var + " = 0; // Invalid operator");
-        return result_var;
+        throw InvalidInputException("Operator expression cannot be null");
     }
 
     code.Add("// Operator expression: " +
@@ -371,6 +357,30 @@ std::string ExpressionCodeGenerator::GenerateOperatorExpression(
     }
 
     return result_var;
+}
+
+std::string ExpressionCodeGenerator::GenerateConjunctionExpression(
+    BoundConjunctionExpression *conj_expr, CodeBuilder &code,
+    PipelineContext &pipeline_ctx,
+    std::unordered_map<uint64_t, std::string> &column_map)
+{
+    if (!conj_expr) {
+        throw InvalidInputException("Conjunction expression cannot be null");
+    }
+    
+    std::string result_code = "";
+    const char *op =
+        (conj_expr->type == ExpressionType::CONJUNCTION_AND) ? " && " : " || ";
+    for (size_t i = 0; i < conj_expr->children.size(); i++) {
+        if (i > 0) {
+            result_code += op;
+        }
+        result_code += "(";
+        result_code += GenerateExpressionCode(conj_expr->children[i].get(),
+                                              code, pipeline_ctx, column_map);
+        result_code += ")";
+    }
+    return result_code;
 }
 
 // Helper method implementations

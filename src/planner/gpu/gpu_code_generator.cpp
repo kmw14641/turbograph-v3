@@ -127,31 +127,59 @@ void GpuCodeGenerator::SplitPipelineIntoSubPipelines(CypherPipeline &pipeline)
         auto op = pipeline.GetIdxOperator(op_idx);
         D_ASSERT(op != nullptr);
 
+        // insert the operator into the current group
         groups.GetGroups().push_back(pipeline_groups.GetGroups()[op_idx]);
 
-        if (op->GetOperatorType() == PhysicalOperatorType::NODE_SCAN) {
-            auto scan_op = dynamic_cast<PhysicalNodeScan *>(op);
-            if (scan_op->is_filter_pushdowned) {
-                // If the scan operator has filter pushdown, we need to
-                // create a new sub-pipeline for the filter
-                pipeline_context.sub_pipelines.emplace_back(groups);
-                pipeline_context.do_lb.push_back(true);
-                groups.GetGroups().clear();
-                groups.GetGroups().push_back(
-                    pipeline_groups.GetGroups()[op_idx]);
+        bool do_lb = false;
+        bool split = false;
+
+        switch (op->GetOperatorType()) {
+            case PhysicalOperatorType::NODE_SCAN: {
+                auto scan_op = dynamic_cast<PhysicalNodeScan *>(op);
+                if (scan_op->is_filter_pushdowned) {
+                    // If the scan operator has filter pushdown, we need to
+                    // create a new sub-pipeline for the filter
+                    do_lb = true;
+                    split = true;
+                }
+                break;
             }
+            case PhysicalOperatorType::FILTER: {
+                // Filter operators always create a new sub-pipeline
+                do_lb = true;
+                split = true;
+                break;
+            }
+            case PhysicalOperatorType::HASH_AGGREGATE: {
+                if (op_idx == 0) {
+                    do_lb = false;
+                    split = true;
+                }
+                break;
+            }
+            case PhysicalOperatorType::ADJ_IDX_JOIN: {
+                auto adj_idx_join_op = dynamic_cast<PhysicalAdjIdxJoin *>(op);
+                if (!adj_idx_join_op->IsTargetUnique()) {
+                    // If the target is not unique, we need to create a new
+                    // sub-pipeline for the next operators
+                    do_lb = true;
+                    split = true;
+                }
+                break;
+            }
+            case PhysicalOperatorType::PROJECTION:
+            case PhysicalOperatorType::PRODUCE_RESULTS: {
+                break;
+            }
+            default:
+                throw NotImplementedException(
+                    "GpuCodeGenerator::SplitPipelineIntoSubPipelines: "
+                    "Unsupported operator type for splitting pipeline");
         }
-        else if (op->GetOperatorType() == PhysicalOperatorType::FILTER) {
+
+        if (split) {
             pipeline_context.sub_pipelines.emplace_back(groups);
-            pipeline_context.do_lb.push_back(true);
-            groups.GetGroups().clear();
-            groups.GetGroups().push_back(pipeline_groups.GetGroups()[op_idx]);
-        }
-        else if (op->GetOperatorType() ==
-                     PhysicalOperatorType::HASH_AGGREGATE &&
-                 op_idx == 0) {
-            pipeline_context.sub_pipelines.emplace_back(groups);
-            pipeline_context.do_lb.push_back(false);
+            pipeline_context.do_lb.push_back(do_lb);
             groups.GetGroups().clear();
             groups.GetGroups().push_back(pipeline_groups.GetGroups()[op_idx]);
         }
@@ -159,7 +187,7 @@ void GpuCodeGenerator::SplitPipelineIntoSubPipelines(CypherPipeline &pipeline)
 
     if (groups.GetGroups().size() > 0) {
         pipeline_context.sub_pipelines.emplace_back(groups);
-        pipeline_context.do_lb.push_back(true);
+        pipeline_context.do_lb.push_back(false);
     }
 }
 
@@ -182,6 +210,9 @@ void GpuCodeGenerator::AnalyzeSubPipelinesForMaterialization()
         auto &sub_pipeline = pipeline_context.sub_pipelines[sub_idx];
         auto &mat_target_columns =
             pipeline_context.materialization_target_columns[sub_idx];
+        // debugging
+        std::cerr << "Sub-pipeline " << sub_idx << ":\n";
+        std::cerr << sub_pipeline.toString() << std::endl;
         // Iterate over each operator in the sub-pipeline
         int op_idx = sub_idx == 0 ? 0 : 1;
         for (; op_idx < sub_pipeline.GetPipelineLength(); op_idx++) {
@@ -2478,16 +2509,6 @@ void ProjectionCodeGenerator::AnalyzeOperatorForMaterialization(
         for (const auto &col_idx : referenced_columns) {
             D_ASSERT(col_idx >= 0 && col_idx < input_column_names.size());
             auto &col_name = input_column_names[col_idx];
-
-            bool is_valid_column = true;
-            // for (char c : col_name) {
-            //     if (c == '(' || c == ')' || c == ',' || c == '-' || c == ' ') {
-            //         is_valid_column = false;
-            //         break;
-            //     }
-            // }
-            // if (!is_valid_column)
-            //     continue;
 
             if (mat_target_columns.find(col_name) == mat_target_columns.end()) {
                 mat_target_columns.insert(col_name);

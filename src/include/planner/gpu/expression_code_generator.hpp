@@ -73,6 +73,11 @@ class ExpressionCodeGenerator {
         BoundOperatorExpression *op_expr, CodeBuilder &code,
         PipelineContext &pipeline_ctx,
         std::unordered_map<uint64_t, std::string> &column_map);
+    
+    std::string GenerateConjunctionExpression(
+        BoundConjunctionExpression *op_expr, CodeBuilder &code,
+        PipelineContext &pipeline_ctx,
+        std::unordered_map<uint64_t, std::string> &column_map);
 
     // Helper methods
     std::string GetUniqueVariableName(const std::string &prefix);

@@ -1243,8 +1243,11 @@ Planner::pTransformEopPhysicalInnerIndexNLJoinToAdjIdxJoin(
     pConstructColMapping(outer_cols, adj_output_cols, outer_col_maps_adj[0]);
 
     // Construct AdjIdxJoin schema
+    vector<string> adj_out_col_names;
     pGetDuckDBTypesFromColRefs(adj_output_cols, output_types_adj);
+    pGenerateColumnNames(adj_output_cols, adj_out_col_names);
     schema_adj.setStoredTypes(output_types_adj);
+    schema_adj.setStoredColumnNames(adj_out_col_names);
 
     // Construct adjidx_obj_id
     CPhysicalIndexScan *idxscan_op = (CPhysicalIndexScan *)idxscan_expr->Pop();
@@ -1288,9 +1291,12 @@ Planner::pTransformEopPhysicalInnerIndexNLJoinToAdjIdxJoin(
         if (!generate_seek) {
             if (output_cols->Size() != adj_output_cols->Size()) {
                 vector<duckdb::LogicalType> output_types_proj;
+                vector<string> output_col_names_proj;
                 vector<unique_ptr<duckdb::Expression>> proj_exprs;
                 pGetDuckDBTypesFromColRefs(output_cols, output_types_proj);
+                pGenerateColumnNames(output_cols, output_col_names_proj);
                 schema_proj.setStoredTypes(output_types_proj);
+                schema_proj.setStoredColumnNames(output_col_names_proj);
                 pGetProjectionExprs(adj_output_cols, output_cols,
                                     output_types_proj, proj_exprs);
                 if (proj_exprs.size() != 0) {
@@ -1340,8 +1346,11 @@ Planner::pTransformEopPhysicalInnerIndexNLJoinToAdjIdxJoin(
         pGetObjetIdsForColRefs(idxscan_output_cols, seek_obj_ids);
 
         // Construct seek scheam
+        vector<string> output_col_names_seek;
+        pGenerateColumnNames(seek_output_cols, output_col_names_seek);
         pGetDuckDBTypesFromColRefs(seek_output_cols, output_types_seek);
         schema_seek.setStoredTypes(output_types_seek);
+        schema_seek.setStoredColumnNames(output_col_names_seek);
 
         // Construct IdSeek Operator
         duckdb::CypherPhysicalOperator *duckdb_idseek_op;
@@ -1554,6 +1563,7 @@ Planner::pTransformEopPhysicalInnerIndexNLJoinToIdSeekNormal(CExpression *plan_e
         pTraverseTransformPhysicalPlan(plan_expr->PdrgPexpr()->operator[](0));
 
     vector<duckdb::LogicalType> types;
+    vector<string> output_col_names;
 
     CColRefArray *output_cols = plan_expr->Prpp()->PcrsRequired()->Pdrgpcr(mp);
     CExpression *pexprOuter = (*plan_expr)[0];
@@ -1586,6 +1596,7 @@ Planner::pTransformEopPhysicalInnerIndexNLJoinToIdSeekNormal(CExpression *plan_e
         OID type_oid = type_mdid->Oid();
         INT type_mod = col->TypeModifier();
         types.push_back(pConvertTypeOidToLogicalType(type_oid, type_mod));
+        output_col_names.push_back(pGetColNameFromColRef(col));
     }
 
     uint64_t idx_obj_id;  // 230303
@@ -1748,6 +1759,7 @@ Planner::pTransformEopPhysicalInnerIndexNLJoinToIdSeekNormal(CExpression *plan_e
             duckdb::Schema tmp_schema;
             vector<unique_ptr<duckdb::Expression>> proj_exprs;
             tmp_schema.setStoredTypes(types);
+            tmp_schema.setStoredColumnNames(output_col_names);
 
             // bool project_physical_id_column = (output_cols->Size() == outer_cols->Size()); // TODO always works?
             bool project_physical_id_column = true;  // TODO we need a logic..
@@ -1967,6 +1979,7 @@ Planner::pTransformEopPhysicalInnerIndexNLJoinToIdSeekNormal(CExpression *plan_e
     /* Generate operator and push */
     duckdb::Schema tmp_schema;
     tmp_schema.setStoredTypes(types);
+    tmp_schema.setStoredColumnNames(output_col_names);
 
     /* Generate schema flow graph for IdSeek */
     /* Note: to prevent destruction of inner_col_maps due to move, call this before PhysicalIdSeek */
@@ -2036,6 +2049,7 @@ void Planner::
 {
     CMemoryPool *mp = this->memory_pool;
     vector<duckdb::LogicalType> types;
+    vector<string> output_col_names;
 
     CColRefArray *output_cols = plan_expr->Prpp()->PcrsRequired()->Pdrgpcr(mp);
     CExpression *pexprOuter = (*plan_expr)[0];
@@ -2060,6 +2074,7 @@ void Planner::
         ULONG col_id = col->Id();
         id_map.insert(std::make_pair(col_id, col_idx));
         types.push_back(pGetColumnsDuckDBType(col));
+        output_col_names.push_back(pGetColNameFromColRef(col));
     }
 
     uint64_t idx_obj_id;  // 230303
@@ -2275,6 +2290,7 @@ void Planner::
     /* Generate operator and push */
     duckdb::Schema tmp_schema;
     tmp_schema.setStoredTypes(types);
+    tmp_schema.setStoredColumnNames(output_col_names);
 
     if (!do_filter_pushdown) {
         if (has_filter) {
@@ -2335,6 +2351,7 @@ void Planner::
 
     // Goal output
     vector<duckdb::LogicalType> seek_output_types;
+    vector<string> seek_output_col_names;
     CColRefArray *seek_output_cols = plan_expr->Prpp()->PcrsRequired()->Pdrgpcr(mp);
     pGetColumnsDuckDBType(seek_output_cols, seek_output_types);
     CColRefArray *final_output_cols = plan_expr->Prpp()->PcrsRequired()->Pdrgpcr(mp);
@@ -2364,6 +2381,7 @@ void Planner::
             pushed_filter_output_cols->Append(col);
             seek_output_cols->Append(col);
             seek_output_types.push_back(pGetColumnsDuckDBType(col));
+            seek_output_col_names.push_back(pGetColNameFromColRef(col));
         }
 
         pGetFilterDuckDBExprs(repr_filter_expr, pushed_filter_output_cols, nullptr, 0, pushed_filter_duckdb_exprs);
@@ -2581,6 +2599,7 @@ void Planner::
 
     duckdb::Schema seek_schema;
     seek_schema.setStoredTypes(seek_output_types);
+    seek_schema.setStoredColumnNames(seek_output_col_names);
 
     if (generate_sfg) {
         vector<duckdb::Schema> prev_local_schemas = pipeline_schemas.back();
@@ -2650,6 +2669,7 @@ Planner::pTransformEopPhysicalInnerIndexNLJoinToIdSeekDSI(CExpression *plan_expr
         pTraverseTransformPhysicalPlan(plan_expr->PdrgPexpr()->operator[](0));
 
     vector<duckdb::LogicalType> types;
+    vector<string> output_col_names;
 
     CColRefArray *output_cols = plan_expr->Prpp()->PcrsRequired()->Pdrgpcr(mp);
     CExpression *pexprOuter = (*plan_expr)[0];
@@ -2676,6 +2696,7 @@ Planner::pTransformEopPhysicalInnerIndexNLJoinToIdSeekDSI(CExpression *plan_expr
         ULONG col_id = col->Id();
         id_map.insert(std::make_pair(col_id, col_idx));
         types.push_back(pGetColumnsDuckDBType(col));
+        output_col_names.push_back(pGetColNameFromColRef(col));
     }
 
     uint64_t idx_obj_id;  // 230303
@@ -3025,6 +3046,7 @@ Planner::pTransformEopPhysicalInnerIndexNLJoinToIdSeekDSI(CExpression *plan_expr
     /* Generate operator and push */
     duckdb::Schema tmp_schema;
     tmp_schema.setStoredTypes(types);
+    tmp_schema.setStoredColumnNames(output_col_names);
 
     if (construct_filter_for_cycle) {
         vector<duckdb::LogicalType> output_types_cycle_filter;

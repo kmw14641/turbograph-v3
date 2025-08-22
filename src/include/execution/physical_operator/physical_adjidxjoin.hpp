@@ -208,22 +208,42 @@ class PhysicalAdjIdxJoin : public CypherPhysicalOperator {
 
     virtual size_t GetLoopCount() const override { return num_loops; }
 
-    uint64_t adjidx_obj_id;  // 230303 current single adjidx object
-    uint64_t sid_col_idx;    // source id column
+    bool IsTargetUnique() const { return target_is_unique; }
+
+    // OID of adjacency index catalog entry (currently single adjidx object)
+    uint64_t adjidx_obj_id;
+
+    // Source column index in the input chunk
+    uint64_t sid_col_idx;
+
+    // Target column index in the input chunk
     uint64_t tgt_col_idx;
 
+    // Variable for the join relationship
+    // True for (1-1) or (n-1) adjidx join
+    // False for (1-n) or (n-n) adjidx join
+    bool target_is_unique = false;
+
+    // column mapping information
     vector<uint32_t> outer_col_map;
     vector<vector<uint32_t>> outer_col_maps;
     vector<uint32_t> inner_col_map;
 
+    // Join type (INNER, LEFT, SEMI, ANTI)
     JoinType join_type;
 
+    // Whether to load edge id, source id, target id
     bool load_eid;
     bool load_sid;
     bool load_tid;
 
+    // Edge column index in the output chunk
     idx_t edgeColIdx;
+
+    // Source column index in the output chunk
     idx_t srcColIdx;
+
+    // Target column index in the output chunk
     idx_t tgtColIdx;
 
     bool discard_tgt;
