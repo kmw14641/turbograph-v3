@@ -21,6 +21,7 @@ CStatistics *
 CProjectStatsProcessor::CalcProjStats(CMemoryPool *mp,
 									  const CStatistics *input_stats,
 									  ULongPtrArray *projection_colids,
+									  ULongPtrArray *prev_ids,
 									  UlongToIDatumMap *datum_map)
 {
 	GPOS_ASSERT(NULL != projection_colids);
@@ -38,6 +39,13 @@ CProjectStatsProcessor::CalcProjStats(CMemoryPool *mp,
 	{
 		ULONG colid = *(*projection_colids)[ul];
 		const CHistogram *histogram = input_stats->GetHistogram(colid);
+
+		if (NULL == histogram) {
+			if (NULL != prev_ids) {
+				ULONG prev_id = *(*prev_ids)[ul];
+				histogram = input_stats->GetHistogram(prev_id);
+			}
+		}
 
 		if (NULL == histogram)
 		{

@@ -136,6 +136,13 @@ public:
 	// extract all column ids
 	void ExtractColIds(CMemoryPool *mp, ULongPtrArray *colids) const;
 
+	// extract all column ids and its previous column ids, which is set by s62 columnar projection
+	// ex: [4, 6], [1, ULONG MAX]
+	// CScalarProjectElement with colid 4, whose child is CScalarIdent with colid 1
+	// CScalarProjectElement with colid 6, whose child is CScalarConst or s62's physical id
+	// See Planner::lExprScalarAddSchemaConformProject
+	void ExtractColIdsAndPrevColIds(CMemoryPool *mp, ULongPtrArray *colids, ULongPtrArray *prev_ids) const;
+
 	// are the columns in the column reference set covered by the array of column ref sets
 	static BOOL FCovered(CColRefSetArray *pdrgpcrs, CColRefSet *pcrs);
 

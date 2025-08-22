@@ -425,6 +425,28 @@ CColRefSet::ExtractColIds(CMemoryPool *mp, ULongPtrArray *colids) const
 
 //---------------------------------------------------------------------------
 //	@function:
+//		CColRefSet::ExtractColIds
+//
+//	@doc:
+//		Extract array of column ids from colrefset
+//
+//---------------------------------------------------------------------------
+void
+CColRefSet::ExtractColIdsAndPrevColIds(CMemoryPool *mp, ULongPtrArray *colids, ULongPtrArray *prev_ids) const
+{
+	CColRefSetIter crsi(*this);
+	while (crsi.Advance())
+	{
+		CColRef *colref = crsi.Pcr();
+		ULONG colid = colref->Id();
+		ULONG prev_colid = colref->PrevId();
+		colids->Append(GPOS_NEW(mp) ULONG(colid));
+		prev_ids->Append(GPOS_NEW(mp) ULONG(prev_colid));
+	}
+}
+
+//---------------------------------------------------------------------------
+//	@function:
 //		CColRefSet::FContained
 //
 //	@doc:

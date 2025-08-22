@@ -218,7 +218,7 @@ public:
 	const ULONG m_id;
 
 	// S62 added prev_id
-	ULONG m_prev_id;
+	ULONG m_prev_id = std::numeric_limits<ULONG>::max();
 
 	// S62 added prop_id
 	ULONG m_prop_id;
