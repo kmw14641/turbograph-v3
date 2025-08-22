@@ -131,7 +131,7 @@ void duckdb::GetHistogramInfo(PropertySchemaCatalogEntry *rel, int16_t attno,
             (Oid)((*rel->GetTypes())[attno - 1]) + LOGICAL_TYPE_BASE_ID;
 
         // get nvalues
-        hist_slot->nvalues = num_buckets;
+        hist_slot->nvalues = num_buckets + 1;
 
         // get histogram boundary values
         hist_slot->values = new Datum[num_buckets + 1];
