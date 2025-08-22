@@ -115,6 +115,11 @@ public:
 	// can datum be mapped to LINT
 	virtual BOOL IsDatumMappableToLINT() const;
 
+	// among datum that can be mapped to LINT, true if histogram intersecting algorithm can meaningfully applied
+	// ex) text, which is LINT Mappable but used hash, is not meaningful for bucket range intersecting
+	// added due to S62 new types
+	BOOL IsHistogramFriendlyLINTMappable() const;
+
 	// map to LINT for statistics computation
 	virtual LINT
 	GetLINTMapping() const

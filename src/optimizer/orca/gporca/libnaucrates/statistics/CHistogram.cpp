@@ -23,6 +23,7 @@
 #include "naucrates/statistics/CScaleFactorUtils.h"
 #include "naucrates/statistics/CStatistics.h"
 #include "naucrates/statistics/CStatisticsUtils.h"
+#include "naucrates/base/CDatumGenericGPDB.h"
 
 using namespace gpnaucrates;
 using namespace gpopt;
@@ -2243,6 +2244,19 @@ CHistogram::NeedsNDVBasedCardEstimationForEq(const CHistogram *histogram)
 			// Types such as text should only produce histograms that contain only singleton buckets.
 			// The histograms cannot be used for range predicates but it is ok for equality predicates.
 			return false;
+		}
+		else if (IMDType::EtiGeneric == type_info) {
+			// currently, only one implementation of IDatumGeneric
+			auto generic_datum = (CDatumGenericGPDB *)datum;
+			if (generic_datum->IsHistogramFriendlyLINTMappable()) {
+				// S62 added types are Generic, LINT Mappable, but can be used by histogram,
+				// which was different from original author's intention
+				// See https://github.com/greenplum-db/gporca-archive/commit/6567f566961cbaafb7f3f31c5d10727279b1e20f
+				// Possible Improvment:
+				// 1. Make EtiUBigint and merge current S62 types into exist Etis
+				// 2. Add common interface on all MDType for histogram usability, make this be managed by each MDType
+				return false;
+			}
 		}
 	}
 

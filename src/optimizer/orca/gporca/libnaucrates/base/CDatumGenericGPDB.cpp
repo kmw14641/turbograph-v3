@@ -312,6 +312,20 @@ CDatumGenericGPDB::IsDatumMappableToLINT() const
 
 //---------------------------------------------------------------------------
 //	@function:
+//		CDatumGenericGPDB::IsHistogramFriendlyLINTMappable
+//
+//	@doc:
+//		For statistics computation, can this datum be mapped to a LINT
+//
+//---------------------------------------------------------------------------
+BOOL
+CDatumGenericGPDB::IsHistogramFriendlyLINTMappable() const
+{
+	return CMDTypeGenericGPDB::IsHistogramFriendlyLINTMappable(this->MDId());
+}
+
+//---------------------------------------------------------------------------
+//	@function:
 //		CDatumGenericGPDB::MakeCopyOfValue
 //
 //	@doc:

@@ -311,6 +311,9 @@ public:
 	// does a datum of this type need bytea to Lint mapping for statistics computation
 	static BOOL HasByte2IntMapping(const IMDType *mdtype);
 
+	// among types that have bytea to Lint mapping, is this able to be used by histogram intersection
+	static BOOL IsHistogramFriendlyLINTMappable(const IMDId *mdid);
+
 	// does a datum of this type need bytea to double mapping for statistics computation
 	static BOOL HasByte2DoubleMapping(const IMDId *mdid);
 

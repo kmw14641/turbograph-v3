@@ -485,6 +485,20 @@ CMDTypeGenericGPDB::HasByte2IntMapping(const IMDType *mdtype)
 		   IsTimeRelatedTypeMappableToLint(mdid);
 }
 
+//---------------------------------------------------------------------------
+//	@function:
+//		CMDTypeGenericGPDB::IsHistogramFriendlyLINTMappable
+//
+//	@doc:
+//		Among types that have bytea to Lint mapping,
+//		is this able to be used by histogram intersection
+//---------------------------------------------------------------------------
+BOOL
+CMDTypeGenericGPDB::IsHistogramFriendlyLINTMappable(const IMDId *mdid) {
+	return mdid->Equals(&CMDIdGPDB::m_mdid_s62_ubigint) ||
+		   mdid->Equals(&CMDIdGPDB::m_mdid_s62_bigint);
+}
+
 IDatum *
 CMDTypeGenericGPDB::CreateGenericNullDatum(CMemoryPool *mp,
 										   INT type_modifier) const
