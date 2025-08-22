@@ -2789,8 +2789,10 @@ void HashAggregateCodeGenerator::GenerateSourceSideCode(
         pipeline_ctx
             .sub_pipeline_tids[pipeline_ctx.current_sub_pipeline_index][0];
     code.Add("// HashAggregate source side code");
-    code.Add("active = aht" + std::to_string(agg_op->GetOperatorId()) + "[" +
-             tid_name + "].lock.lock == OnceLock::LOCK_DONE;");
+    if (agg_op->groups.size() != 0) {
+        code.Add("active = aht" + std::to_string(agg_op->GetOperatorId()) +
+                 "[" + tid_name + "].lock.lock == OnceLock::LOCK_DONE;");
+    }
 }
 
 void HashAggregateCodeGenerator::GenerateBuildSideCode(
@@ -2960,7 +2962,7 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
         code.Add("while (!done) {");
         code.IncreaseNesting();
         // TODO int(self.size) how can be determined?
-        code.Add("bucketId = (hash_key + numLookups) % 512;");
+        code.Add("bucketId = (hash_key + numLookups) % 10000;");
         code.Add("agg_ht<Payload" + op_id + ">& entry = aht" + op_id +
                  "[bucketId];");
         code.Add("numLookups++;");
@@ -3120,8 +3122,15 @@ void HashAggregateCodeGenerator::GenerateDeclarationInHostCode(
         return;
 
     // declare agg hash table
-    std::string ht_size = "512"; // TODO: make this configurable or get from operator
+    std::string ht_size;
     auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
+    if (agg_op->groups.size() == 0) {
+        // If there are no groups, we can use a single bucket
+        ht_size = "1";
+    }
+    else {
+        ht_size = "10000";  // TODO: make this configurable or get from operator
+    }
     uint64_t op_id = agg_op->GetOperatorId();
     std::string ht_name = "agg_ht<Payload" + std::to_string(op_id) + ">";
     code_gen->AddInitFunctionName("initAggHT<Payload" + std::to_string(op_id) +
@@ -3273,8 +3282,13 @@ void HashAggregateCodeGenerator::GenerateInputKernelParameters(
         }
     }
 
-    pipeline_context.per_pipeline_num_input_tuples.push_back(
-        512);  // TODO: make this configurable
+    if (agg_op->groups.size() == 0) {
+        pipeline_context.per_pipeline_num_input_tuples.push_back(1);
+    }
+    else {
+        pipeline_context.per_pipeline_num_input_tuples.push_back(
+            10000);  // TODO: make this configurable
+    }
 }
 
 void HashAggregateCodeGenerator::GenerateOutputKernelParameters(
