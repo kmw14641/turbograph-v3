@@ -24,13 +24,23 @@ public:
 	IndexCatalogEntry(Catalog *catalog, SchemaCatalogEntry *schema, CreateIndexInfo *info, const void_allocator &void_alloc);
 	~IndexCatalogEntry() override;
 
+	//! The index type
 	IndexType index_type;
-	Index *index; // TODO maybe useless in SHM..
-	idx_t pid; // oid of the partition to which this index belongs
-	idx_t psid; // oid of the segment to which this index belongs (temporary)
-	// shared_ptr<DataTableInfo> info;
-	// string sql;
+	
+	//! True for (1-1) or (n-1) relationship, False for (1-n) or (n-n) relationship
+	//! Used to determine the join type in adjidx join
+	uint8_t is_target_unique;
+
+	//! OID of the partition to which this index belongs
+	idx_t pid;
+
+	//! OID of the segment to which this index belongs (temporary)
+	idx_t psid;
+	
+	//! Index of src/tgt column in the extent (e.g., _sid, _tid)
 	int64_t_vector index_key_columns;
+
+	//! Index of this adjacency column in the extent
 	idx_t adj_col_idx;
 
 public:

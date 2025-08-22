@@ -65,17 +65,24 @@ public:
 	PropertyKeyIDToTypeIDUnorderedMap propertykey_to_typeid_map;
 	string_vector property_key_id_to_name_vec;
 
-	//unordered_map<EdgeTypeID, PartitionID> type_to_partition_index; // multiple partitions for a edge type?
+	//! Maps edge type id to edge partition oid
 	EdgeTypeToPartitionUnorderedMap type_to_partition_index;
+
+	//! Maps vertex label id to vertex partition oids
 	VertexLabelToPartitionVecUnorderedMap label_to_partition_index;
+
+	//! Maps source vertex partition oid to connected edge partition oids
+	//! This is used to quickly find edge partitions connected to a vertex partition
 	PartitionToPartitionVecUnorderedMap src_part_to_connected_edge_part_index;
 
+	//! Version of vertex label id, edge type id, property key id, partition id
+	//! These are used to generate new IDs for the graph components
 	atomic<VertexLabelID> vertex_label_id_version;
 	atomic<EdgeTypeID> edge_type_id_version;
 	atomic<PropertyKeyID> property_key_id_version;
 	atomic<PartitionID> partition_id_version;
+
 public:
-	//unique_ptr<CatalogEntry> AlterEntry(ClientContext &context, AlterInfo *info) override;
 	void AddVertexPartition(ClientContext &context, PartitionID pid, idx_t oid, vector<VertexLabelID>& label_ids);
 	void AddVertexPartition(ClientContext &context, PartitionID pid, idx_t oid, vector<string>& labels);
 	void AddEdgePartition(ClientContext &context, PartitionID pid, idx_t oid, EdgeTypeID edge_type_id);
@@ -136,21 +143,6 @@ public:
 	//! Get a property key id from a property name
 	PropertyKeyID GetPropertyKeyID(ClientContext &context, const string &property_name);
 
-	//! Serialize the meta information of the TableCatalogEntry a serializer
-	//virtual void Serialize(Serializer &serializer);
-	//! Deserializes to a CreateTableInfo
-	//static unique_ptr<CreateTableInfo> Deserialize(Deserializer &source);
-
 	unique_ptr<CatalogEntry> Copy(ClientContext &context) override;
-
-	//void CommitAlter(AlterInfo &info);
-	//void CommitDrop();
-
-	//! Returns the column index of the specified column name.
-	//! If the column does not exist:
-	//! If if_exists is true, returns DConstants::INVALID_INDEX
-	//! If if_exists is false, throws an exception
-	//idx_t GetColumnIndex(string &name, bool if_exists = false);
-
 };
 } // namespace duckdb
