@@ -405,7 +405,10 @@ PropertyKeyID GraphCatalogEntry::GetPropertyKeyID(ClientContext &context,
 
     // find property key id. do not allow to get property key id for a property that does not exist
     auto property_key_id = propertykey_map.find(property_name_);
-    D_ASSERT(property_key_id != propertykey_map.end());
+    if (property_key_id == propertykey_map.end()) {
+        throw InvalidInputException("Property key '" + property_name +
+                                    "' does not exist.");
+    }
 
     return property_key_id->second;
 }

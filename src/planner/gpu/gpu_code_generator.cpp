@@ -2580,7 +2580,7 @@ void ProduceResultsCodeGenerator::GenerateCode(
         std::string output_param_name = "result_" + hex_suffix;
         std::string output_data_name = output_param_name + "_data";
         std::string output_ptr_name = output_param_name + "_ptr";
-        code.Add(ctype + "* " + output_ptr_name + " = static_cast<" + ctype +
+        code.Add(ctype + "*" + output_ptr_name + " = static_cast<" + ctype +
                  "*>(" + output_data_name + ");");
         code.Add(output_ptr_name + "[wp] = " + col_name + ";");
     }
@@ -2800,31 +2800,93 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
     auto agg_op = dynamic_cast<PhysicalHashAggregate *>(op);
     if (agg_op->groups.size() == 0) {
         code.Add("// HashAggregate build side code without grouping");
-        // if not self.touched and not self.doGroup and KernelCall.args.local_aggregation:
-        //     for attrId, (inId, reductionType) in self.lop.aggregateTuples.items():
-        //         attr, inputIdentifier, reductionType = self.lop.aggregateTuplesCreated[attrId]
-        //         inAttr = self.lop.aggregateInAttributes.get(inId, None)
-        //         if reductionType == Reduction.COUNT:
-        //             code.Add(f'local_{attr.id_name} += 1;')
-        //         elif reductionType == Reduction.SUM or reductionType == Reduction.AVG:
-        //             code.Add(f'local_{attr.id_name} += {inAttr.id_name};')
-        //         elif reductionType == Reduction.MAX:
-        //             code.Add(f'local_{attr.id_name} = local_{attr.id_name} < {inAttr.id_name} ? {inAttr.id_name} : local_{attr.id_name};')
-        //         elif reductionType == Reduction.MIN:
-        //             code.Add(f'local_{attr.id_name} = local_{attr.id_name} > {inAttr.id_name} ? {inAttr.id_name} : local_{attr.id_name};')
-        // else:        
-        //     for attrId, (inId, _) in self.lop.aggregateTuples.items():
-        //         attr, inputIdentifier, reductionType = self.lop.aggregateTuplesCreated[attrId]
-        //         inAttr = self.lop.aggregateInAttributes.get(inId, None)
-        //         dst = f"aht{self.opId}_{attr.id_name}[0]"
-        //         if reductionType == Reduction.COUNT:
-        //             code.Add(f"atomicAdd(&{dst},1);")
-        //         elif reductionType == Reduction.SUM or reductionType == Reduction.AVG:
-        //             code.Add(f"atomicAdd(&{dst},{inAttr.id_name});")
-        //         elif reductionType == Reduction.MAX:
-        //             code.Add(f"atomicMax(&{dst},{inAttr.id_name});")
-        //         elif reductionType == Reduction.MIN:
-        //             code.Add(f"atomicMin(&{dst},{inAttr.id_name});")
+        std::string op_id = std::to_string(agg_op->GetOperatorId());
+        if (code_gen->GetKernelArgs().local_aggregation) {
+            throw NotImplementedException(
+                "Local aggregation is not supported for HashAggregate yet.");
+            // for attrId, (inId, reductionType) in self.lop.aggregateTuples.items():
+            //     attr, inputIdentifier, reductionType = self.lop.aggregateTuplesCreated[attrId]
+            //     inAttr = self.lop.aggregateInAttributes.get(inId, None)
+            //     if reductionType == Reduction.COUNT:
+            //         code.Add(f'local_{attr.id_name} += 1;')
+            //     elif reductionType == Reduction.SUM or reductionType == Reduction.AVG:
+            //         code.Add(f'local_{attr.id_name} += {inAttr.id_name};')
+            //     elif reductionType == Reduction.MAX:
+            //         code.Add(f'local_{attr.id_name} = local_{attr.id_name} < {inAttr.id_name} ? {inAttr.id_name} : local_{attr.id_name};')
+            //     elif reductionType == Reduction.MIN:
+            //         code.Add(f'local_{attr.id_name} = local_{attr.id_name} > {inAttr.id_name} ? {inAttr.id_name} : local_{attr.id_name};')
+        }
+        else {
+            bool contain_count_func = false;
+            for (auto &aggregate : agg_op->aggregates) {
+                D_ASSERT(aggregate->GetExpressionType() ==
+                        ExpressionType::BOUND_AGGREGATE);
+                auto bound_agg =
+                    dynamic_cast<BoundAggregateExpression *>(aggregate.get());
+                if (bound_agg->function.name == "count_star" ||
+                    bound_agg->function.name == "count") {
+                    contain_count_func = true;
+                    break;
+                }
+            }
+
+            for (size_t i = 0; i < agg_op->aggregates.size(); i++) {
+                auto &aggregate = agg_op->aggregates[i];
+                D_ASSERT(aggregate->GetExpressionType() ==
+                         ExpressionType::BOUND_AGGREGATE);
+                auto bound_agg =
+                    dynamic_cast<BoundAggregateExpression *>(aggregate.get());
+                auto &agg_function_name = bound_agg->function.name;
+
+                std::string agg_var_name = "agg_" + std::to_string(i);
+                std::string dst = "aht" + op_id + "_" + agg_var_name + "[0]";
+                std::string agg_type =
+                    code_gen->ConvertLogicalTypeToPrimitiveType(
+                        bound_agg->return_type, true);
+                if (agg_function_name == "count_star" ||
+                    agg_function_name == "count") {
+                    code.Add("atomicAdd(&" + dst + ", (" + agg_type + ")1);");
+                }
+                else {
+                    // get ref idxs
+                    std::vector<uint64_t> ref_idxs;
+                    D_ASSERT(bound_agg->children.size() == 1);
+                    code_gen->GetReferencedColumns(bound_agg->children[0].get(),
+                                                   ref_idxs);
+                    D_ASSERT(ref_idxs.size() == 1);
+                    std::string inattr = code_gen->GetValidVariableName(
+                        pipeline_ctx.input_column_names[ref_idxs[0]],
+                        ref_idxs[0]);
+                    if (agg_function_name == "sum") {
+                        code.Add("atomicAdd(&" + dst + ", " + inattr + ");");
+                    }
+                    else if (agg_function_name == "avg") {
+                        code.Add("atomicAdd(&" + dst + ", " + inattr + ");");
+                        if (!contain_count_func) {
+                            // If there is no count function, we need to add a count
+                            // variable for average calculation
+                            std::string dst_cnt = "aht" + op_id + "_" +
+                                                  agg_var_name +
+                                                  "_cnt[0]";
+                            code.Add("atomicAdd(&" + dst_cnt + ", (" +
+                                     agg_type + ")1);");
+                        }
+                    }
+                    else if (agg_function_name == "max") {
+                        code.Add("atomicMax(&" + dst + ", " + inattr + ");");
+                    }
+                    else if (agg_function_name == "min") {
+                        code.Add("atomicMin(&" + dst + ", " + inattr + ");");
+                    }
+                    else {
+                        throw NotImplementedException(
+                            "HashAggregate build side code generation for " +
+                            agg_function_name + " not implemented yet");
+                    }
+                }
+            }
+        }
+        
     } else {
         D_ASSERT(agg_op->groups.size() >= 1);
         std::string op_id = std::to_string(agg_op->GetOperatorId());
@@ -2965,7 +3027,7 @@ void HashAggregateCodeGenerator::GenerateBuildSideCode(
             std::string agg_var_name = "agg_" + std::to_string(i);
             std::string dst = "aht" + op_id + "_" + agg_var_name + "[bucketId]";
             std::string agg_type = code_gen->ConvertLogicalTypeToPrimitiveType(
-                bound_agg->return_type);
+                bound_agg->return_type, true);
             if (agg_function_name == "count_star" ||
                 agg_function_name == "count") {
                 code.Add("atomicAdd(&" + dst + ", (" + agg_type + ")1);");

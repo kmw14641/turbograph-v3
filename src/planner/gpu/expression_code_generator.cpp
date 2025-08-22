@@ -441,6 +441,8 @@ std::string ExpressionCodeGenerator::ConvertValueToCUDALiteral(
             return std::to_string(value.GetValue<double>());
         case LogicalTypeId::VARCHAR:
             return "\"" + value.GetValue<string>() + "\"";
+        case LogicalTypeId::DATE:
+            return std::to_string(value.GetValue<int32_t>());
         case LogicalTypeId::DECIMAL: {
             PhysicalType p_type = value.type().InternalType();
             switch (p_type) {
