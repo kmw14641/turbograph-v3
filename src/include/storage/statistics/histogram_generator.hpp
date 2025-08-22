@@ -28,6 +28,7 @@ class HistogramGenerator {
 private:
     std::queue<ExtentIterator *> ext_its;
     std::vector<boost::accumulators::accumulator_set<int64_t, boost::accumulators::stats<boost::accumulators::tag::extended_p_square_quantile>> *> accms;
+    std::vector<std::pair<int64_t, int64_t>> minmaxs;  // for accurate min max for histogram. specifically for perfect hash join.
     std::vector<idx_t> target_cols;
 
 public:
@@ -90,6 +91,12 @@ private:
 
     //! calculate NDV
     void _store_ndv(PropertySchemaCatalogEntry *ps_cat, vector<LogicalType> types, std::vector<std::unordered_set<uint64_t>>& ndv_counters, size_t& num_total_tuples);
+
+    //! Initialize minmax for target types
+    void _init_minmaxs(vector<LogicalType> &universal_schema);
+
+    //! calculate min/max
+    void _accumulate_data_for_minmax(DataChunk &chunk, vector<LogicalType> &universal_schema, vector<idx_t> &target_cols_in_univ_schema);
 
     //! clear accms
     void _clear_accms() {

@@ -81,6 +81,7 @@ void HistogramGenerator::_create_histogram(std::shared_ptr<ClientContext> client
     _calculate_bin_sizes(client, partition_cat, bin_sizes);
     _calculate_bin_boundaries(probs_per_column, bin_sizes);
     _init_accumulators(universal_schema, probs_per_column);
+    _init_minmaxs(universal_schema);
     
     // Get PropertySchema IDs
     PropertySchemaID_vector *ps_oids = partition_cat->GetPropertySchemaIDs();
@@ -129,6 +130,7 @@ void HistogramGenerator::_create_histogram(std::shared_ptr<ClientContext> client
 
             _accumulate_data_for_hist(chunk, universal_schema, target_cols_in_univ_schema);
             _accumulate_data_for_ndv(chunk, scan_types[0], ndv_counters, num_total_tuples);
+            _accumulate_data_for_minmax(chunk, universal_schema, target_cols_in_univ_schema);
         }
 
         _store_ndv(ps_cat, scan_types[0], ndv_counters, num_total_tuples);
@@ -155,8 +157,12 @@ void HistogramGenerator::_create_histogram(std::shared_ptr<ClientContext> client
                 boundary_values->push_back(0);
             } else {
                 auto boundary_value = quantile(*accms[i], quantile_probability = probs[j]);
-                if (boundary_value <= 0.0) {
+                if (boundary_value <= 0.0) {  // is it for bug when uint64_t(UBIGINT) -> int64_t accumulator?
                     boundary_values->push_back(0);
+                } else if (j == 0) {
+                    boundary_values->push_back(minmaxs[i].first);
+                } else if (j == probs.size() - 1) {
+                    boundary_values->push_back(minmaxs[i].second);
                 } else {
                     boundary_values->push_back(boundary_value);
                 }
@@ -565,6 +571,82 @@ void HistogramGenerator::_store_ndv(PropertySchemaCatalogEntry *ps_cat, vector<L
         }
     }
     D_ASSERT(ndvs->size() == types.size() + 1);
+}
+
+void HistogramGenerator::_init_minmaxs(vector<LogicalType> &universal_schema) {
+    minmaxs.clear();
+    for (auto i = 0; i < universal_schema.size(); i++) {
+        // initiate all element. not supported type will just not be used.
+        minmaxs.push_back({std::numeric_limits<int64_t>::max(), std::numeric_limits<int64_t>::min()});
+    }
+}
+
+void HistogramGenerator::_accumulate_data_for_minmax(DataChunk &chunk, vector<LogicalType> &universal_schema, vector<idx_t> &target_cols_in_univ_schema)
+{
+    for (auto i = 0; i < target_cols_in_univ_schema.size(); i++) {
+        auto &target_min = minmaxs[target_cols_in_univ_schema[i]].first;
+        auto &target_max = minmaxs[target_cols_in_univ_schema[i]].second;
+        auto &target_vec = chunk.data[i];
+
+        switch(universal_schema[target_cols_in_univ_schema[i]].id()) {
+            case LogicalTypeId::INTEGER: {
+                int32_t *target_vec_data = (int32_t *)target_vec.GetData();
+                for (auto j = 0; j < chunk.size(); j++) {
+                    target_min = std::min(target_min, (int64_t)target_vec_data[j]);
+                    target_max = std::min(target_max, (int64_t)target_vec_data[j]);
+                }
+                break;
+            }
+            case LogicalTypeId::DATE: {
+                int32_t *target_vec_data = (int32_t *)target_vec.GetData();
+                for (auto j = 0; j < chunk.size(); j++) {
+                    target_min = std::min(target_min, (int64_t)target_vec_data[j]);
+                    target_max = std::min(target_max, (int64_t)target_vec_data[j]);
+                }
+                break;
+            }
+            case LogicalTypeId::BIGINT: {
+                int64_t *target_vec_data = (int64_t *)target_vec.GetData();
+                for (auto j = 0; j < chunk.size(); j++) {
+                    target_min = std::min(target_min, (int64_t)target_vec_data[j]);
+                    target_max = std::min(target_max, (int64_t)target_vec_data[j]);
+                }
+                break;
+            }
+            case LogicalTypeId::UINTEGER: {
+                uint32_t *target_vec_data = (uint32_t *)target_vec.GetData();
+                for (auto j = 0; j < chunk.size(); j++) {
+                    target_min = std::min(target_min, (int64_t)target_vec_data[j]);
+                    target_max = std::min(target_max, (int64_t)target_vec_data[j]);
+                }
+                break;
+            }
+            case LogicalTypeId::UBIGINT: {
+                uint64_t *target_vec_data = (uint64_t *)target_vec.GetData();
+                for (auto j = 0; j < chunk.size(); j++) {
+                    target_min = std::min(target_min, (int64_t)target_vec_data[j]);  // possible bug, but same with existing logic
+                    target_max = std::max(target_max, (int64_t)target_vec_data[j]);
+                }
+                break;
+            }
+            case LogicalTypeId::FLOAT: {
+                float *target_vec_data = (float *)target_vec.GetData();
+                for (auto j = 0; j < chunk.size(); j++) {
+                    target_min = std::min(target_min, (int64_t)target_vec_data[j]);  // same here
+                    target_max = std::min(target_max, (int64_t)target_vec_data[j]);
+                }
+                break;
+            }
+            case LogicalTypeId::DOUBLE: {
+                double *target_vec_data = (double *)target_vec.GetData();
+                for (auto j = 0; j < chunk.size(); j++) {
+                    target_min = std::min(target_min, (int64_t)target_vec_data[j]);  // same here
+                    target_max = std::min(target_max, (int64_t)target_vec_data[j]);
+                }
+                break;
+            }
+        }
+    }
 }
 
 } // namespace duckdb
