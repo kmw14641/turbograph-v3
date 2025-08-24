@@ -65,6 +65,10 @@ void GpuCodeGenerator::InitializeOperatorGenerators()
         std::make_unique<ProduceResultsCodeGenerator>();
     operator_generators[PhysicalOperatorType::HASH_AGGREGATE] =
         std::make_unique<HashAggregateCodeGenerator>();
+    operator_generators[PhysicalOperatorType::ADJ_IDX_JOIN] =
+        std::make_unique<AdjIdxJoinCodeGenerator>();
+    operator_generators[PhysicalOperatorType::ID_SEEK] =
+        std::make_unique<IdSeekCodeGenerator>();
 }
 
 void GpuCodeGenerator::GenerateGlobalDeclarations(

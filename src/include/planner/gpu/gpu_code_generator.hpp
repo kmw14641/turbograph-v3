@@ -284,6 +284,30 @@ class HashAggregateCodeGenerator : public OperatorCodeGenerator {
                                            GpuCodeGenerator *code_gen) override;
 };
 
+class AdjIdxJoinCodeGenerator : public OperatorCodeGenerator {
+   public:
+    void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
+                      GpuCodeGenerator *code_gen, ClientContext &context,
+                      PipelineContext &pipeline_ctx,
+                      bool is_main_loop = false) override {}
+    void AnalyzeOperatorForMaterialization(CypherPhysicalOperator *op,
+                                           int sub_idx, int op_idx,
+                                           PipelineContext &pipeline_context,
+                                           GpuCodeGenerator *code_gen) override {}
+};
+
+class IdSeekCodeGenerator : public OperatorCodeGenerator {
+   public:
+    void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
+                      GpuCodeGenerator *code_gen, ClientContext &context,
+                      PipelineContext &pipeline_ctx,
+                      bool is_main_loop = false) override {}
+    void AnalyzeOperatorForMaterialization(CypherPhysicalOperator *op,
+                                           int sub_idx, int op_idx,
+                                           PipelineContext &pipeline_context,
+                                           GpuCodeGenerator *code_gen) override {}
+};
+
 class GpuCodeGenerator {
    public:
     GpuCodeGenerator(ClientContext &context);
