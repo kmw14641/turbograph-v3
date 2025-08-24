@@ -289,7 +289,7 @@ class AdjIdxJoinCodeGenerator : public OperatorCodeGenerator {
     void GenerateCode(CypherPhysicalOperator *op, CodeBuilder &code,
                       GpuCodeGenerator *code_gen, ClientContext &context,
                       PipelineContext &pipeline_ctx,
-                      bool is_main_loop = false) override {}
+                      bool is_main_loop = false) override;
     void AnalyzeOperatorForMaterialization(CypherPhysicalOperator *op,
                                            int sub_idx, int op_idx,
                                            PipelineContext &pipeline_context,
