@@ -55,6 +55,11 @@ public:
     {
         is_target_unique = is_target_unique_;
     }
+
+	bool IsTargetUnique()
+	{
+		return is_target_unique;
+	}
 };
 
 } // namespace duckdb

@@ -172,10 +172,16 @@ void GpuCodeGenerator::SplitPipelineIntoSubPipelines(CypherPipeline &pipeline)
             case PhysicalOperatorType::PRODUCE_RESULTS: {
                 break;
             }
+            case PhysicalOperatorType::ID_SEEK: {
+                // temporary
+                break;
+            }
             default:
                 throw NotImplementedException(
                     "GpuCodeGenerator::SplitPipelineIntoSubPipelines: "
-                    "Unsupported operator type for splitting pipeline");
+                    "Unsupported operator type " +
+                    std::to_string((uint8_t)op->GetOperatorType()) +
+                    " for splitting pipeline");
         }
 
         if (split) {

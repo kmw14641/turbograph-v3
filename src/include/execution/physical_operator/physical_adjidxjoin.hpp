@@ -90,14 +90,16 @@ class PhysicalAdjIdxJoin : public CypherPhysicalOperator {
     PhysicalAdjIdxJoin(Schema &sch, uint64_t adjidx_obj_id, JoinType join_type,
                        bool is_adjidxjoin_into, uint64_t sid_col_idx,
                        uint64_t tgt_col_idx, vector<uint32_t> &outer_col_map,
-                       vector<uint32_t> &inner_col_map, AdjIdxIdIdxs &id_idxs)
+                       vector<uint32_t> &inner_col_map, AdjIdxIdIdxs &id_idxs,
+                       bool is_target_unique)
         : CypherPhysicalOperator(PhysicalOperatorType::ADJ_IDX_JOIN, sch),
           adjidx_obj_id(adjidx_obj_id),
           join_type(join_type),
           is_adjidxjoin_into(is_adjidxjoin_into),
           sid_col_idx(sid_col_idx),
           tgt_col_idx(tgt_col_idx),
-          inner_col_map(move(inner_col_map))
+          inner_col_map(move(inner_col_map)),
+          is_target_unique(is_target_unique)
     {
         this->outer_col_maps.push_back(std::move(outer_col_map));
 
@@ -208,7 +210,7 @@ class PhysicalAdjIdxJoin : public CypherPhysicalOperator {
 
     virtual size_t GetLoopCount() const override { return num_loops; }
 
-    bool IsTargetUnique() const { return target_is_unique; }
+    bool IsTargetUnique() const { return is_target_unique; }
 
     // OID of adjacency index catalog entry (currently single adjidx object)
     uint64_t adjidx_obj_id;
@@ -222,7 +224,7 @@ class PhysicalAdjIdxJoin : public CypherPhysicalOperator {
     // Variable for the join relationship
     // True for (1-1) or (n-1) adjidx join
     // False for (1-n) or (n-n) adjidx join
-    bool target_is_unique = false;
+    bool is_target_unique = false;
 
     // column mapping information
     vector<uint32_t> outer_col_map;

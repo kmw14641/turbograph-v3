@@ -1255,14 +1255,22 @@ Planner::pTransformEopPhysicalInnerIndexNLJoinToAdjIdxJoin(
         CMDIdGPDB::CastMdid(idxscan_op->Pindexdesc()->MDId());
     adjidx_obj_id = index_mdid->Oid();
 
+    // Get adjacency index catalog entry
+    duckdb::Catalog &cat_instance = context->db->GetCatalog();
+    duckdb::IndexCatalogEntry *adj_index_cat =
+        (duckdb::IndexCatalogEntry *)cat_instance.GetEntry(
+            *context, DEFAULT_SCHEMA, adjidx_obj_id);
+
     // Construct adjacency index
-    auto adjidx_idx_idxs = pGetAdjIdxIdIdxs(adj_inner_cols, idxscan_op->Pindexdesc()->IndexType());
+    auto adjidx_idx_idxs =
+        pGetAdjIdxIdIdxs(adj_inner_cols, idxscan_op->Pindexdesc()->IndexType());
     duckdb::CypherPhysicalOperator *duckdb_adjidx_op =
         new duckdb::PhysicalAdjIdxJoin(
             schema_adj, adjidx_obj_id,
             is_left_outer ? duckdb::JoinType::LEFT : duckdb::JoinType::INNER,
             is_adjidxjoin_into, outer_join_key_col_idx, tgt_key_col_idx,
-            outer_col_maps_adj[0], inner_col_maps_adj[0], adjidx_idx_idxs);
+            outer_col_maps_adj[0], inner_col_maps_adj[0], adjidx_idx_idxs,
+            adj_index_cat->IsTargetUnique());
 
     /**
      * TOOD: this code assumes that the edge table is single schema.
