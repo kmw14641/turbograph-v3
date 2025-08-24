@@ -317,6 +317,7 @@ void CreateEdgeCatalogInfos(BulkloadContext &bulkload_ctx,
                             string &src_vertex_label, string &dst_vertex_label,
                             PartitionCatalogEntry *&partition_cat,
                             PropertySchemaCatalogEntry *&property_schema_cat,
+                            IndexCatalogEntry *&adj_index_cat,
                             LogicalType edge_direction_type,
                             idx_t num_src_columns)
 {
@@ -459,9 +460,8 @@ void CreateEdgeCatalogInfos(BulkloadContext &bulkload_ctx,
     CreateIndexInfo adj_idx_info(
         DEFAULT_SCHEMA, adj_idx_name, index_type, partition_cat->GetOid(),
         property_schema_cat->GetOid(), adj_col_idx, adj_key_col_idxs);
-    IndexCatalogEntry *adj_index_cat =
-        (IndexCatalogEntry *)bulkload_ctx.catalog.CreateIndex(
-            *(bulkload_ctx.client.get()), &adj_idx_info);
+    adj_index_cat = (IndexCatalogEntry *)bulkload_ctx.catalog.CreateIndex(
+        *(bulkload_ctx.client.get()), &adj_idx_info);
 
     partition_cat->AddAdjIndex(adj_index_cat->GetOid());
 }
@@ -544,7 +544,7 @@ inline void FillAdjListBuffer(
         *lid_pair_to_epid_map_instance,
     unordered_map<ExtentID, std::pair<std::pair<uint64_t, uint64_t>,
                                       vector<vector<idx_t>>>> &adj_list_buffers,
-    idx_t epid_base, idx_t src_lid = 0)
+    idx_t epid_base, bool &is_target_unique, idx_t src_lid = 0)
 {
     idx_t cur_src_seqno = GET_SEQNO_FROM_PHYSICAL_ID(cur_src_pid);
 
@@ -564,12 +564,17 @@ inline void FillAdjListBuffer(
     }
     auto &adj_list_buffer_extent = adj_list_buffers[cur_vertex_localextentID];
     adj_list_buffer = &(adj_list_buffer_extent.second);
+    auto &adj_list = (*adj_list_buffer)[cur_src_seqno];
 
     if (adj_list_buffer_extent.first.first < cur_src_seqno) {
         adj_list_buffer_extent.first.first = cur_src_seqno;
     }
     if (end_idx > begin_idx) {
-        adj_list_buffer_extent.first.second += (end_idx - begin_idx);
+        uint64_t num_neighbors = end_idx - begin_idx;
+        adj_list_buffer_extent.first.second += num_neighbors;
+        if (((adj_list.size() / 2) + num_neighbors) > 1) {
+            is_target_unique = false;
+        }
     }
 
     idx_t dst_seqno, cur_dst_pid;
@@ -587,9 +592,8 @@ inline void FillAdjListBuffer(
                 dst_key_columns[0][dst_seqno] = cur_dst_pid;
 
                 // update adjlist buffer
-                (*adj_list_buffer)[cur_src_seqno].push_back(cur_dst_pid);
-                (*adj_list_buffer)[cur_src_seqno].push_back(epid_base +
-                                                            dst_seqno);
+                adj_list.push_back(cur_dst_pid);
+                adj_list.push_back(epid_base + dst_seqno);
 
                 // update pid pair to epid map
                 pid_pair.second = cur_dst_pid;
@@ -608,9 +612,8 @@ inline void FillAdjListBuffer(
                 dst_key_columns[0][dst_seqno] = cur_dst_pid;  // TODO
 
                 // update adjlist buffer
-                (*adj_list_buffer)[cur_src_seqno].push_back(cur_dst_pid);
-                (*adj_list_buffer)[cur_src_seqno].push_back(epid_base +
-                                                            dst_seqno);
+                adj_list.push_back(cur_dst_pid);
+                adj_list.push_back(epid_base + dst_seqno);
 
                 // update pid pair to epid map
                 pid_pair.second = cur_dst_pid;
@@ -630,9 +633,8 @@ inline void FillAdjListBuffer(
                 dst_key_columns[0][dst_seqno] = cur_dst_pid;
 
                 // update adjlist buffer
-                (*adj_list_buffer)[cur_src_seqno].push_back(cur_dst_pid);
-                (*adj_list_buffer)[cur_src_seqno].push_back(epid_base +
-                                                            dst_seqno);
+                adj_list.push_back(cur_dst_pid);
+                adj_list.push_back(epid_base + dst_seqno);
             }
         }
         else if (dst_column_idx.size() == 2) {
@@ -646,9 +648,8 @@ inline void FillAdjListBuffer(
                 dst_key_columns[0][dst_seqno] = cur_dst_pid;  // TODO
 
                 // update adjlist buffer
-                (*adj_list_buffer)[cur_src_seqno].push_back(cur_dst_pid);
-                (*adj_list_buffer)[cur_src_seqno].push_back(epid_base +
-                                                            dst_seqno);
+                adj_list.push_back(cur_dst_pid);
+                adj_list.push_back(epid_base + dst_seqno);
             }
         }
     }
@@ -663,7 +664,8 @@ inline void FillBwdAdjListBuffer(
     unordered_map<LidPair, idx_t, boost::hash<LidPair>>
         &lid_pair_to_epid_map_instance,
     unordered_map<ExtentID, std::pair<std::pair<uint64_t, uint64_t>,
-                                      vector<vector<idx_t>>>> &adj_list_buffers)
+                                      vector<vector<idx_t>>>> &adj_list_buffers,
+    bool &is_target_unique)
 {
     idx_t cur_src_seqno = GET_SEQNO_FROM_PHYSICAL_ID(cur_src_pid);
 
@@ -683,12 +685,17 @@ inline void FillBwdAdjListBuffer(
     }
     auto &adj_list_buffer_extent = adj_list_buffers[cur_vertex_localextentID];
     adj_list_buffer = &(adj_list_buffer_extent.second);
+    auto &adj_list = (*adj_list_buffer)[cur_src_seqno];
 
     if (adj_list_buffer_extent.first.first < cur_src_seqno) {
         adj_list_buffer_extent.first.first = cur_src_seqno;
     }
     if (end_idx > begin_idx) {
-        adj_list_buffer_extent.first.second += (end_idx - begin_idx);
+        uint64_t num_neighbors = end_idx - begin_idx;
+        adj_list_buffer_extent.first.second += num_neighbors;
+        if (((adj_list.size() / 2) + num_neighbors) > 1) {
+            is_target_unique = false;
+        }
     }
 
     idx_t dst_seqno, cur_dst_pid, peid;
@@ -707,8 +714,8 @@ inline void FillBwdAdjListBuffer(
             peid = lid_pair_to_epid_map_instance.at(pid_pair);
 
             // update adjlist buffer
-            (*adj_list_buffer)[cur_src_seqno].push_back(cur_dst_pid);
-            (*adj_list_buffer)[cur_src_seqno].push_back(peid);
+            adj_list.push_back(cur_dst_pid);
+            adj_list.push_back(peid);
         }
     }
     else if (dst_column_idx.size() == 2) {
@@ -723,8 +730,8 @@ inline void FillBwdAdjListBuffer(
             peid = lid_pair_to_epid_map_instance.at(pid_pair);
 
             // update adjlist buffer
-            (*adj_list_buffer)[cur_src_seqno].push_back(cur_dst_pid);
-            (*adj_list_buffer)[cur_src_seqno].push_back(peid);
+            adj_list.push_back(cur_dst_pid);
+            adj_list.push_back(peid);
         }
     }
 }
@@ -1166,6 +1173,8 @@ void ReadFwdEdgeCSVFilesAndCreateEdgeExtents(
 {
     SCOPED_TIMER_SIMPLE(ReadFwdEdgeCSVFilesAndCreateEdgeExtents,
                         spdlog::level::info, spdlog::level::debug);
+    // adj_list_buffers: <local_extent_id, 
+    // <<max_src_seqno, adj_len_total>, adj_list_buffer>>
     unordered_map<ExtentID, std::pair<std::pair<uint64_t, uint64_t>,
                                       vector<vector<idx_t>>>>
         adj_list_buffers;
@@ -1202,6 +1211,7 @@ void ReadFwdEdgeCSVFilesAndCreateEdgeExtents(
         vector<int64_t> dst_column_idx;
         vector<string> key_names;
         vector<LogicalType> types;
+        bool is_target_unique = true;
 
         spdlog::debug("[ReadFwdEdgeCSVFilesAndCreateEdgeExtents] InitCSVFile");
         SUBTIMER_START(ReadSingleEdgeCSVFile, "InitCSVFile");
@@ -1228,6 +1238,7 @@ void ReadFwdEdgeCSVFilesAndCreateEdgeExtents(
         spdlog::trace("Dst column name = {} (idxs = [{}])", dst_vertex_label,
                       join_vector(dst_column_idx));
 
+        // Find corresponding LID_TO_PID_MAP for source vertex label
         spdlog::debug(
             "[ReadFwdEdgeCSVFilesAndCreateEdgeExtents] InitLIDToPIDMap");
         SUBTIMER_START(ReadSingleEdgeCSVFile, "InitLIDToPIDMap");
@@ -1246,6 +1257,7 @@ void ReadFwdEdgeCSVFilesAndCreateEdgeExtents(
         unordered_map<LidPair, idx_t, boost::hash<LidPair>>
             &src_lid_to_pid_map_instance = src_it->second;
 
+        // Find corresponding LID_TO_PID_MAP for destination vertex label
         auto dst_it = std::find_if(
             bulkload_ctx.lid_to_pid_map.begin(),
             bulkload_ctx.lid_to_pid_map.end(),
@@ -1262,6 +1274,7 @@ void ReadFwdEdgeCSVFilesAndCreateEdgeExtents(
             &dst_lid_to_pid_map_instance = dst_it->second;
         SUBTIMER_STOP(ReadSingleEdgeCSVFile, "InitLIDToPIDMap");
 
+        // Initialize PID_PAIR_TO_EPID_MAP for backward edge if needed
         spdlog::debug(
             "[ReadFwdEdgeCSVFilesAndCreateEdgeExtents] InitLIDPairToEPIDMap");
         SUBTIMER_START(ReadSingleEdgeCSVFile, "InitLIDPairToEPIDMap");
@@ -1277,6 +1290,7 @@ void ReadFwdEdgeCSVFilesAndCreateEdgeExtents(
         }
         SUBTIMER_STOP(ReadSingleEdgeCSVFile, "InitLIDPairToEPIDMap");
 
+        // Initialize DataChunk for reading edge file
         DataChunk data;
         data.Initialize(types, STORAGE_STANDARD_VECTOR_SIZE);
 
@@ -1284,10 +1298,11 @@ void ReadFwdEdgeCSVFilesAndCreateEdgeExtents(
             "[ReadFwdEdgeCSVFilesAndCreateEdgeExtents] CreateEdgeCatalogInfos");
         PartitionCatalogEntry *partition_cat;
         PropertySchemaCatalogEntry *property_schema_cat;
+        IndexCatalogEntry *adj_index_cat;
 
         CreateEdgeCatalogInfos(
             bulkload_ctx, edge_type, key_names, types, src_vertex_label,
-            dst_vertex_label, partition_cat, property_schema_cat,
+            dst_vertex_label, partition_cat, property_schema_cat, adj_index_cat,
             LogicalType::FORWARD_ADJLIST, src_column_idx.size());
 
         spdlog::debug(
@@ -1385,7 +1400,7 @@ void ReadFwdEdgeCSVFilesAndCreateEdgeExtents(
                             prev_src_pid, vertex_seqno, dst_column_idx,
                             dst_key_columns, dst_lid_to_pid_map_instance,
                             lid_pair_to_epid_map_instance, adj_list_buffers,
-                            epid_base);
+                            epid_base, is_target_unique);
 
                         prev_id = src_key;
                         prev_src_pid = cur_src_pid;
@@ -1412,7 +1427,7 @@ void ReadFwdEdgeCSVFilesAndCreateEdgeExtents(
                             prev_src_pid, vertex_seqno, dst_column_idx,
                             dst_key_columns, dst_lid_to_pid_map_instance,
                             lid_pair_to_epid_map_instance, adj_list_buffers,
-                            epid_base);
+                            epid_base, is_target_unique);
 
                         prev_id = src_key;
                         prev_src_pid = cur_src_pid;
@@ -1434,7 +1449,7 @@ void ReadFwdEdgeCSVFilesAndCreateEdgeExtents(
                               cur_src_pid, vertex_seqno, dst_column_idx,
                               dst_key_columns, dst_lid_to_pid_map_instance,
                               lid_pair_to_epid_map_instance, adj_list_buffers,
-                              epid_base);
+                              epid_base, is_target_unique);
             SUBTIMER_STOP(ReadSingleEdgeCSVFile,
                           "FillAdjListBuffer for Remaining");
 
@@ -1465,6 +1480,13 @@ void ReadFwdEdgeCSVFilesAndCreateEdgeExtents(
                            cur_part_id, src_part_cat_entry->GetLocalExtentID(),
                            adj_list_buffers);
         SUBTIMER_STOP(ReadSingleEdgeCSVFile, "Remaining AppendAdjListChunk");
+
+        // Set is_target_unique info on the adjacency index catalog entry
+        adj_index_cat->SetIsTargetUnique(is_target_unique);
+        spdlog::info(
+            "[ReadFwdEdgeCSVFilesAndCreateEdgeExtents] Edge type {} "
+            "isTargetUnique = {}",
+            edge_type, is_target_unique);
     }
     spdlog::debug(
         "[ReadFwdEdgeCSVFilesAndCreateEdgeExtents] Flush Dirty Segments and "
@@ -1532,6 +1554,7 @@ void ReadBwdEdgeCSVFilesAndCreateEdgeExtents(
         vector<int64_t> dst_column_idx;
         vector<LogicalType> types;
         GraphSIMDCSVFileParser reader;
+        bool is_target_unique = true;
 
         spdlog::debug("[ReadBwdEdgesCSVFileAndCreateEdgeExtents] InitCSVFile");
         SUBTIMER_START(ReadSingleEdgeCSVFile, "InitCSVFile");
@@ -1615,9 +1638,11 @@ void ReadBwdEdgeCSVFilesAndCreateEdgeExtents(
             "[ReadBwdEdgesCSVFileAndCreateEdgeExtents] CreateEdgeCatalogInfos");
         PartitionCatalogEntry *partition_cat;
         PropertySchemaCatalogEntry *property_schema_cat;
+        IndexCatalogEntry *adj_index_cat;
+
         CreateEdgeCatalogInfos(
             bulkload_ctx, edge_type, key_names, types, src_vertex_label,
-            dst_vertex_label, partition_cat, property_schema_cat,
+            dst_vertex_label, partition_cat, property_schema_cat, adj_index_cat,
             LogicalType::BACKWARD_ADJLIST, dst_column_idx.size());
 
         spdlog::debug(
@@ -1699,7 +1724,8 @@ void ReadBwdEdgeCSVFilesAndCreateEdgeExtents(
                             load_backward_edge, begin_idx, end_idx, src_seqno,
                             prev_src_pid, vertex_seqno, dst_column_idx,
                             dst_key_columns, dst_lid_to_pid_map_instance,
-                            lid_pair_to_epid_map_instance, adj_list_buffers);
+                            lid_pair_to_epid_map_instance, adj_list_buffers,
+                            is_target_unique);
 
                         prev_id = src_key;
                         prev_src_pid = cur_src_pid;
@@ -1723,7 +1749,8 @@ void ReadBwdEdgeCSVFilesAndCreateEdgeExtents(
                             load_backward_edge, begin_idx, end_idx, src_seqno,
                             prev_src_pid, vertex_seqno, dst_column_idx,
                             dst_key_columns, dst_lid_to_pid_map_instance,
-                            lid_pair_to_epid_map_instance, adj_list_buffers);
+                            lid_pair_to_epid_map_instance, adj_list_buffers,
+                            is_target_unique);
 
                         prev_id = src_key;
                         prev_src_pid = cur_src_pid;
@@ -1748,7 +1775,7 @@ void ReadBwdEdgeCSVFilesAndCreateEdgeExtents(
                 load_backward_edge, begin_idx, end_idx, src_seqno, cur_src_pid,
                 vertex_seqno, dst_column_idx, dst_key_columns,
                 dst_lid_to_pid_map_instance, lid_pair_to_epid_map_instance,
-                adj_list_buffers);
+                adj_list_buffers, is_target_unique);
             SUBTIMER_STOP(ReadSingleEdgeCSVFile,
                           "FillBwdAdjListBuffer for Remaining");
         }
@@ -1769,6 +1796,13 @@ void ReadBwdEdgeCSVFilesAndCreateEdgeExtents(
                            cur_part_id, src_part_cat_entry->GetLocalExtentID(),
                            adj_list_buffers);
         SUBTIMER_STOP(ReadSingleEdgeCSVFile, "Remaining AppendAdjListChunk");
+
+        // Set is_target_unique info on the adjacency index catalog entry
+        adj_index_cat->SetIsTargetUnique(is_target_unique);
+        spdlog::info(
+            "[ReadBwdEdgesCSVFileAndCreateEdgeExtents] Edge type {} "
+            "isTargetUnique = {}",
+            edge_type, is_target_unique);
     }
     spdlog::debug(
         "[ReadBwdEdgesCSVFileAndCreateEdgeExtents] Flush Dirty Segments and "

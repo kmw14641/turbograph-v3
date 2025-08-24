@@ -45,11 +45,16 @@ public:
 
 public:
 	string ToSQL() override;
-	idx_t GetPartitionID();
-	idx_t GetPropertySchemaID();
-	int64_t_vector *GetIndexKeyColumns();
-	IndexType GetIndexType();
-	idx_t GetAdjColIdx();
+    idx_t GetPartitionID();
+    idx_t GetPropertySchemaID();
+    int64_t_vector *GetIndexKeyColumns();
+    IndexType GetIndexType();
+    idx_t GetAdjColIdx();
+
+    void SetIsTargetUnique(bool is_target_unique_)
+    {
+        is_target_unique = is_target_unique_;
+    }
 };
 
 } // namespace duckdb

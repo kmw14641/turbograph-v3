@@ -17,6 +17,7 @@
 #include "execution/physical_operator/physical_produce_results.hpp"
 #include "execution/physical_operator/physical_projection.hpp"
 #include "execution/physical_operator/physical_hash_aggregate.hpp"
+#include "execution/physical_operator/physical_adjidxjoin.hpp"
 #include "llvm/Support/TargetSelect.h"
 #include "main/database.hpp"
 #include "planner/gpu/expression_code_generator.hpp"
