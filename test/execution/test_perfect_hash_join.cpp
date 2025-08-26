@@ -160,6 +160,13 @@ std::vector<std::vector<int>> DoPerfectHashJoin(PHJConfig phj_config,
     return result_vector;
 }
 
+std::vector<std::vector<int>> DoHashJoin(PHJConfig phj_config,
+                         std::vector<std::vector<int>> left_data,
+                         std::vector<std::vector<int>> right_data) {
+    phj_config.perfect_join_statistics.is_build_small = false;
+    return DoPerfectHashJoin(phj_config, left_data, right_data);
+}
+
 TEST_CASE("Test perfect hash join. Match one build input with one probe input") {
     PHJConfig phj_config;
     phj_config.SetDefaultStat(10, 30);
@@ -197,5 +204,63 @@ TEST_CASE("Test perfect hash join. Test projection") {
         {{20, 40, 50}}
     );
     vector<vector<int>> expected_output = {{20, 10, 20, 50}};
+    REQUIRE(result == expected_output);
+}
+
+vector<vector<int>> CreateRightInput(size_t size) {
+    std::mt19937 gen(1);
+    std::uniform_int_distribution<int32_t> dist_col(INT32_MIN, INT32_MAX);
+    std::uniform_int_distribution<int32_t> dist_key(0, 100000);
+    std::unordered_set<int32_t> unique_keys;
+
+    vector<vector<int>> result;
+    for (size_t i = 0; i < size; i++) {
+        int32_t key;
+        while (true) {
+            key = dist_key(gen);
+            if (unique_keys.find(key) == unique_keys.end()) {
+                unique_keys.insert(key);
+                break;
+            }
+        }
+        result.push_back({key, dist_col(gen)});
+    }
+
+    return result;
+}
+
+vector<vector<int>> CreateLeftInput(size_t size, vector<vector<int>>& right_input) {
+    std::mt19937 gen(1);
+    std::uniform_int_distribution<int32_t> dist_col(INT32_MIN, INT32_MAX);
+    std::uniform_int_distribution<int32_t> dist_key(0, right_input.size() - 1);
+
+    vector<vector<int>> result;
+    for (size_t i = 0; i < size; i++) {
+        result.push_back({dist_col(gen), right_input[dist_key(gen)][0]});
+    }
+
+    return result;
+}
+
+TEST_CASE("Test perfect hash join. Test multi chunk using hash join.") {
+    PHJConfig phj_config;
+    phj_config.SetDefaultStat(0, 100000);
+    auto right_input = CreateRightInput(100000);
+    auto left_input = CreateLeftInput(1000000, right_input);
+
+    auto result = DoPerfectHashJoin(
+        phj_config,
+        left_input,
+        right_input
+    );
+    auto expected_output = DoHashJoin(
+        phj_config,
+        left_input,
+        right_input
+    );
+
+    std::sort(result.begin(), result.end());
+    std::sort(expected_output.begin(), expected_output.end());
+
     REQUIRE(result == expected_output);
 }
