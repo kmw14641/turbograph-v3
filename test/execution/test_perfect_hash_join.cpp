@@ -10,62 +10,88 @@
 
 using namespace duckdb;
 
-void TestPerfectHashJoin(std::vector<std::vector<int>> left_data,
-                         std::vector<std::vector<int>> right_data,
-                         std::vector<std::vector<int>> expected_output) {
-    // Set up input types: 2 integers
-    vector<LogicalType> left_input_types = {LogicalType::INTEGER, LogicalType::INTEGER};
-    vector<LogicalType> right_input_types = {LogicalType::INTEGER, LogicalType::INTEGER};
+class PHJConfig {
+public:
+    vector<LogicalType> left_input_types;
+    vector<LogicalType> right_input_types;
+    vector<LogicalType> output_types;
+    idx_t left_key_idx;
+    idx_t right_key_idx;
+    vector<uint32_t> left_projection_map;
+    vector<uint32_t> right_projection_map;
+    vector<LogicalType> right_build_types;
+    vector<idx_t> right_build_map;
+    PerfectHashJoinStats perfect_join_statistics;
 
+    PHJConfig() {
+        SetDefaultConfig();
+    }
+
+    void SetDefaultConfig() {
+        SetDefaultConfig(2, 2, 4);
+        left_key_idx = 1;
+        right_key_idx = 0;
+        left_projection_map = {0, 1};
+        right_projection_map = {2, 3};
+        right_build_types = {LogicalType::INTEGER, LogicalType::INTEGER};
+        right_build_map = {0, 1};
+    }
+
+    void SetDefaultConfig(size_t left_input_size, size_t right_input_size, size_t output_size) {
+        left_input_types = vector<LogicalType>(left_input_size, LogicalType::INTEGER);
+        right_input_types = vector<LogicalType>(right_input_size, LogicalType::INTEGER);
+        output_types = vector<LogicalType>(output_size, LogicalType::INTEGER);
+    }
+
+    void SetDefaultStat(int64_t min, int64_t max) {
+        perfect_join_statistics.build_min = min;
+        perfect_join_statistics.build_max = max;
+        perfect_join_statistics.build_range = max - min;
+        perfect_join_statistics.is_build_small = true;
+        perfect_join_statistics.is_physical_id = false;
+    }
+};
+
+
+std::vector<std::vector<int>> DoPerfectHashJoin(PHJConfig phj_config,
+                         std::vector<std::vector<int>> left_data,
+                         std::vector<std::vector<int>> right_data) {
     // Create input DataChunk
     DataChunk left_input;
-    left_input.Initialize(left_input_types);
+    left_input.Initialize(phj_config.left_input_types);
     left_input.SetCardinality(left_data.size());
     for (idx_t i = 0; i < left_data.size(); ++i) {
-        left_input.SetValue(0, i, Value::INTEGER(left_data[i][0]));  // left.col0
-        left_input.SetValue(1, i, Value::INTEGER(left_data[i][1]));  // left.col1
+        for (idx_t j = 0; j < phj_config.left_input_types.size(); ++j) {
+            left_input.SetValue(j, i, Value::INTEGER(left_data[i][j]));
+        }
     }
 
     DataChunk right_input;
-    right_input.Initialize(right_input_types);
+    right_input.Initialize(phj_config.right_input_types);
     right_input.SetCardinality(right_data.size());
     for (idx_t i = 0; i < right_data.size(); ++i) {
-        right_input.SetValue(0, i, Value::INTEGER(right_data[i][0]));  // right.col0
-        right_input.SetValue(1, i, Value::INTEGER(right_data[i][1]));  // right.col1
+        for (idx_t j = 0; j < phj_config.right_input_types.size(); ++j) {
+            right_input.SetValue(j, i, Value::INTEGER(right_data[i][j]));
+        }
     }
 
-    // Create join expression: left.col1 = right.col0
+    // Create join expression
     JoinCondition condition;
-    condition.left = std::make_unique<BoundReferenceExpression>(LogicalType::INTEGER, 1);  // ref col 1
-    condition.right = std::make_unique<BoundReferenceExpression>(LogicalType::INTEGER, 0);  // ref col 0
+    condition.left = std::make_unique<BoundReferenceExpression>(phj_config.left_input_types[phj_config.left_key_idx], phj_config.left_key_idx);
+    condition.right = std::make_unique<BoundReferenceExpression>(phj_config.right_input_types[phj_config.right_key_idx], phj_config.right_key_idx);
     condition.comparison = ExpressionType::COMPARE_EQUAL;
 
     vector<JoinCondition> conditions{};
     conditions.push_back(std::move(condition));
 
-    // Create projections
-    // left{col0, col1} + right{col0, col1} -> output{left.col0, left.col1, right.col0, right.col1}
-    vector<uint32_t> left_projection_map = {0, 1};
-    vector<uint32_t> right_projection_map = {2, 3};
-    // set entire right input as build table value
-    vector<LogicalType> right_build_types = {LogicalType::INTEGER, LogicalType::INTEGER};
-    vector<idx_t> right_build_map{0, 1};
-
     // Set up schema
     Schema schema;
-    schema.setStoredTypes({LogicalType::INTEGER, LogicalType::INTEGER, LogicalType::INTEGER, LogicalType::INTEGER});  // output types
-
-    // Create Mocked Stat
-    PerfectHashJoinStats perfect_join_statistics;
-    perfect_join_statistics.build_min = 10;
-    perfect_join_statistics.build_max = 50;
-    perfect_join_statistics.is_build_small = true;
-    perfect_join_statistics.build_range = 40;
+    schema.setStoredTypes(phj_config.output_types);
 
     // Create operator
     PhysicalHashJoin perfect_hash_join(schema, std::move(conditions), JoinType::INNER,
-                                              left_projection_map, right_projection_map,
-                                              right_build_types, right_build_map, perfect_join_statistics);
+                                              phj_config.left_projection_map, phj_config.right_projection_map,
+                                              phj_config.right_build_types, phj_config.right_build_map, phj_config.perfect_join_statistics);
 
     // Execution context/state
     string dbdir = "/data/ldbc/sf1";
@@ -88,128 +114,55 @@ void TestPerfectHashJoin(std::vector<std::vector<int>> left_data,
     // Probe Hash Table
     auto result = perfect_hash_join.Execute(exec_context, left_input, output, *op_state, *sink_state);
 
-    // Check result
+    // Create Result Vector
+    vector<vector<int>> result_vector;
     REQUIRE(result == OperatorResultType::NEED_MORE_INPUT);
-    REQUIRE(output.size() == expected_output.size());
-    for (int i = 0; i < expected_output.size(); i++) {
-        for (size_t j = 0; j < expected_output[i].size(); j++) {
-            REQUIRE(output.GetValue(j, i) == expected_output[i][j]);
+    for (int i = 0; i < output.size(); i++) {
+        result_vector.push_back(vector<int>());
+        for (size_t j = 0; j < phj_config.output_types.size(); j++) {
+            result_vector[result_vector.size() - 1].push_back(output.GetValue(j, i).GetValue<int>());
         }
     }
+
+    return result_vector;
 }
 
 TEST_CASE("Test perfect hash join. Match one build input with one probe input") {
-    TestPerfectHashJoin(
+    PHJConfig phj_config;
+    phj_config.SetDefaultStat(10, 30);
+    auto result = DoPerfectHashJoin(
+        phj_config,
         {{10, 20}},  // left input
-        {{20, 30}},  // right input
-        {{10, 20, 20, 30}}  // expected output
+        {{20, 30}}  // right input
     );
+    vector<vector<int>> expected_output = {{10, 20, 20, 30}};
+    REQUIRE(result == expected_output);
 }
 
 TEST_CASE("Test perfect hash join. Test multiple inputs") {
-    TestPerfectHashJoin(
+    PHJConfig phj_config;
+    phj_config.SetDefaultStat(10, 50);
+    auto result = DoPerfectHashJoin(
+        phj_config,
         {{10, 20}, {20, 40}, {30, 40}},
-        {{10, 10}, {20, 20}, {30, 30}, {40, 40}, {50, 50}},
-        {{10, 20, 20, 20}, {20, 40, 40, 40}, {30, 40, 40, 40}}
+        {{10, 10}, {20, 20}, {30, 30}, {40, 40}, {50, 50}}
     );
-}
-
-// TODO: eliminate duplicate code!!
-
-void PHJProjectionTest(std::vector<std::vector<int>> left_data,
-                         std::vector<std::vector<int>> right_data,
-                         std::vector<std::vector<int>> expected_output) {
-    // Set up input types: 3 integers
-    vector<LogicalType> left_input_types = {LogicalType::INTEGER, LogicalType::INTEGER, LogicalType::INTEGER};
-    vector<LogicalType> right_input_types = {LogicalType::INTEGER, LogicalType::INTEGER, LogicalType::INTEGER};
-
-    // Create input DataChunk
-    DataChunk left_input;
-    left_input.Initialize(left_input_types);
-    left_input.SetCardinality(left_data.size());
-    for (idx_t i = 0; i < left_data.size(); ++i) {
-        left_input.SetValue(0, i, Value::INTEGER(left_data[i][0]));  // left.col0
-        left_input.SetValue(1, i, Value::INTEGER(left_data[i][1]));  // left.col1
-        left_input.SetValue(2, i, Value::INTEGER(left_data[i][2]));  // left.col2
-    }
-
-    DataChunk right_input;
-    right_input.Initialize(right_input_types);
-    right_input.SetCardinality(right_data.size());
-    for (idx_t i = 0; i < right_data.size(); ++i) {
-        right_input.SetValue(0, i, Value::INTEGER(right_data[i][0]));  // right.col0
-        right_input.SetValue(1, i, Value::INTEGER(right_data[i][1]));  // right.col1
-        right_input.SetValue(2, i, Value::INTEGER(right_data[i][2]));  // right.col2
-    }
-
-    // Create join expression: left.col1 = right.col0
-    JoinCondition condition;
-    condition.left = std::make_unique<BoundReferenceExpression>(LogicalType::INTEGER, 1);  // ref col 1
-    condition.right = std::make_unique<BoundReferenceExpression>(LogicalType::INTEGER, 0);  // ref col 0
-    condition.comparison = ExpressionType::COMPARE_EQUAL;
-
-    vector<JoinCondition> conditions{};
-    conditions.push_back(std::move(condition));
-
-    // Create projections
-    // left{col0, col1, col2} + right{col0, col1, col2} -> output{left.col1, left.col0, right.col0, right.col2}
-    vector<uint32_t> left_projection_map = {1, 0, std::numeric_limits<uint32_t>::max()};
-    vector<uint32_t> right_projection_map = {3, 2};
-    // set entire right input as build table value
-    vector<LogicalType> right_build_types = {LogicalType::INTEGER, LogicalType::INTEGER};
-    vector<idx_t> right_build_map{2, 0};
-
-    // Set up schema
-    Schema schema;
-    schema.setStoredTypes({LogicalType::INTEGER, LogicalType::INTEGER, LogicalType::INTEGER, LogicalType::INTEGER});  // output types
-
-    // Create Mocked Stat
-    PerfectHashJoinStats perfect_join_statistics;
-    perfect_join_statistics.build_min = 10;
-    perfect_join_statistics.build_max = 50;
-    perfect_join_statistics.is_build_small = true;
-    perfect_join_statistics.build_range = 40;
-
-    // Create operator
-    PhysicalHashJoin perfect_hash_join(schema, std::move(conditions), JoinType::INNER,
-                                              left_projection_map, right_projection_map,
-                                              right_build_types, right_build_map, perfect_join_statistics);
-
-    // Execution context/state
-    string dbdir = "/data/ldbc/sf1";
-    auto db = make_unique<DuckDB>(dbdir.c_str());
-    auto client_context = make_shared<ClientContext>(db->instance);
-    ExecutionContext exec_context(client_context.get());
-    auto sink_state = perfect_hash_join.GetLocalSinkState(exec_context);
-    auto op_state = perfect_hash_join.GetOperatorState(exec_context);
-
-    // Build Hash Table
-    auto sink_result = perfect_hash_join.Sink(exec_context, right_input, *sink_state);
-
-    // Combine sink state (do nothing indeed)
-    perfect_hash_join.Combine(exec_context, *sink_state);
-
-    // Create Output chunk
-    DataChunk output;
-    output.Initialize(schema.getStoredTypes());
-
-    // Probe Hash Table
-    auto result = perfect_hash_join.Execute(exec_context, left_input, output, *op_state, *sink_state);
-
-    // Check result
-    REQUIRE(result == OperatorResultType::NEED_MORE_INPUT);
-    REQUIRE(output.size() == expected_output.size());
-    for (int i = 0; i < expected_output.size(); i++) {
-        for (size_t j = 0; j < expected_output[i].size(); j++) {
-            REQUIRE(output.GetValue(j, i) == expected_output[i][j]);
-        }
-    }
+    vector<vector<int>> expected_output = {{10, 20, 20, 20}, {20, 40, 40, 40}, {30, 40, 40, 40}};
+    REQUIRE(result == expected_output);
 }
 
 TEST_CASE("Test perfect hash join. Test projection") {
-    PHJProjectionTest(
+    PHJConfig phj_config;
+    phj_config.SetDefaultConfig(3, 3, 4);
+    phj_config.left_projection_map = {1, 0, std::numeric_limits<uint32_t>::max()};
+    phj_config.right_build_map = {2, 0};
+    phj_config.right_projection_map = {3, 2};
+    phj_config.SetDefaultStat(10, 50);
+    auto result = DoPerfectHashJoin(
+        phj_config,
         {{10, 20, 30}},
-        {{20, 40, 50}},
-        {{20, 10, 20, 50}}
+        {{20, 40, 50}}
     );
+    vector<vector<int>> expected_output = {{20, 10, 20, 50}};
+    REQUIRE(result == expected_output);
 }
