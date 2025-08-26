@@ -57,22 +57,38 @@ std::vector<std::vector<int>> DoPerfectHashJoin(PHJConfig phj_config,
                          std::vector<std::vector<int>> left_data,
                          std::vector<std::vector<int>> right_data) {
     // Create input DataChunk
-    DataChunk left_input;
-    left_input.Initialize(phj_config.left_input_types);
-    left_input.SetCardinality(left_data.size());
-    for (idx_t i = 0; i < left_data.size(); ++i) {
-        for (idx_t j = 0; j < phj_config.left_input_types.size(); ++j) {
-            left_input.SetValue(j, i, Value::INTEGER(left_data[i][j]));
+    std::vector<std::unique_ptr<DataChunk>> left_inputs;
+    idx_t left_data_idx = 0;
+    while (left_data_idx < left_data.size()) {
+        std::unique_ptr<DataChunk> left_input = std::make_unique<DataChunk>();
+        idx_t left_input_idx = 0;
+        left_input->Initialize(phj_config.left_input_types);
+        while (left_input_idx < STANDARD_VECTOR_SIZE && left_data_idx < left_data.size()) {
+            for (idx_t j = 0; j < phj_config.left_input_types.size(); ++j) {
+                left_input->SetValue(j, left_input_idx, Value::INTEGER(left_data[left_data_idx][j]));
+            }
+            left_data_idx++;
+            left_input_idx++;
         }
+        left_input->SetCardinality(left_input_idx);
+        left_inputs.push_back(std::move(left_input));
     }
 
-    DataChunk right_input;
-    right_input.Initialize(phj_config.right_input_types);
-    right_input.SetCardinality(right_data.size());
-    for (idx_t i = 0; i < right_data.size(); ++i) {
-        for (idx_t j = 0; j < phj_config.right_input_types.size(); ++j) {
-            right_input.SetValue(j, i, Value::INTEGER(right_data[i][j]));
+    std::vector<std::unique_ptr<DataChunk>> right_inputs;
+    idx_t right_data_idx = 0;
+    while (right_data_idx < right_data.size()) {
+        std::unique_ptr<DataChunk> right_input = std::make_unique<DataChunk>();
+        idx_t right_input_idx = 0;
+        right_input->Initialize(phj_config.right_input_types);
+        while (right_input_idx < STANDARD_VECTOR_SIZE && right_data_idx < right_data.size()) {
+            for (idx_t j = 0; j < phj_config.right_input_types.size(); ++j) {
+                right_input->SetValue(j, right_input_idx, Value::INTEGER(right_data[right_data_idx][j]));
+            }
+            right_data_idx++;
+            right_input_idx++;
         }
+        right_input->SetCardinality(right_input_idx);
+        right_inputs.push_back(std::move(right_input));
     }
 
     // Create join expression
@@ -107,17 +123,26 @@ std::vector<std::vector<int>> DoPerfectHashJoin(PHJConfig phj_config,
     auto op_state = perfect_hash_join.GetOperatorState(exec_context);
 
     // Build Hash Table
-    auto sink_result = perfect_hash_join.Sink(exec_context, right_input, *sink_state);
+    for (int i = 0; i < right_inputs.size(); i++) {
+        auto sink_result = perfect_hash_join.Sink(exec_context, *right_inputs[i], *sink_state);
+    }
 
     // Combine sink state (do nothing indeed)
     perfect_hash_join.Combine(exec_context, *sink_state);
 
     // Create Output chunk
-    DataChunk output;
-    output.Initialize(schema.getStoredTypes());
+    vector<unique_ptr<DataChunk>> outputs;
 
     // Probe Hash Table
-    auto result = perfect_hash_join.Execute(exec_context, left_input, output, *op_state, *sink_state);
+    for (int i = 0; i < left_inputs.size(); i++) {
+        OperatorResultType result;
+        do {
+            unique_ptr<DataChunk> output = std::make_unique<DataChunk>();
+            output->Initialize(schema.getStoredTypes());
+            result = perfect_hash_join.Execute(exec_context, *left_inputs[i], *output, *op_state, *sink_state);
+            outputs.push_back(std::move(output));
+        } while (result == OperatorResultType::HAVE_MORE_OUTPUT);
+    }
 
     // End Timer
     auto end = std::chrono::high_resolution_clock::now();
@@ -126,11 +151,13 @@ std::vector<std::vector<int>> DoPerfectHashJoin(PHJConfig phj_config,
 
     // Create Result Vector
     vector<vector<int>> result_vector;
-    REQUIRE(result == OperatorResultType::NEED_MORE_INPUT);
-    for (int i = 0; i < output.size(); i++) {
-        result_vector.push_back(vector<int>());
-        for (size_t j = 0; j < phj_config.output_types.size(); j++) {
-            result_vector[result_vector.size() - 1].push_back(output.GetValue(j, i).GetValue<int>());
+    for (idx_t chunk_idx = 0; chunk_idx < outputs.size(); chunk_idx++) {
+        DataChunk& output_chunk = *outputs[chunk_idx];
+        for (idx_t result_idx = 0; result_idx < output_chunk.size(); result_idx++) {
+            result_vector.push_back(vector<int>());
+            for (size_t j = 0; j < phj_config.output_types.size(); j++) {
+                result_vector[result_vector.size() - 1].push_back(output_chunk.GetValue(j, result_idx).GetValue<int>());
+            }
         }
     }
 
