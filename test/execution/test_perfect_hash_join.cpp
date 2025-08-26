@@ -134,13 +134,21 @@ std::vector<std::vector<int>> DoPerfectHashJoin(PHJConfig phj_config,
     vector<unique_ptr<DataChunk>> outputs;
 
     // Probe Hash Table
+    vector<vector<int>> result_vector;
     for (int i = 0; i < left_inputs.size(); i++) {
         OperatorResultType result;
         do {
             unique_ptr<DataChunk> output = std::make_unique<DataChunk>();
             output->Initialize(schema.getStoredTypes());
             result = perfect_hash_join.Execute(exec_context, *left_inputs[i], *output, *op_state, *sink_state);
-            outputs.push_back(std::move(output));
+
+            // I don't want to serialize while timer is running, but output should be processed immediately, or overwrite occurs
+            for (idx_t result_idx = 0; result_idx < output->size(); result_idx++) {
+                result_vector.push_back(vector<int>());
+                for (size_t j = 0; j < phj_config.output_types.size(); j++) {
+                    result_vector[result_vector.size() - 1].push_back(output->GetValue(j, result_idx).GetValue<int>());
+                }
+            }
         } while (result == OperatorResultType::HAVE_MORE_OUTPUT);
     }
 
@@ -148,18 +156,6 @@ std::vector<std::vector<int>> DoPerfectHashJoin(PHJConfig phj_config,
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     std::cout << duration.count() << " us\n";
-
-    // Create Result Vector
-    vector<vector<int>> result_vector;
-    for (idx_t chunk_idx = 0; chunk_idx < outputs.size(); chunk_idx++) {
-        DataChunk& output_chunk = *outputs[chunk_idx];
-        for (idx_t result_idx = 0; result_idx < output_chunk.size(); result_idx++) {
-            result_vector.push_back(vector<int>());
-            for (size_t j = 0; j < phj_config.output_types.size(); j++) {
-                result_vector[result_vector.size() - 1].push_back(output_chunk.GetValue(j, result_idx).GetValue<int>());
-            }
-        }
-    }
 
     return result_vector;
 }
