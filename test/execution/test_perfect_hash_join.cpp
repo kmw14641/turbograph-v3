@@ -88,16 +88,21 @@ std::vector<std::vector<int>> DoPerfectHashJoin(PHJConfig phj_config,
     Schema schema;
     schema.setStoredTypes(phj_config.output_types);
 
+    // Create Execution context
+    string dbdir = "/data/ldbc/sf1";
+    auto db = make_unique<DuckDB>(dbdir.c_str());
+    auto client_context = make_shared<ClientContext>(db->instance);
+    ExecutionContext exec_context(client_context.get());
+
+    // Start Timer
+    auto start = std::chrono::high_resolution_clock::now();
+
     // Create operator
     PhysicalHashJoin perfect_hash_join(schema, std::move(conditions), JoinType::INNER,
                                               phj_config.left_projection_map, phj_config.right_projection_map,
                                               phj_config.right_build_types, phj_config.right_build_map, phj_config.perfect_join_statistics);
 
-    // Execution context/state
-    string dbdir = "/data/ldbc/sf1";
-    auto db = make_unique<DuckDB>(dbdir.c_str());
-    auto client_context = make_shared<ClientContext>(db->instance);
-    ExecutionContext exec_context(client_context.get());
+    // Create Execution state
     auto sink_state = perfect_hash_join.GetLocalSinkState(exec_context);
     auto op_state = perfect_hash_join.GetOperatorState(exec_context);
 
@@ -113,6 +118,11 @@ std::vector<std::vector<int>> DoPerfectHashJoin(PHJConfig phj_config,
 
     // Probe Hash Table
     auto result = perfect_hash_join.Execute(exec_context, left_input, output, *op_state, *sink_state);
+
+    // End Timer
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    std::cout << duration.count() << " us\n";
 
     // Create Result Vector
     vector<vector<int>> result_vector;
