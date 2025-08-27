@@ -184,6 +184,9 @@ bool PerfectHashJoinExecutor::TemplatedFillSelectionVectorBuild(Vector &source, 
 			}
 			seq_sel_vec.set_index(sel_idx++, i);
 		}
+		else {
+			return false;
+		}
 	}
 	return true;
 }
